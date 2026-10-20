@@ -1,0 +1,6 @@
+# Locally compiled binary and editor files.
+/folio
+/bin/
+.DS_Store
+.idea/
+.vscode/

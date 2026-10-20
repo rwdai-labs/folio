@@ -1,0 +1,160 @@
+name: container
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "go.mod"
+      - "cmd/**"
+      - "internal/**"
+      - "web/**"
+      - "deploy/**"
+      - "compose.yaml"
+      - ".dockerignore"
+      - ".github/workflows/container.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/rwdai-labs/folio-service
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.24.x"
+          cache: false
+
+      - name: Run Go tests and vet
+        run: |
+          go test -race ./...
+          go vet ./...
+          go build -trimpath -o "$RUNNER_TEMP/folio" ./cmd/folio
+
+  runtime-smoke:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build amd64 smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ghcr.io/rwdai-labs/folio-service:smoke-${{ github.run_id }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      - name: Smoke-test runtime and public boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/rwdai-labs/folio-service:smoke-${GITHUB_RUN_ID}"
+          docker run --rm "$image" sh -eu -c '
+            test "$(id -u)" != "0"
+            test -x /app/folio
+            test -d /app/web
+            test -f /app/web/index.html
+            test -f /app/web/app.js
+            test -f /app/web/styles.css
+            command -v node
+            command -v git
+            command -v gh
+            command -v gosu
+            command -v codex
+            ! command -v python3
+            ! command -v python
+            test ! -e /app/tools
+            test ! -e /app/agent
+            test ! -e /app/.git
+            test ! -e /app/README.md
+            test ! -e /app/core
+            test ! -e /app/active
+            test ! -e /app/domains
+            test ! -e /app/generated
+            test ! -e /app/inbox
+            test ! -e /data/repository
+            test ! -e /data/runtime/reviews
+            case "$(codex --version)" in
+              *0.147.0) ;;
+              *) exit 1 ;;
+            esac
+          '
+
+  image:
+    needs: [test, runtime-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        if: github.event_name == 'push'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=Folio Service
+            org.opencontainers.image.description=Self-hosted maintenance service for private Markdown context repositories
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ github.event_name == 'push' }}
+          load: ${{ github.event_name != 'push' }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ env.IMAGE_NAME }}:ci-${{ github.run_id }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: ${{ github.event_name == 'push' && 'mode=max' || 'false' }}
+          sbom: ${{ github.event_name == 'push' }}

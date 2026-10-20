@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Personal Context Maintainer</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Personal Context</p>
+        <h1>Maintainer</h1>
+      </div>
+      <div class="session-actions">
+        <span id="connection-state" class="status-dot" data-state="offline">Offline</span>
+        <button id="logout-button" class="button secondary" type="button" hidden>Log out</button>
+      </div>
+    </header>
+
+    <section id="login-panel" class="panel login-panel" aria-labelledby="login-heading">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Local owner</p>
+          <h2 id="login-heading">Sign in</h2>
+        </div>
+      </div>
+      <form id="login-form" class="stack-form">
+        <label for="password">Admin password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096">
+        <button class="button primary" type="submit">Sign in</button>
+      </form>
+      <p id="login-message" class="message" role="status" aria-live="polite"></p>
+    </section>
+
+    <div id="workspace" hidden>
+      <section class="panel" aria-labelledby="github-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Provider</p>
+            <h2 id="github-heading">GitHub</h2>
+          </div>
+          <div class="button-row">
+            <button id="github-start" class="button secondary" type="button">Start device login</button>
+            <button id="github-poll" class="button secondary" type="button">Check login</button>
+            <button id="github-logout" class="button quiet" type="button">Disconnect</button>
+          </div>
+        </div>
+        <div id="github-output" class="output" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="repository-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Remote</p>
+            <h2 id="repository-heading">Repository</h2>
+          </div>
+          <button id="sync-button" class="button primary" type="button">Sync repository</button>
+        </div>
+        <form id="repository-form" class="repo-form">
+          <label for="repo-owner">Owner</label>
+          <input id="repo-owner" name="owner" autocomplete="off" maxlength="100" required>
+          <label for="repo-name">Name</label>
+          <input id="repo-name" name="name" autocomplete="off" maxlength="100" required>
+          <button class="button secondary" type="submit">Connect</button>
+        </form>
+        <div id="repository-output" class="output" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="maintenance-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Review queue</p>
+            <h2 id="maintenance-heading">Maintenance</h2>
+          </div>
+          <div class="button-row">
+            <button id="refresh-button" class="button quiet" type="button">Refresh</button>
+            <button id="run-button" class="button primary" type="button">Run report</button>
+            <button id="run-agent-button" class="button secondary" type="button">Run Codex review</button>
+          </div>
+        </div>
+        <div class="maintenance-controls">
+          <label for="model-input">Model (optional)</label>
+          <input id="model-input" name="model" autocomplete="off" maxlength="128" placeholder="Default model">
+        </div>
+        <div class="maintenance-grid">
+          <div>
+            <h3>Current state</h3>
+            <pre id="state-output" class="output pre-output"></pre>
+          </div>
+          <div>
+            <h3>Deterministic report</h3>
+            <pre id="report-output" class="output pre-output"></pre>
+          </div>
+        </div>
+        <p id="maintenance-message" class="message" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel" aria-labelledby="proposals-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Pending review</p>
+            <h2 id="proposals-heading">Codex proposals</h2>
+          </div>
+          <button id="proposals-refresh" class="button quiet" type="button">Refresh proposals</button>
+        </div>
+        <div id="proposals-list" class="proposal-list" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="editor-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Reviewed edit</p>
+            <h2 id="editor-heading">Preview change</h2>
+          </div>
+        </div>
+        <form id="editor-form" class="editor-form">
+          <label for="change-target">Target</label>
+          <input id="change-target" name="target" placeholder="inbox/candidate.md" autocomplete="off" maxlength="512" required>
+          <label for="change-content">Content</label>
+          <textarea id="change-content" name="content" rows="16" maxlength="262144" required></textarea>
+          <label for="commit-message">Commit message</label>
+          <input id="commit-message" name="message" value="Reviewed context change" maxlength="200" required>
+          <button id="preview-button" class="button secondary" type="submit">Preview diff</button>
+        </form>
+        <div class="preview-wrap">
+          <pre id="preview-output" class="output pre-output"></pre>
+          <label id="confirm-row" class="confirm-row" hidden>
+            <input id="confirm-change" type="checkbox">
+            <span>I reviewed this preview and authorize the commit and push.</span>
+          </label>
+          <button id="apply-button" class="button primary" type="button" disabled>Commit and push reviewed change</button>
+        </div>
+        <p id="editor-message" class="message" role="status" aria-live="polite"></p>
+      </section>
+    </div>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

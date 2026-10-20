@@ -1,0 +1,13 @@
+# Deny the entire checkout by default. Only the source paths the Dockerfile
+# needs may enter the build context.
+**
+!go.mod
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!web/
+!web/**
+!deploy/
+!deploy/Dockerfile
+!deploy/entrypoint

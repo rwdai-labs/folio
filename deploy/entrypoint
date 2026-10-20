@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+# A bind mount or a new Docker volume may be root-owned. Repair only the
+# dedicated service volume, then drop privileges before reading it.
+mkdir -p /data
+chown -R context:context /data
+exec gosu context "$@"
