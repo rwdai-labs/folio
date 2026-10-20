@@ -23,12 +23,27 @@ Compose binds only `127.0.0.1:8080` on the NAS. From your workstation:
 ssh -L 8080:127.0.0.1:8080 <nas>
 ```
 
-Open `http://localhost:8080`. Read the generated administrator password in your
+Open `http://localhost:8080`. On the first start, when no administrator password
+exists, the service generates one and prints it once to its log. Read it in your
 own NAS terminal, never through chat or model tools:
+
+```bash
+docker compose logs folio
+```
+
+Look for the `administrator password:` line. It is emitted only on the start that
+creates the password and is not repeated on later starts, but it stays in the
+existing container log. The password is also stored in the private volume:
 
 ```bash
 docker compose exec -u context folio cat /data/secrets/admin-password
 ```
+
+Container logs are a credential source from that first start onward. Do not ship
+them to a shared aggregator, and keep `docker compose logs` output private. To
+keep the credential out of the log entirely, provide the password yourself
+before the first start, for example with a secret manager file mounted and
+`ADMIN_PASSWORD_FILE` set; the service then reuses that file and prints nothing.
 
 Sign in to the local Web page, click GitHub sign-in, and complete the device
 authorization on GitHub. Connect the private repository by `owner/name`.

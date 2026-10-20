@@ -85,6 +85,13 @@ type Options struct {
 	CookieSecure      bool
 	SchedulerEnabled  bool
 	SchedulerInterval time.Duration
+
+	// PasswordNotice, when set, receives the administrator password and its
+	// file path exactly once, on the start that creates the password. Starts
+	// that reuse an existing file never call it. The callback exists so the
+	// process entrypoint can surface the bootstrap credential in its own log;
+	// keep that log private because it now contains a credential.
+	PasswordNotice func(password, path string)
 }
 
 type passwordAuth struct {
@@ -199,9 +206,12 @@ func New(store Backend, opts Options) (*Server, error) {
 	}
 	opts.TrustedHosts = sortedKeys(hosts)
 	opts.TrustedOrigins = normalizeOrigins(opts.TrustedOrigins)
-	auth, err := loadPassword(opts.DataDir, opts.PasswordFile)
+	auth, generatedPassword, err := loadPassword(opts.DataDir, opts.PasswordFile)
 	if err != nil {
 		return nil, err
+	}
+	if generatedPassword != "" && opts.PasswordNotice != nil {
+		opts.PasswordNotice(generatedPassword, filepath.Clean(opts.PasswordFile))
 	}
 	return &Server{
 		store:    store,
@@ -248,64 +258,73 @@ func (s *Server) StartScheduler(ctx context.Context) {
 	}()
 }
 
-func loadPassword(dataDir, passwordFile string) (passwordAuth, error) {
+// loadPassword returns the verifier plus the plaintext password only when this
+// call created the password file. The second result is empty for every later
+// start, so callers can announce the bootstrap credential exactly once.
+func loadPassword(dataDir, passwordFile string) (passwordAuth, string, error) {
 	passwordPath := filepath.Clean(passwordFile)
 	if err := ensurePasswordParent(filepath.Dir(passwordPath)); err != nil {
-		return passwordAuth{}, errors.New("admin password directory unavailable")
+		return passwordAuth{}, "", errors.New("admin password directory unavailable")
 	}
 	if info, statErr := os.Lstat(passwordPath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return passwordAuth{}, errors.New("admin password unavailable")
+		return passwordAuth{}, "", errors.New("admin password unavailable")
 	}
+	var generatedPassword string
 	password, err := os.ReadFile(passwordPath)
 	if errors.Is(err, os.ErrNotExist) {
 		generated := make([]byte, 32)
 		if _, err := rand.Read(generated); err != nil {
-			return passwordAuth{}, errors.New("admin password unavailable")
+			return passwordAuth{}, "", errors.New("admin password unavailable")
 		}
 		password = []byte(encodePassword(generated))
 		if err := writePrivateFile(passwordPath, append(password, '\n')); err != nil {
-			return passwordAuth{}, errors.New("admin password unavailable")
+			return passwordAuth{}, "", errors.New("admin password unavailable")
 		}
+		generatedPassword = string(password)
 	} else if err != nil {
-		return passwordAuth{}, errors.New("admin password unavailable")
+		return passwordAuth{}, "", errors.New("admin password unavailable")
 	}
 	password = []byte(strings.TrimSpace(string(password)))
 	if len(password) == 0 || len(password) > 4096 {
-		return passwordAuth{}, errors.New("admin password unavailable")
+		return passwordAuth{}, "", errors.New("admin password unavailable")
 	}
 	_ = os.Chmod(passwordPath, 0o600)
 
 	hashPath := filepath.Join(dataDir, "secrets", "admin-password.hash")
 	if err := ensurePrivateDir(filepath.Dir(hashPath)); err != nil {
-		return passwordAuth{}, errors.New("admin password hash unavailable")
+		return passwordAuth{}, "", errors.New("admin password hash unavailable")
 	}
 	var salt, digest []byte
-	if raw, readErr := os.ReadFile(hashPath); readErr == nil {
-		var saved struct {
-			Salt   string `json:"salt"`
-			Digest string `json:"digest"`
-		}
-		if json.Unmarshal(raw, &saved) == nil {
-			salt, _ = hex.DecodeString(saved.Salt)
-			digest, _ = hex.DecodeString(saved.Digest)
+	// A verifier cached for an earlier password must not shadow a password that
+	// this start just generated; the plaintext file is authoritative.
+	if generatedPassword == "" {
+		if raw, readErr := os.ReadFile(hashPath); readErr == nil {
+			var saved struct {
+				Salt   string `json:"salt"`
+				Digest string `json:"digest"`
+			}
+			if json.Unmarshal(raw, &saved) == nil {
+				salt, _ = hex.DecodeString(saved.Salt)
+				digest, _ = hex.DecodeString(saved.Digest)
+			}
 		}
 	}
 	if len(salt) < 16 || len(digest) != pbkdf2Bytes {
 		salt = make([]byte, 16)
 		if _, err := rand.Read(salt); err != nil {
-			return passwordAuth{}, errors.New("admin password hash unavailable")
+			return passwordAuth{}, "", errors.New("admin password hash unavailable")
 		}
 		digest, err = derivePassword(string(password), salt)
 		if err != nil {
-			return passwordAuth{}, errors.New("admin password hash unavailable")
+			return passwordAuth{}, "", errors.New("admin password hash unavailable")
 		}
 		encoded, _ := json.Marshal(map[string]string{"salt": hex.EncodeToString(salt), "digest": hex.EncodeToString(digest)})
 		if err := writePrivateFile(hashPath, append(encoded, '\n')); err != nil {
-			return passwordAuth{}, errors.New("admin password hash unavailable")
+			return passwordAuth{}, "", errors.New("admin password hash unavailable")
 		}
 	}
 	_ = os.Chmod(hashPath, 0o600)
-	return passwordAuth{hashPath: hashPath, salt: salt, digest: digest}, nil
+	return passwordAuth{hashPath: hashPath, salt: salt, digest: digest}, generatedPassword, nil
 }
 
 func derivePassword(password string, salt []byte) ([]byte, error) {

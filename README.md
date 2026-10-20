@@ -49,6 +49,14 @@ The Codex sandbox is not an OS boundary against every readable file. Keep
 unrelated secrets off the service account and volume, and expose the Web UI only
 through loopback, an SSH tunnel, or an authenticated HTTPS reverse proxy.
 
+On the first start that has no administrator password, the service generates a
+random 256-bit password, stores it in the private volume with mode 0600, and
+prints it once to stderr so the operator can sign in without exec access. Later
+starts reuse the file and print nothing. Container logs therefore hold a
+credential from the first start onward: keep them private, and provide the
+password file yourself (or mount it via `ADMIN_PASSWORD_FILE`) when logs leave
+the host.
+
 ## Related repository
 
 The canonical context, local Python CLI, and agent integration live in a

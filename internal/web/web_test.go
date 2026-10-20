@@ -216,9 +216,104 @@ func TestLegacyPasswordHashLayoutRemainsCompatible(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dataDir, "secrets", "admin-password.hash"), []byte(legacyHash+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	auth, err := loadPassword(dataDir, passwordFile)
+	auth, generated, err := loadPassword(dataDir, passwordFile)
 	if err != nil || !auth.verify("correct horse") || auth.verify("wrong") {
 		t.Fatalf("legacy password hash was not accepted: err=%v", err)
+	}
+	if generated != "" {
+		t.Fatalf("existing password was reported as generated: %q", generated)
+	}
+}
+
+func TestGeneratedPasswordIsAnnouncedOnceThenReused(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	passwordFile := filepath.Join(root, "secrets", "admin-password")
+	assets := filepath.Join(root, "assets")
+	if err := os.MkdirAll(assets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var notices []struct{ password, path string }
+	notice := func(password, path string) {
+		notices = append(notices, struct{ password, path string }{password, path})
+	}
+	options := Options{DataDir: dataDir, PasswordFile: passwordFile, AssetsDir: assets, PasswordNotice: notice}
+
+	server, err := New(&testBackend{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("first start notices=%d, want 1", len(notices))
+	}
+	password := notices[0].password
+	if len(password) != 64 || strings.Trim(password, "0123456789abcdef") != "" {
+		t.Fatalf("announced password is not 64 hex characters: %d bytes", len(password))
+	}
+	if notices[0].path != passwordFile {
+		t.Fatalf("notice path=%q, want %q", notices[0].path, passwordFile)
+	}
+	stored, err := os.ReadFile(passwordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(stored)) != password {
+		t.Fatal("announced password does not match the stored file")
+	}
+	info, err := os.Stat(passwordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("password file mode=%v, want 0600", info.Mode().Perm())
+	}
+	if !server.auth.verify(password) {
+		t.Fatal("announced password does not authenticate")
+	}
+
+	restarted, err := New(&testBackend{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("second start notices=%d, want 1", len(notices))
+	}
+	if !restarted.auth.verify(password) {
+		t.Fatal("second start does not accept the stored password")
+	}
+
+	// An operator-provided password file is authoritative and never announced.
+	provided := filepath.Join(root, "provided", "admin-password")
+	if err := os.MkdirAll(filepath.Dir(provided), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provided, []byte("correct horse\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(&testBackend{}, Options{DataDir: filepath.Join(root, "other-data"), PasswordFile: provided, AssetsDir: assets, PasswordNotice: notice}); err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("provided password notices=%d, want 1", len(notices))
+	}
+
+	// Deleting the password file regenerates the credential. The cached
+	// verifier for the old password must not shadow the announced one.
+	if err := os.Remove(passwordFile); err != nil {
+		t.Fatal(err)
+	}
+	regenerated, err := New(&testBackend{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 2 {
+		t.Fatalf("reset start notices=%d, want 2", len(notices))
+	}
+	if !regenerated.auth.verify(notices[1].password) {
+		t.Fatal("regenerated password does not authenticate")
+	}
+	if regenerated.auth.verify(password) {
+		t.Fatal("replaced password still authenticates")
 	}
 }
 
