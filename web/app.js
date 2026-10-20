@@ -858,7 +858,7 @@
     $("fact-scheduler").textContent = t(service.scheduler_enabled ? "state.enabled" : "state.disabled");
     const scheduler = data.scheduler || {};
     const latest = state.automation && state.automation.latest && state.automation.latest.run_id ? state.automation.latest : null;
-    const lastRun = latest && latest.finished_at ? latest.finished_at : scheduler.finished_at;
+    const lastRun = latest ? latest.finished_at || latest.started_at : scheduler.finished_at;
     $("fact-last-run").textContent = lastRun ? formatTime(lastRun) || lastRun : t("automation.never");
 
     if (connected && repository.full_name && !$("repo-owner").value.trim() && !$("repo-name").value.trim()) {
@@ -1019,13 +1019,14 @@
     const meta = document.createElement("dl");
     meta.className = "run-meta";
     const pull = run.pull || {};
+    if (run.stage) addRunMeta(meta, t("automation.stage"), translateKnown(`automation.stage.${run.stage}`, run.stage));
     addRunMeta(meta, t("automation.pull"), pull.status ? `${pull.status} · ${shortHash(pull.head)}` : "—");
     addRunMeta(meta, t("automation.commit"), shortHash(run.commit));
     const push = run.push || {};
     addRunMeta(meta, t("automation.push"), push.status || "—");
     const edits = Array.isArray(run.edits) ? run.edits : [];
     addRunMeta(meta, t("automation.files"), String(edits.length));
-    addRunMeta(meta, t("automation.duration"), formatDuration(run.duration_ms));
+    addRunMeta(meta, t("automation.duration"), run.status === "running" ? "—" : formatDuration(run.duration_ms));
     addRunMeta(meta, t("automation.input"), shortHash(run.input_digest));
     container.appendChild(meta);
 
@@ -1140,8 +1141,9 @@
     const service = (state.lastState && state.lastState.service) || {};
     const enabled = Boolean(service.scheduler_enabled);
     const badge = $("automation-badge");
+    const latest = state.automation && state.automation.latest && state.automation.latest.run_id ? state.automation.latest : null;
     const jobs = Array.isArray(service.jobs) ? service.jobs : [];
-    const running = jobs.some((job) => job && job.status === "running" && (job.name === "scheduler:automation" || String(job.name).startsWith("automation:")));
+    const running = Boolean(latest && latest.status === "running") || jobs.some((job) => job && job.status === "running" && (job.name === "scheduler:automation" || String(job.name).startsWith("automation:")));
     if (badge) {
       if (running) {
         badge.dataset.state = "running";
@@ -1155,9 +1157,13 @@
     if (schedule) schedule.textContent = enabled ? t("automation.every", { value: formatInterval(service.scheduler_interval_seconds) }) : t("automation.disabled");
     const next = $("automation-next");
     if (next) next.textContent = enabled && service.scheduler_next_at ? formatTime(service.scheduler_next_at) || service.scheduler_next_at : t("automation.none");
-    const latest = state.automation && state.automation.latest && state.automation.latest.run_id ? state.automation.latest : null;
+    const scheduler = (state.lastState && state.lastState.scheduler) || {};
+    const lastTime = latest ? latest.finished_at || latest.started_at : scheduler.finished_at;
+    const lastText = lastTime ? formatTime(lastTime) || lastTime : t("automation.never");
     const last = $("automation-last");
-    if (last) last.textContent = latest && latest.finished_at ? formatTime(latest.finished_at) || latest.finished_at : t("automation.never");
+    if (last) last.textContent = lastText;
+    const sidebarLast = $("fact-last-run");
+    if (sidebarLast) sidebarLast.textContent = lastText;
 
     const showingSelected = Boolean(latest && state.selectedRunId && latest.run_id !== state.selectedRunId);
     if (!showingSelected) renderLatestRun(latest);

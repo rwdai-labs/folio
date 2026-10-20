@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func installAutoFixture(t *testing.T, store *Store, report string) {
@@ -254,5 +255,97 @@ func TestHasYAMLFrontmatter(t *testing.T) {
 		if got := hasYAMLFrontmatter(testCase.text); got != testCase.want {
 			t.Fatalf("hasYAMLFrontmatter(%q)=%v want %v", testCase.text, got, testCase.want)
 		}
+	}
+}
+
+func TestAutomationReadsDoNotWaitForRepositoryLock(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.RunAutomation("manual", "codex", ""); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := store.ListAutomation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, ok := listing["latest"].(map[string]any)
+	if !ok {
+		t.Fatalf("latest=%v", listing["latest"])
+	}
+	runID, _ := latest["run_id"].(string)
+
+	store.threadMu.Lock()
+	defer store.threadMu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		if _, err := store.ListAutomation(); err != nil {
+			done <- err
+			return
+		}
+		if _, err := store.AutomationRun(runID); err != nil {
+			done <- err
+			return
+		}
+		done <- nil
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("automation reads blocked on the repository lock")
+	}
+}
+
+func TestRunAutomationPublishesRunningAudit(t *testing.T) {
+	store := newGitStore(t)
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	script := "#!/bin/sh\n" +
+		"while [ \"$#\" -gt 0 ]; do\n" +
+		"  case \"$1\" in\n" +
+		"    --auto-report) shift; report=\"$1\" ;;\n" +
+		"  esac\n" +
+		"  shift\n" +
+		"done\n" +
+		"sleep 1\n" +
+		"cat > \"$report\" <<'JSON'\n" +
+		`{"version":1,"status":"pending-apply","summary":"running audit","edits":[{"source":"inbox/candidate.md","target":"core/profile.md","claim_type":"fact","reason":"test","content":"new\n"}]}` + "\n" +
+		"JSON\n"
+	if err := os.WriteFile(filepath.Join(store.toolRoot, "folio"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		result, err := store.RunAutomation("manual", "codex", "")
+		if err == nil && result["status"] != "pushed" {
+			err = os.ErrInvalid
+		}
+		done <- err
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	seenRunning := false
+	for time.Now().Before(deadline) {
+		listing, err := store.ListAutomation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if latest, ok := listing["latest"].(map[string]any); ok && latest["status"] == "running" {
+			seenRunning = true
+			if latest["stage"] != "organize" && latest["stage"] != "validate" {
+				t.Fatalf("unexpected running stage: %v", latest["stage"])
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !seenRunning {
+		t.Fatal("running audit was never visible")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

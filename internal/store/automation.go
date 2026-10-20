@@ -91,19 +91,23 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 		return nil, errStore("automation run could not start")
 	}
 	run := map[string]any{
-		"version":    1,
-		"run_id":     runID,
-		"trigger":    trigger,
-		"status":     "running",
-		"stage":      "repository",
-		"started_at": started.UTC().Format(time.RFC3339Nano),
-		"runner":     runner,
-		"summary":    "",
+		"version":     1,
+		"run_id":      runID,
+		"trigger":     trigger,
+		"status":      "running",
+		"stage":       "repository",
+		"started_at":  started.UTC().Format(time.RFC3339Nano),
+		"runner":      runner,
+		"summary":     "",
+		"duration_ms": 0,
 	}
 	if model != "" {
 		run["model"] = model
 	}
 	run["model_available"] = s.runnerAvailable(runner)
+	if err := s.saveAutomationRun(run); err != nil {
+		return nil, err
+	}
 
 	finish := func(status, stage, reason string, extra map[string]any) (map[string]any, error) {
 		run["status"] = status
@@ -139,6 +143,10 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 		return finish("failed", "pull", "repository_sync_failed", nil)
 	}
 	run["pull"] = automationPullSummary(pull)
+	run["stage"] = "organize"
+	if err := s.saveAutomationRun(run); err != nil {
+		return nil, err
+	}
 
 	if !s.runnerAvailable(runner) {
 		run["summary"] = "Repository synced; no review runner is available."
@@ -150,9 +158,16 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 	if err != nil {
 		return finish("failed", "organize", "maintenance_operation_failed", nil)
 	}
+	if secretMaterialRE.MatchString(report.Summary) {
+		return finish("failed", "organize", "content_rejected", nil)
+	}
 	run["summary"] = publicText(report.Summary, maxAutoSummaryRunes)
 	run["skipped"] = report.Skipped
 	run["input_digest"] = publicText(report.InputDigest, 64)
+	run["stage"] = "validate"
+	if err := s.saveAutomationRun(run); err != nil {
+		return nil, err
+	}
 	if len(report.Edits) == 0 {
 		if strings.TrimSpace(report.Summary) == "" {
 			run["summary"] = "No context changes were needed."
@@ -479,50 +494,46 @@ func (s *Store) recordSchedulerRun(run map[string]any) error {
 	return s.saveState(saved)
 }
 
-// ListAutomation returns bounded summaries plus the latest full run. Diffs
-// are retained in the private runtime and only returned to the authenticated
-// owner.
+// ListAutomation reads immutable, atomically replaced run records without the
+// repository lock. A long model call must not hide progress from the owner.
 func (s *Store) ListAutomation() (map[string]any, error) {
-	return s.withLock(func() (map[string]any, error) {
-		files, err := s.automationRunFiles()
-		if err != nil {
-			return nil, err
+	files, err := s.automationRunFiles()
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]any, 0, len(files))
+	var latest map[string]any
+	for index, name := range files {
+		value, loadErr := s.loadJSON(filepath.Join(s.runsDir, name), maxAutoRunBytes)
+		if loadErr != nil {
+			continue
 		}
-		runs := make([]any, 0, len(files))
-		var latest map[string]any
-		for index, name := range files {
-			value, loadErr := s.loadJSON(filepath.Join(s.runsDir, name), maxAutoRunBytes)
-			if loadErr != nil {
-				continue
-			}
-			run, ok := value.(map[string]any)
-			if !ok {
-				continue
-			}
-			if index == 0 {
-				latest = run
-			}
-			runs = append(runs, automationSummary(run))
+		run, ok := value.(map[string]any)
+		if !ok {
+			continue
 		}
-		return map[string]any{"runs": runs, "count": len(runs), "latest": latest}, nil
-	})
+		if index == 0 {
+			latest = run
+		}
+		runs = append(runs, automationSummary(run))
+	}
+	return map[string]any{"runs": runs, "count": len(runs), "latest": latest}, nil
 }
 
+// AutomationRun reads one immutable run record without the repository lock.
 func (s *Store) AutomationRun(runID string) (map[string]any, error) {
 	if !autoRunIDRE.MatchString(runID) {
 		return nil, errStore("automation run id is invalid")
 	}
-	return s.withLock(func() (map[string]any, error) {
-		value, err := s.loadJSON(filepath.Join(s.runsDir, runID+".json"), maxAutoRunBytes)
-		if err != nil {
-			return nil, errStore("automation run is unavailable")
-		}
-		run, ok := value.(map[string]any)
-		if !ok || responseString(run, "run_id") != runID {
-			return nil, errStore("automation run is unavailable")
-		}
-		return run, nil
-	})
+	value, err := s.loadJSON(filepath.Join(s.runsDir, runID+".json"), maxAutoRunBytes)
+	if err != nil {
+		return nil, errStore("automation run is unavailable")
+	}
+	run, ok := value.(map[string]any)
+	if !ok || responseString(run, "run_id") != runID {
+		return nil, errStore("automation run is unavailable")
+	}
+	return run, nil
 }
 
 func (s *Store) automationRunFiles() ([]string, error) {
