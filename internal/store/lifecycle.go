@@ -70,97 +70,93 @@ func (s *Store) ConnectRepository(fullName string) (map[string]any, error) {
 // SyncRepository fast-forwards a clean checkout from its fixed origin.
 func (s *Store) SyncRepository() (map[string]any, error) {
 	return s.withLock(func() (map[string]any, error) {
-		if err := s.requireRepository(); err != nil {
-			return nil, err
-		}
-		if _, err := s.verifyRemote(s.configuredRemote()); err != nil {
-			return nil, err
-		}
-		if err := s.requireCleanCheckout(); err != nil {
-			return nil, err
-		}
-		branch, err := s.branch()
-		if err != nil {
-			return nil, err
-		}
-		remoteHead, err := s.remoteHead(branch)
-		if err != nil {
-			return nil, err
-		}
-		localHead, err := s.gitHead()
-		if err != nil {
-			return nil, err
-		}
-		if remoteHead == localHead {
-			if err := s.recordRepositoryHead(localHead, branch); err != nil {
-				return nil, err
-			}
-			return map[string]any{"status": "up_to_date", "branch": branch, "head": localHead}, nil
-		}
-		if _, err := s.runGit([]string{"fetch", "--no-tags", "origin", "refs/heads/" + branch + ":refs/remotes/origin/" + branch}, s.repositoryDir, 5*time.Minute, nil); err != nil {
-			return nil, errStore("repository sync failed")
-		}
-		if _, err := s.runGit([]string{"merge", "--ff-only", "refs/remotes/origin/" + branch}, s.repositoryDir, 2*time.Minute, nil); err != nil {
-			return nil, errStore("repository sync failed")
-		}
-		head, err := s.gitHead()
-		if err != nil {
-			return nil, err
-		}
-		if err := s.recordRepositoryHead(head, branch); err != nil {
-			return nil, err
-		}
-		return map[string]any{"status": "synced", "branch": branch, "head": head, "remote": remoteHead}, nil
+		return s.syncRepositoryLocked()
 	})
+}
+
+func (s *Store) syncRepositoryLocked() (map[string]any, error) {
+	if err := s.requireRepository(); err != nil {
+		return nil, err
+	}
+	if _, err := s.verifyRemote(s.configuredRemote()); err != nil {
+		return nil, err
+	}
+	if err := s.requireCleanCheckout(); err != nil {
+		return nil, err
+	}
+	branch, err := s.branch()
+	if err != nil {
+		return nil, err
+	}
+	remoteHead, err := s.remoteHead(branch)
+	if err != nil {
+		return nil, err
+	}
+	localHead, err := s.gitHead()
+	if err != nil {
+		return nil, err
+	}
+	if remoteHead == localHead {
+		if err := s.recordRepositoryHead(localHead, branch); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "up_to_date", "branch": branch, "head": localHead}, nil
+	}
+	if _, err := s.runGit([]string{"fetch", "--no-tags", "origin", "refs/heads/" + branch + ":refs/remotes/origin/" + branch}, s.repositoryDir, 5*time.Minute, nil); err != nil {
+		return nil, errStore("repository sync failed")
+	}
+	if _, err := s.runGit([]string{"merge", "--ff-only", "refs/remotes/origin/" + branch}, s.repositoryDir, 2*time.Minute, nil); err != nil {
+		return nil, errStore("repository sync failed")
+	}
+	head, err := s.gitHead()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.recordRepositoryHead(head, branch); err != nil {
+		return nil, err
+	}
+	return map[string]any{"status": "synced", "branch": branch, "head": head, "remote": remoteHead}, nil
 }
 
 // RunMaintenance invokes only the installed folio binary. The checkout is
 // supplied as data through explicit environment variables.
-func (s *Store) RunMaintenance(mode, model string) (map[string]any, error) {
+func (s *Store) RunMaintenance(mode, model, runner string) (map[string]any, error) {
 	if mode != "report" && mode != "agent" {
 		return nil, errStore("maintenance mode must be report or agent")
+	}
+	runner, err := normalizeRunner(runner)
+	if err != nil {
+		return nil, err
 	}
 	if model != "" && !modelRE.MatchString(model) {
 		return nil, errStore("model name is invalid")
 	}
+	if runner == "dsh" && model != "" {
+		return nil, errStore("model must be empty for the dsh runner")
+	}
 	return s.withLock(func() (map[string]any, error) {
-		return s.runMaintenanceLocked(mode, model)
+		return s.runMaintenanceLocked(mode, model, runner)
 	})
 }
 
-// SchedulerTick runs one serialized proposal-only agent tick.
+func normalizeRunner(runner string) (string, error) {
+	if runner == "" {
+		return "codex", nil
+	}
+	if runner != "codex" && runner != "dsh" {
+		return "", errStore("runner must be codex or dsh")
+	}
+	return runner, nil
+}
+
+// SchedulerTick runs one serialized automatic maintenance pass: sync the
+// checkout, ask the review runner for bounded edits, validate them, commit,
+// and push. The full result is persisted as an automation run.
 func (s *Store) SchedulerTick() (map[string]any, error) {
-	return s.withLock(func() (map[string]any, error) {
-		var result map[string]any
-		var err error
-		if !s.modelAvailable() {
-			result = map[string]any{
-				"status":          "skipped",
-				"mode":            "agent",
-				"model_available": false,
-				"reason":          "model_unavailable",
-			}
-		} else {
-			result, err = s.runMaintenanceLocked("agent", "")
-			if err != nil {
-				return nil, err
-			}
-		}
-		saved := s.loadState()
-		saved["scheduler"] = map[string]any{
-			"status":         resultString(result, "status", "unknown"),
-			"finished_at":    nowString(),
-			"proposals_only": true,
-		}
-		if err := s.saveState(saved); err != nil {
-			return nil, err
-		}
-		result["proposals_only"] = true
-		return result, nil
-	})
+	return s.RunAutomation("scheduler", "", "codex")
 }
 
-func (s *Store) runMaintenanceLocked(mode, model string) (map[string]any, error) {
+func (s *Store) runMaintenanceLocked(mode, model, runner string) (map[string]any, error) {
 	if err := s.requireRepository(); err != nil {
 		return nil, err
 	}
@@ -168,11 +164,12 @@ func (s *Store) runMaintenanceLocked(mode, model string) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
-	available := s.modelAvailable()
+	available := s.runnerAvailable(runner)
 	if mode == "agent" && !available {
 		return map[string]any{
 			"status":          "skipped",
 			"mode":            mode,
+			"runner":          runner,
 			"model_available": false,
 			"reason":          "model_unavailable",
 		}, nil
@@ -180,15 +177,16 @@ func (s *Store) runMaintenanceLocked(mode, model string) (map[string]any, error)
 	if mode == "report" {
 		command = append(command, "maintain", "--device", "Docker", "--report-dir", s.reportsDir)
 	} else {
-		command = append(command, "agent", "--device", "Docker", "--runtime-dir", s.runtimeDir)
+		command = append(command, "agent", "--device", "Docker", "--runtime-dir", s.runtimeDir, "--runner", runner)
 		if model != "" {
 			command = append(command, "--model", model)
 		}
 	}
 	result, err := s.runCommand(command, s.toolRoot, "", 15*time.Minute, true, map[string]string{
-		"PERSONAL_CONTEXT_ROOT":    s.repositoryDir,
-		"PERSONAL_CONTEXT_RUNTIME": s.runtimeDir,
-		"CODEX_HOME":               s.codexDir,
+		"FOLIO_CONTEXT_ROOT": s.repositoryDir,
+		"FOLIO_RUNTIME":      s.runtimeDir,
+		"CODEX_HOME":         s.codexDir,
+		"DSH_HOME":           s.dshDir,
 	})
 	if err != nil {
 		return nil, errStore("maintenance operation failed")
@@ -196,6 +194,7 @@ func (s *Store) runMaintenanceLocked(mode, model string) (map[string]any, error)
 	response := map[string]any{
 		"status":          "completed",
 		"mode":            mode,
+		"runner":          runner,
 		"model_available": available,
 		"finished_at":     nowString(),
 	}
@@ -216,6 +215,7 @@ func (s *Store) runMaintenanceLocked(mode, model string) (map[string]any, error)
 	saved["maintenance"] = map[string]any{
 		"status":          "completed",
 		"mode":            mode,
+		"runner":          runner,
 		"model_available": available,
 		"finished_at":     response["finished_at"],
 	}

@@ -61,10 +61,12 @@ type Store struct {
 	toolRoot        string
 	repositoryDir   string
 	runtimeDir      string
+	runsDir         string
 	reviewsDir      string
 	pendingDir      string
 	reportsDir      string
 	codexDir        string
+	dshDir          string
 	ghConfigDir     string
 	homeDir         string
 	hooksDir        string
@@ -105,10 +107,12 @@ func New(dataDir, toolRoot string) (*Store, error) {
 		toolRoot:           tools,
 		repositoryDir:      filepath.Join(data, "repository"),
 		runtimeDir:         filepath.Join(data, "runtime"),
+		runsDir:            filepath.Join(data, "runtime", "runs"),
 		reviewsDir:         filepath.Join(data, "runtime", "reviews"),
 		pendingDir:         filepath.Join(data, "runtime", "pending-reviews"),
 		reportsDir:         filepath.Join(data, "runtime", "reports"),
 		codexDir:           filepath.Join(data, "codex"),
+		dshDir:             filepath.Join(data, "dsh"),
 		ghConfigDir:        filepath.Join(data, "secrets", "gh"),
 		homeDir:            filepath.Join(data, "home"),
 		hooksDir:           filepath.Join(data, "git-hooks"),
@@ -152,6 +156,10 @@ func (s *Store) State() (map[string]any, error) {
 				"available":        s.modelAvailable(),
 				"provider_runtime": s.codexDir,
 			},
+			"runners": map[string]any{
+				"codex": map[string]any{"available": s.runnerAvailable("codex")},
+				"dsh":   map[string]any{"available": s.runnerAvailable("dsh")},
+			},
 			"maintenance": map[string]any{
 				"status":      publicText(maintenance["status"], 64),
 				"mode":        publicText(maintenance["mode"], 32),
@@ -160,6 +168,8 @@ func (s *Store) State() (map[string]any, error) {
 			"scheduler": map[string]any{
 				"status":      publicText(scheduler["status"], 64),
 				"finished_at": publicText(scheduler["finished_at"], 64),
+				"last_run_id": publicText(scheduler["last_run_id"], 64),
+				"trigger":     publicText(scheduler["trigger"], 16),
 			},
 		}, nil
 	})
@@ -230,8 +240,8 @@ func isWithin(candidate, root string) bool {
 
 func (s *Store) ensureDirs() error {
 	paths := []string{
-		s.dataDir, s.runtimeDir, s.reviewsDir, s.pendingDir, s.reportsDir,
-		s.codexDir, s.ghConfigDir, s.homeDir, s.hooksDir,
+		s.dataDir, s.runtimeDir, s.runsDir, s.reviewsDir, s.pendingDir, s.reportsDir,
+		s.codexDir, s.dshDir, s.ghConfigDir, s.homeDir, s.hooksDir,
 	}
 	for _, dir := range paths {
 		if err := ensurePrivateDir(dir); err != nil {
@@ -425,6 +435,20 @@ func (s *Store) repositoryConnected(repository map[string]any) bool {
 }
 
 func (s *Store) modelAvailable() bool {
-	_, err := exec.LookPath("codex")
-	return err == nil
+	return s.runnerAvailable("codex")
+}
+
+// runnerAvailable reports whether the selected review runner CLI is installed.
+// The scheduler and model object keep using the Codex result for compatibility.
+func (s *Store) runnerAvailable(runner string) bool {
+	switch runner {
+	case "", "codex":
+		_, err := exec.LookPath("codex")
+		return err == nil
+	case "dsh":
+		_, err := exec.LookPath("dsh")
+		return err == nil
+	default:
+		return false
+	}
 }

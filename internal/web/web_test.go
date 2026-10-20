@@ -16,20 +16,28 @@ import (
 
 type testBackend struct {
 	mu          sync.Mutex
-	maintenance []struct{ mode, model string }
+	maintenance []struct{ mode, model, runner string }
 	preview     []struct {
 		reportID string
 		index    int
 		target   string
 		content  string
 	}
-	applied  []struct{ reviewID, message string }
-	syncRun  chan struct{}
-	syncDone chan struct{}
+	applied    []struct{ reviewID, message string }
+	automation []struct{ trigger, runner, model string }
+	syncRun    chan struct{}
+	syncDone   chan struct{}
 }
 
 func (b *testBackend) State() (map[string]any, error) {
-	return map[string]any{"provider": map[string]any{"access_token": "secret"}, "script": "<script>"}, nil
+	return map[string]any{
+		"provider": map[string]any{"access_token": "secret"},
+		"script":   "<script>",
+		"runners": map[string]any{
+			"codex": map[string]any{"available": true},
+			"dsh":   map[string]any{"available": false},
+		},
+	}, nil
 }
 func (b *testBackend) GitHubStart() (map[string]any, error) {
 	return map[string]any{"status": "pending", "user_code": "ABCD-EFGH", "device_code": "secret"}, nil
@@ -55,36 +63,27 @@ func (b *testBackend) SyncRepository() (map[string]any, error) {
 	}
 	return map[string]any{"status": "synced"}, nil
 }
-func (b *testBackend) RunMaintenance(mode, model string) (map[string]any, error) {
+func (b *testBackend) RunMaintenance(mode, model, runner string) (map[string]any, error) {
 	b.mu.Lock()
-	b.maintenance = append(b.maintenance, struct{ mode, model string }{mode, model})
+	b.maintenance = append(b.maintenance, struct{ mode, model, runner string }{mode, model, runner})
 	b.mu.Unlock()
-	return map[string]any{"mode": mode, "model": model, "report": "safe"}, nil
+	return map[string]any{"mode": mode, "model": model, "runner": runner, "report": "safe"}, nil
+}
+func (b *testBackend) RunAutomation(trigger, runner, model string) (map[string]any, error) {
+	b.mu.Lock()
+	b.automation = append(b.automation, struct{ trigger, runner, model string }{trigger, runner, model})
+	b.mu.Unlock()
+	return map[string]any{"run_id": "20261020T000000.000000000Z-abcdef12", "status": "pushed", "trigger": trigger, "runner": runner}, nil
+}
+func (b *testBackend) ListAutomation() (map[string]any, error) {
+	return map[string]any{"runs": []any{map[string]any{"run_id": "20261020T000000.000000000Z-abcdef12", "status": "pushed"}}, "count": 1, "latest": map[string]any{"run_id": "20261020T000000.000000000Z-abcdef12", "status": "pushed", "edits": []any{map[string]any{"target": "core/profile.md", "diff": "-old\n+new"}}}}, nil
+}
+func (b *testBackend) AutomationRun(runID string) (map[string]any, error) {
+	return map[string]any{"run_id": runID, "status": "pushed"}, nil
 }
 func (b *testBackend) SchedulerTick() (map[string]any, error) {
 	return map[string]any{"status": "skipped"}, nil
 }
-func (b *testBackend) ListProposals() (map[string]any, error) {
-	return map[string]any{"reports": []any{map[string]any{"report_id": "review-1", "proposals": []any{map[string]any{"index": 0, "target": "inbox/example.md", "content": "new"}}}}}, nil
-}
-func (b *testBackend) PreviewChange(reportID string, index int, target, content string) (map[string]any, error) {
-	b.mu.Lock()
-	b.preview = append(b.preview, struct {
-		reportID string
-		index    int
-		target   string
-		content  string
-	}{reportID, index, target, content})
-	b.mu.Unlock()
-	return map[string]any{"review_id": "review-id", "diff": "-old\n+new"}, nil
-}
-func (b *testBackend) ApplyChange(reviewID, message string) (map[string]any, error) {
-	b.mu.Lock()
-	b.applied = append(b.applied, struct{ reviewID, message string }{reviewID, message})
-	b.mu.Unlock()
-	return map[string]any{"status": "applied"}, nil
-}
-
 func testServer(t *testing.T, backend *testBackend) (*httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -92,7 +91,7 @@ func testServer(t *testing.T, backend *testBackend) (*httptest.Server, string) {
 	if err := os.MkdirAll(assets, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for name, body := range map[string]string{"index.html": "index", "app.js": "script", "styles.css": "style", "secret.txt": "secret"} {
+	for name, body := range map[string]string{"index.html": "index", "app.js": "script", "i18n.js": "i18n", "styles.css": "style", "secret.txt": "secret"} {
 		if err := os.WriteFile(filepath.Join(assets, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -180,6 +179,12 @@ func TestHTTPBoundaryAndStaticAllowlist(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Fatalf("secret static status=%d", status)
 	}
+	for _, asset := range []string{"/app.js", "/i18n.js", "/styles.css"} {
+		status, _, _ = client.request(t, http.MethodGet, asset, nil, "")
+		if status != http.StatusOK {
+			t.Fatalf("%s status=%d", asset, status)
+		}
+	}
 	status, _, _ = client.request(t, http.MethodPost, "/api/login", map[string]any{"password": "correct horse"}, "http://localhost:1")
 	if status != http.StatusForbidden {
 		t.Fatalf("cross-origin login status=%d", status)
@@ -188,6 +193,10 @@ func TestHTTPBoundaryAndStaticAllowlist(t *testing.T) {
 	status, _, result := client.request(t, http.MethodGet, "/api/state", nil, "")
 	if status != http.StatusOK || result["script"] != "<script>" {
 		t.Fatalf("state status=%d result=%v", status, result)
+	}
+	runners, ok := result["runners"].(map[string]any)
+	if !ok || runners["codex"] == nil || runners["dsh"] == nil {
+		t.Fatalf("state runners=%v", result["runners"])
 	}
 	encoded, _ := json.Marshal(result)
 	if strings.Contains(string(encoded), "secret") {
@@ -323,6 +332,76 @@ func TestResponseRedactsSecretsInsideText(t *testing.T) {
 	}
 }
 
+func waitJobForTest(t *testing.T, client *testClient, jobID string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, _, job := client.request(t, http.MethodGet, "/api/jobs/"+jobID, nil, "")
+		if status != http.StatusOK {
+			t.Fatalf("job status=%d result=%v", status, job)
+		}
+		switch job["status"] {
+		case "succeeded":
+			if _, ok := job["result"].(map[string]any); !ok {
+				t.Fatalf("job result shape=%v", job)
+			}
+			return job
+		case "failed":
+			t.Fatalf("job failed: %v", job)
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("job did not finish: %v", job)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestMaintenanceRunnerSelectionAndValidation(t *testing.T) {
+	backend := &testBackend{}
+	server, _ := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+	client.login(t, "correct horse")
+	origin := server.URL
+
+	for _, testCase := range []struct {
+		name    string
+		payload map[string]any
+		code    string
+	}{
+		{"unknown runner", map[string]any{"mode": "agent", "runner": "other"}, "invalid_runner"},
+		{"non-string runner", map[string]any{"mode": "agent", "runner": 7}, "invalid_runner"},
+		{"null runner", map[string]any{"mode": "agent", "runner": nil}, "invalid_runner"},
+		{"dsh with model", map[string]any{"mode": "agent", "runner": "dsh", "model": "gpt-test"}, "invalid_model"},
+	} {
+		status, _, result := client.request(t, http.MethodPost, "/api/maintenance", testCase.payload, origin)
+		if status != http.StatusBadRequest || result["error"] != testCase.code {
+			t.Fatalf("%s status=%d result=%v", testCase.name, status, result)
+		}
+	}
+
+	status, _, accepted := client.request(t, http.MethodPost, "/api/maintenance", map[string]any{"mode": "agent", "runner": "dsh"}, origin)
+	if status != http.StatusAccepted || accepted["runner"] != "dsh" {
+		t.Fatalf("dsh accepted status=%d result=%v", status, accepted)
+	}
+	job := waitJobForTest(t, client, accepted["job_id"].(string))
+	if job["name"] != "maintenance:dsh:agent" {
+		t.Fatalf("dsh job name=%v", job["name"])
+	}
+
+	status, _, defaulted := client.request(t, http.MethodPost, "/api/maintenance", map[string]any{"mode": "report", "runner": ""}, origin)
+	if status != http.StatusAccepted || defaulted["runner"] != "codex" {
+		t.Fatalf("default runner status=%d result=%v", status, defaulted)
+	}
+	waitJobForTest(t, client, defaulted["job_id"].(string))
+
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.maintenance) != 2 || backend.maintenance[0].runner != "dsh" || backend.maintenance[0].model != "" || backend.maintenance[1].runner != "codex" {
+		t.Fatalf("maintenance calls=%v", backend.maintenance)
+	}
+}
+
 func TestMaintenanceModesAndIdempotentJobs(t *testing.T) {
 	backend := &testBackend{syncRun: make(chan struct{}, 1), syncDone: make(chan struct{})}
 	server, _ := testServer(t, backend)
@@ -338,41 +417,18 @@ func TestMaintenanceModesAndIdempotentJobs(t *testing.T) {
 	if status != http.StatusAccepted {
 		t.Fatalf("agent status=%d result=%v", status, agent)
 	}
-	waitJob := func(jobID string) map[string]any {
-		t.Helper()
-		deadline := time.Now().Add(time.Second)
-		for {
-			status, _, job := client.request(t, http.MethodGet, "/api/jobs/"+jobID, nil, "")
-			if status != http.StatusOK {
-				t.Fatalf("job status=%d result=%v", status, job)
-			}
-			switch job["status"] {
-			case "succeeded":
-				if _, ok := job["result"].(map[string]any); !ok {
-					t.Fatalf("job result shape=%v", job)
-				}
-				return job
-			case "failed":
-				t.Fatalf("job failed: %v", job)
-			}
-			if !time.Now().Before(deadline) {
-				t.Fatalf("job did not finish: %v", job)
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}
-	waitJob(report["job_id"].(string))
-	waitJob(agent["job_id"].(string))
+	waitJobForTest(t, client, report["job_id"].(string))
+	waitJobForTest(t, client, agent["job_id"].(string))
 
 	backend.mu.Lock()
-	calls := make(map[string]string, len(backend.maintenance))
+	calls := make(map[string]struct{ model, runner string }, len(backend.maintenance))
 	for _, call := range backend.maintenance {
 		if _, exists := calls[call.mode]; exists {
 			t.Fatalf("duplicate maintenance mode calls=%v", backend.maintenance)
 		}
-		calls[call.mode] = call.model
+		calls[call.mode] = struct{ model, runner string }{call.model, call.runner}
 	}
-	if len(calls) != 2 || calls["report"] != "" || calls["agent"] != "gpt-test" {
+	if len(calls) != 2 || calls["report"].model != "" || calls["agent"].model != "gpt-test" || calls["report"].runner != "codex" || calls["agent"].runner != "codex" {
 		t.Fatalf("maintenance calls=%v", backend.maintenance)
 	}
 	backend.mu.Unlock()
@@ -389,67 +445,74 @@ func TestMaintenanceModesAndIdempotentJobs(t *testing.T) {
 	close(backend.syncDone)
 }
 
-func TestPreviewIsSessionBoundAndUsesBackendReviewID(t *testing.T) {
+func TestLegacyManualCommitRoutesAreGone(t *testing.T) {
 	backend := &testBackend{}
 	server, _ := testServer(t, backend)
 	defer server.Close()
 	client := &testClient{server: server}
 	client.login(t, "correct horse")
 	origin := server.URL
-	status, _, preview := client.request(t, http.MethodPost, "/api/proposals/preview", map[string]any{
-		"report_id": "review-1", "proposal_index": 0, "target": "inbox/example.md", "content": "new",
-	}, origin)
-	if status != http.StatusOK || preview["preview_id"] == nil {
-		t.Fatalf("preview status=%d result=%v", status, preview)
+	for _, path := range []string{"/api/proposals", "/api/proposals/preview", "/api/proposals/apply", "/api/apply"} {
+		method := http.MethodPost
+		if path == "/api/proposals" {
+			method = http.MethodGet
+		}
+		status, _, result := client.request(t, method, path, map[string]any{}, origin)
+		if status != http.StatusNotFound || result["error"] != "not_found" {
+			t.Fatalf("%s status=%d result=%v", path, status, result)
+		}
 	}
-	previewID := preview["preview_id"].(string)
-	otherClient := &testClient{server: server}
-	otherClient.login(t, "correct horse")
-	status, _, _ = otherClient.request(t, http.MethodPost, "/api/proposals/apply", map[string]any{
-		"confirm": true, "preview_id": previewID, "target": "inbox/example.md", "content": "new", "message": "review",
-	}, origin)
-	if status != http.StatusConflict {
-		t.Fatalf("cross-session apply status=%d", status)
+}
+
+func TestAutomationEndpointsExposeAuditAndAcceptRun(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/automation", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated automation status=%d", status)
 	}
-	status, _, _ = client.request(t, http.MethodPost, "/api/proposals/apply", map[string]any{
-		"confirm": true, "preview_id": previewID, "target": "inbox/example.md", "content": "changed", "message": "review",
-	}, origin)
-	if status != http.StatusConflict {
-		t.Fatalf("mismatch apply status=%d", status)
+	client.login(t, password)
+
+	status, _, listing := client.request(t, http.MethodGet, "/api/automation", nil, "")
+	if status != http.StatusOK || listing["count"] != float64(1) {
+		t.Fatalf("automation listing status=%d result=%v", status, listing)
 	}
-	status, _, _ = client.request(t, http.MethodPost, "/api/logout", map[string]any{}, origin)
-	if status != http.StatusOK {
-		t.Fatalf("logout status=%d", status)
+	latest, ok := listing["latest"].(map[string]any)
+	if !ok || latest["status"] != "pushed" {
+		t.Fatalf("automation latest=%v", listing["latest"])
 	}
-	client.login(t, "correct horse")
-	status, _, _ = client.request(t, http.MethodPost, "/api/proposals/apply", map[string]any{
-		"confirm": true, "preview_id": previewID, "target": "inbox/example.md", "content": "new", "message": "review",
-	}, origin)
-	if status != http.StatusConflict {
-		t.Fatalf("post-login stale preview status=%d", status)
+	runID := "20261020T000000.000000000Z-abcdef12"
+	status, _, detail := client.request(t, http.MethodGet, "/api/automation/runs/"+runID, nil, "")
+	if status != http.StatusOK || detail["run_id"] != runID {
+		t.Fatalf("automation detail status=%d result=%v", status, detail)
 	}
-	status, _, preview = client.request(t, http.MethodPost, "/api/proposals/preview", map[string]any{
-		"report_id": "review-1", "proposal_index": 0, "target": "inbox/example.md", "content": "new",
-	}, origin)
-	if status != http.StatusOK || preview["preview_id"] == nil {
-		t.Fatalf("second preview status=%d result=%v", status, preview)
+	status, _, _ = client.request(t, http.MethodGet, "/api/automation/runs/bad/run", nil, "")
+	if status != http.StatusNotFound {
+		t.Fatalf("invalid run id status=%d", status)
 	}
-	previewID = preview["preview_id"].(string)
-	status, _, _ = client.request(t, http.MethodPost, "/api/proposals/apply", map[string]any{
-		"confirm": true, "preview_id": previewID, "target": "inbox/example.md", "content": "new", "message": "review",
-	}, origin)
-	if status != http.StatusOK {
-		t.Fatalf("apply status=%d", status)
+
+	origin := server.URL
+	status, _, accepted := client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "codex", "model": "gpt-test"}, origin)
+	if status != http.StatusAccepted {
+		t.Fatalf("automation run status=%d result=%v", status, accepted)
 	}
-	status, _, _ = client.request(t, http.MethodPost, "/api/proposals/apply", map[string]any{
-		"confirm": true, "preview_id": previewID, "target": "inbox/example.md", "content": "new", "message": "review",
-	}, origin)
-	if status != http.StatusConflict {
-		t.Fatalf("replay apply status=%d", status)
+	job := waitJobForTest(t, client, accepted["job_id"].(string))
+	if job["name"] != "automation:codex" {
+		t.Fatalf("automation job name=%v", job["name"])
 	}
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	if len(backend.preview) != 2 || backend.preview[0].reportID != "review-1" || backend.preview[0].index != 0 || backend.preview[1].reportID != "review-1" || backend.preview[1].index != 0 || len(backend.applied) != 1 || backend.applied[0].reviewID != "review-id" {
-		t.Fatalf("preview=%v applied=%v", backend.preview, backend.applied)
+	if len(backend.automation) != 1 || backend.automation[0].trigger != "manual" || backend.automation[0].runner != "codex" || backend.automation[0].model != "gpt-test" {
+		t.Fatalf("automation calls=%v", backend.automation)
+	}
+
+	status, _, result := client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "dsh", "model": "gpt-test"}, origin)
+	if status != http.StatusBadRequest || result["error"] != "invalid_model" {
+		t.Fatalf("dsh model status=%d result=%v", status, result)
+	}
+	status, _, result = client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "other"}, origin)
+	if status != http.StatusBadRequest || result["error"] != "invalid_runner" {
+		t.Fatalf("bad runner status=%d result=%v", status, result)
 	}
 }

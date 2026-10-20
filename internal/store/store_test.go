@@ -205,6 +205,104 @@ func TestMaintenanceUsesOnlyInstalledFolioBinary(t *testing.T) {
 	}
 }
 
+func TestMaintenanceRejectsInvalidRunnerAndDSHModel(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.RunMaintenance("agent", "", "other"); err == nil || err.Error() != "runner must be codex or dsh" {
+		t.Fatalf("invalid runner err=%v", err)
+	}
+	if _, err := store.RunMaintenance("agent", "gpt-test", "dsh"); err == nil || err.Error() != "model must be empty for the dsh runner" {
+		t.Fatalf("dsh with model err=%v", err)
+	}
+	for _, runner := range []string{"", "codex", "dsh"} {
+		if normalized, err := normalizeRunner(runner); err != nil || (runner == "" && normalized != "codex") || (runner != "" && normalized != runner) {
+			t.Fatalf("normalizeRunner(%q)=%q err=%v", runner, normalized, err)
+		}
+	}
+}
+
+func TestStateExposesRunnerAvailabilityAndPrivateDSHDir(t *testing.T) {
+	store := newTestStore(t)
+	info, err := os.Stat(store.dshDir)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("dsh dir: %v %v", info, err)
+	}
+	if filepath.Base(store.dshDir) != "dsh" {
+		t.Fatalf("unexpected dsh dir: %s", store.dshDir)
+	}
+	for _, testCase := range []struct {
+		name      string
+		binaries  []string
+		codexWant bool
+		dshWant   bool
+	}{
+		{"none", nil, false, false},
+		{"dsh only", []string{"dsh"}, false, true},
+		{"codex only", []string{"codex"}, true, false},
+		{"both", []string{"codex", "dsh"}, true, true},
+	} {
+		bin := t.TempDir()
+		for _, name := range testCase.binaries {
+			if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("PATH", bin)
+		state, err := store.State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		runners, ok := state["runners"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: runners=%v", testCase.name, state["runners"])
+		}
+		codex, _ := runners["codex"].(map[string]any)
+		dsh, _ := runners["dsh"].(map[string]any)
+		if codex["available"] != testCase.codexWant || dsh["available"] != testCase.dshWant {
+			t.Fatalf("%s: runners=%v", testCase.name, runners)
+		}
+		model, _ := state["model"].(map[string]any)
+		if model["available"] != testCase.codexWant {
+			t.Fatalf("%s: model availability diverged from codex: %v", testCase.name, model)
+		}
+	}
+}
+
+func TestMaintenancePassesRunnerAndDSHHomeToSubprocess(t *testing.T) {
+	store := newGitStore(t)
+	bin := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "folio-capture.txt")
+	folio := filepath.Join(store.toolRoot, "folio")
+	script := "#!/bin/sh\n" +
+		"printf 'args:%s\\n' \"$*\" > \"" + capture + "\"\n" +
+		"printf 'dsh_home:%s\\n' \"${DSH_HOME-}\" >> \"" + capture + "\"\n" +
+		"printf 'codex_home:%s\\n' \"${CODEX_HOME-}\" >> \"" + capture + "\"\n"
+	if err := os.WriteFile(folio, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "dsh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	result, err := store.RunMaintenance("agent", "", "dsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "completed" || result["runner"] != "dsh" || result["model_available"] != true {
+		t.Fatalf("maintenance result=%v", result)
+	}
+	captured, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(captured)
+	if !strings.Contains(got, "args:agent --device Docker --runtime-dir "+store.runtimeDir+" --runner dsh") {
+		t.Fatalf("runner flag missing: %s", got)
+	}
+	if !strings.Contains(got, "dsh_home:"+store.dshDir) || !strings.Contains(got, "codex_home:"+store.codexDir) {
+		t.Fatalf("runner homes missing: %s", got)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	root := t.TempDir()

@@ -100,7 +100,7 @@ func TestPacketStaleWarningAndExternalTelemetry(t *testing.T) {
 		t.Fatal("packet omitted stale warning")
 	}
 	runtime := t.TempDir()
-	t.Setenv("PERSONAL_CONTEXT_RUNTIME", runtime)
+	t.Setenv("FOLIO_RUNTIME", runtime)
 	if err := router.RecordAccess("test secret text", selected); err != nil {
 		t.Fatal(err)
 	}
@@ -302,5 +302,353 @@ func TestShowProposalsSkipsSymlinkedReport(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "No external review proposals") || strings.Contains(output.String(), "secret") {
 		t.Fatalf("symlinked report was exposed: %s", output.String())
+	}
+}
+
+func TestValidateAgentOptionsRunnerSelection(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		options AgentOptions
+		wantErr string
+	}{
+		{"default runner", AgentOptions{}, ""},
+		{"codex", AgentOptions{Runner: "codex"}, ""},
+		{"dsh", AgentOptions{Runner: "dsh"}, ""},
+		{"unknown", AgentOptions{Runner: "other"}, "runner must be codex or dsh"},
+		{"case sensitive", AgentOptions{Runner: "DSH"}, "runner must be codex or dsh"},
+		{"padded", AgentOptions{Runner: " dsh"}, "runner must be codex or dsh"},
+		{"model still validated", AgentOptions{Runner: "dsh", Model: "bad model"}, "model name is invalid"},
+		{"device still validated", AgentOptions{Runner: "codex", Device: "bad\nname"}, "device name is invalid"},
+	} {
+		err := validateAgentOptions(testCase.options)
+		if testCase.wantErr == "" {
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", testCase.name, err)
+			}
+			continue
+		}
+		if err == nil || err.Error() != testCase.wantErr {
+			t.Fatalf("%s: err=%v want %q", testCase.name, err, testCase.wantErr)
+		}
+	}
+}
+
+func TestWorkerDSHArgsAndPrompt(t *testing.T) {
+	args := workerDSHArgs()
+	if strings.Join(args, " ") != "--profile headless --json -" {
+		t.Fatalf("unexpected dsh args: %v", args)
+	}
+	for _, forbidden := range []string{"--model", "--sandbox", "--output-schema"} {
+		if strings.Contains(strings.Join(args, " "), forbidden) {
+			t.Fatalf("dsh args contain forbidden %q: %v", forbidden, args)
+		}
+	}
+	prompt := string(reviewDSHPrompt([]byte("base prompt"), proposalSchema))
+	if !strings.HasPrefix(prompt, "base prompt") {
+		t.Fatalf("dsh prompt did not extend the shared prompt: %q", prompt)
+	}
+	for _, required := range []string{"Return exactly one JSON object and nothing else. No prose, no markdown fences.", "The object must match this schema:", proposalSchema} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("dsh prompt omitted %q", required)
+		}
+	}
+}
+
+func TestLimitedWriterCapsDSHOutput(t *testing.T) {
+	writer := &limitedWriter{limit: 4}
+	if n, err := writer.Write([]byte("abcdef")); n != 6 || err != nil || writer.buffer.String() != "abcd" || !writer.truncated {
+		t.Fatalf("first write n=%d err=%v buffer=%q truncated=%t", n, err, writer.buffer.String(), writer.truncated)
+	}
+	if n, err := writer.Write([]byte("x")); n != 1 || err != nil || writer.buffer.Len() != 4 {
+		t.Fatalf("second write n=%d err=%v len=%d", n, err, writer.buffer.Len())
+	}
+}
+
+func TestWorkerDSHEnvForcesReadOnlyAndOverridesHome(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "CODEX_HOME=/data/codex", "DSH_PERMISSION_MODE=workspace-write", "DSH_HOME=/old"}
+	env := workerDSHEnv(base, "/data/dsh")
+	joined := strings.Join(env, "\n")
+	if strings.Count(joined, "DSH_PERMISSION_MODE=") != 1 || !strings.Contains(joined, "DSH_PERMISSION_MODE=read-only") {
+		t.Fatalf("permission mode was not forced: %v", env)
+	}
+	if strings.Count(joined, "DSH_HOME=") != 1 || !strings.Contains(joined, "DSH_HOME=/data/dsh") {
+		t.Fatalf("dsh home was not overridden: %v", env)
+	}
+	if !strings.Contains(joined, "PATH=/usr/bin") || !strings.Contains(joined, "CODEX_HOME=/data/codex") {
+		t.Fatalf("worker environment was dropped: %v", env)
+	}
+	if without := workerDSHEnv([]string{"PATH=/usr/bin"}, ""); strings.Contains(strings.Join(without, "\n"), "DSH_HOME=") {
+		t.Fatalf("empty dsh home was forwarded: %v", without)
+	}
+}
+
+func TestExtractDSHFinal(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		input string
+		want  string
+		ok    bool
+	}{
+		{"single", `{"type":"final","text":"hello"}` + "\n", "hello", true},
+		{"last final wins", `{"type":"progress","text":"p"}` + "\n" + `{"type":"final","text":"first"}` + "\n" + `{"type":"final","text":"second"}`, "second", true},
+		{"no final", `{"type":"progress","text":"p"}`, "", false},
+		{"empty text", `{"type":"final","text":""}`, "", false},
+		{"whitespace text", `{"type":"final","text":"   "}`, "", false},
+		{"malformed line skipped", "not json\n" + `{"type":"final","text":"ok"}`, "ok", true},
+		{"empty stream", "", "", false},
+	} {
+		text, ok := extractDSHFinal([]byte(testCase.input))
+		if text != testCase.want || ok != testCase.ok {
+			t.Fatalf("%s: got (%q, %t) want (%q, %t)", testCase.name, text, ok, testCase.want, testCase.ok)
+		}
+	}
+}
+
+func TestExtractProposalJSON(t *testing.T) {
+	valid := `{"summary":"Needs confirmation","proposals":[]}`
+	badClaim := `{"summary":"s","proposals":[{"source":"a","target":"b","claim_type":"bogus","proposal":"p","reason":"r"}]}`
+	for _, testCase := range []struct {
+		name  string
+		input string
+		ok    bool
+	}{
+		{"plain", valid, true},
+		{"fenced", "```json\n" + valid + "\n```", true},
+		{"fenced without language", "```\n" + valid + "\n```\n", true},
+		{"surrounding prose", "Here is the result:\n" + valid + "\nDone.", true},
+		{"no object", "no json here", false},
+		{"truncated object", `{"summary":"s"`, false},
+		{"extra field", `{"summary":"s","proposals":[],"extra":true}`, false},
+		{"invalid claim", badClaim, false},
+	} {
+		proposal, err := extractProposalJSON(testCase.input)
+		if testCase.ok {
+			if err != nil || proposal.Summary != "Needs confirmation" {
+				t.Fatalf("%s: proposal=%#v err=%v", testCase.name, proposal, err)
+			}
+			continue
+		}
+		if err == nil || err.Error() != "invalid review result" {
+			t.Fatalf("%s: err=%v want invalid review result", testCase.name, err)
+		}
+	}
+}
+
+func TestValidateProposalDataRejectsInvalidShapes(t *testing.T) {
+	for _, input := range []string{
+		`{}`,
+		`[]`,
+		`null`,
+		`{"summary":"s"}`,
+		`{"summary":"s","proposals":{}}`,
+		`{"summary":"s","proposals":[],"extra":true}`,
+		`{"summary":7,"proposals":[]}`,
+		`{"summary":"s","proposals":[{"source":"a","target":"b","claim_type":"fact","proposal":"p"}]}`,
+		`{"summary":"s","proposals":[{"source":"a","target":"b","claim_type":"bogus","proposal":"p","reason":"r"}]}`,
+		`{"summary":"s","proposals":[{"source":"a","target":"b","claim_type":"fact","proposal":"p","reason":"r","extra":"x"}]}`,
+	} {
+		if _, err := validateProposalData([]byte(input)); err == nil {
+			t.Fatalf("invalid proposal data was accepted: %s", input)
+		}
+	}
+	proposal, err := validateProposalData([]byte(`{"summary":"s","proposals":[]}`))
+	if err != nil || proposal.Summary != "s" || len(proposal.Proposals) != 0 {
+		t.Fatalf("valid proposal data was rejected: %#v %v", proposal, err)
+	}
+}
+
+func TestWorkerDSHRunnerProducesProposalOnlyReport(t *testing.T) {
+	router := testRouter(t)
+	writeDoc(t, router.Root, "inbox/candidate.md", "type: candidate\nclaim_type: inference", "Maybe X")
+	runtime := t.TempDir()
+	home := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "dsh-capture.txt")
+	finalEvent, err := json.Marshal(map[string]string{
+		"type": "final",
+		"text": "```json\n{\"summary\":\"Needs confirmation\",\"proposals\":[]}\n```",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	fake := filepath.Join(bin, "dsh")
+	script := "#!/bin/sh\n" +
+		"printf 'args:%s\\n' \"$*\" > \"" + capture + "\"\n" +
+		"printf 'permission:%s\\n' \"${DSH_PERMISSION_MODE-}\" >> \"" + capture + "\"\n" +
+		"printf 'home:%s\\n' \"${DSH_HOME-}\" >> \"" + capture + "\"\n" +
+		"printf 'provider_key:%s\\n' \"${DEEPSEEK_API_KEY-}\" >> \"" + capture + "\"\n" +
+		"printf '%s\\n' '" + string(finalEvent) + "'\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("DSH_HOME", home)
+	t.Setenv("DEEPSEEK_API_KEY", "fixture-key")
+	var output bytes.Buffer
+	options := AgentOptions{Runner: "dsh", RuntimeDir: runtime, Device: "fixture", Timeout: 5 * time.Second}
+	if err := router.RunAgent(options, &output, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Pending review:") {
+		t.Fatalf("worker output: %s", output.String())
+	}
+	captured, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(captured)
+	if !strings.Contains(got, "args:--profile headless --json -") || !strings.Contains(got, "permission:read-only") || !strings.Contains(got, "home:"+home) {
+		t.Fatalf("dsh invocation was not isolated: %s", got)
+	}
+	if !strings.Contains(got, "provider_key:\n") || strings.Contains(got, "fixture-key") {
+		t.Fatalf("provider key entered the dsh environment: %s", got)
+	}
+	reports, err := filepath.Glob(filepath.Join(runtime, "reviews", "*.json"))
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("reports: %v %v", reports, err)
+	}
+	info, err := os.Stat(reports[0])
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("report mode: %v %v", info, err)
+	}
+	saved, err := os.ReadFile(filepath.Join(runtime, "review-state.json"))
+	if err != nil || !strings.Contains(string(saved), "input_digest") {
+		t.Fatalf("review state: %s %v", saved, err)
+	}
+	if _, err := os.Stat(filepath.Join(router.Root, "review-state.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("worker wrote state into checkout")
+	}
+}
+
+func TestWorkerDSHFailureModes(t *testing.T) {
+	router := testRouter(t)
+	writeDoc(t, router.Root, "inbox/candidate.md", "type: candidate\nclaim_type: inference", "Maybe X")
+	for _, testCase := range []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{"no final event", "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"progress\",\"text\":\"working\"}'\n", "DSH review failed; no changes applied"},
+		{"empty final text", "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"final\",\"text\":\"\"}'\n", "DSH review failed; no changes applied"},
+		{"invalid proposal", "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"final\",\"text\":\"not json\"}'\n", "invalid review result"},
+		{"nonzero exit", "#!/bin/sh\nexit 3\n", "DSH review failed; no changes applied"},
+	} {
+		runtime := t.TempDir()
+		bin := t.TempDir()
+		fake := filepath.Join(bin, "dsh")
+		if err := os.WriteFile(fake, []byte(testCase.script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin)
+		err := router.RunAgent(AgentOptions{Runner: "dsh", RuntimeDir: runtime, Device: "fixture", Timeout: 5 * time.Second}, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || err.Error() != testCase.want {
+			t.Fatalf("%s: err=%v want %q", testCase.name, err, testCase.want)
+		}
+		if _, statErr := os.Stat(filepath.Join(runtime, "review-state.json")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("%s: failed worker wrote state", testCase.name)
+		}
+	}
+}
+
+func TestWorkerDSHMissingBinary(t *testing.T) {
+	router := testRouter(t)
+	writeDoc(t, router.Root, "inbox/candidate.md", "type: candidate\nclaim_type: inference", "Maybe X")
+	t.Setenv("PATH", t.TempDir())
+	err := router.RunAgent(AgentOptions{Runner: "dsh", RuntimeDir: t.TempDir(), Device: "fixture", Timeout: 5 * time.Second}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || err.Error() != "dsh is required; install and configure the DSH headless profile first" {
+		t.Fatalf("missing dsh err=%v", err)
+	}
+}
+
+func TestWorkerAutoModeWritesBoundedEditReport(t *testing.T) {
+	router := testRouter(t)
+	writeDoc(t, router.Root, "inbox/candidate.md", "type: candidate\nclaim_type: inference", "Maybe X")
+	runtime := t.TempDir()
+	bin := t.TempDir()
+	fake := filepath.Join(bin, "codex")
+	script := "#!/bin/sh\nout=''\nprev=''\nfor arg in \"$@\"; do if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi; prev=\"$arg\"; done\nprintf '%s\\n' '{\"summary\":\"merge\",\"edits\":[{\"source\":\"inbox/candidate.md\",\"target\":\"core/profile.md\",\"claim_type\":\"inference\",\"reason\":\"fixture\",\"content\":\"# Profile\\n\"}]}' > \"$out\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	reportPath := filepath.Join(runtime, "auto-report.json")
+	var output bytes.Buffer
+	if err := router.RunAgent(AgentOptions{RuntimeDir: runtime, Device: "fixture", Auto: true, AutoReport: reportPath, Timeout: 5 * time.Second}, &output, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report autoReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "pending-apply" || report.Summary != "merge" || len(report.Edits) != 1 || report.Edits[0].Target != "core/profile.md" {
+		t.Fatalf("unexpected auto report: %#v", report)
+	}
+	if _, err := os.Stat(filepath.Join(runtime, "reviews")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("auto mode wrote a proposal review report")
+	}
+	if _, err := os.Stat(filepath.Join(router.Root, "core", "profile.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("auto worker edited the canonical checkout")
+	}
+	if err := router.RunAgent(AgentOptions{RuntimeDir: runtime, Device: "fixture", Auto: true, AutoReport: filepath.Join(t.TempDir(), "outside.json")}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+		t.Fatal("auto report outside the runtime was accepted")
+	}
+}
+
+func TestAutoReviewInputIncludesBoundedCanonicalContent(t *testing.T) {
+	router := testRouter(t)
+	writeDoc(t, router.Root, "core/profile.md", "type: profile\nlayer: L1", "Current profile body")
+	writeDoc(t, router.Root, "inbox/candidate.md", "type: candidate\nclaim_type: inference", "Maybe a preference")
+	data, err := router.ReviewInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = router.AutoReviewInput(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Canonical) == 0 {
+		t.Fatal("automatic input omitted canonical content")
+	}
+	found := false
+	for _, source := range data.Canonical {
+		if source.Source == "core/profile.md" && strings.Contains(source.Body, "Current profile body") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("canonical profile missing: %#v", data.Canonical)
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil || len(encoded) > reviewBatchLimit {
+		t.Fatalf("automatic input exceeded its budget: %d %v", len(encoded), err)
+	}
+}
+
+func TestAgentCLIAutoFlagWritesReport(t *testing.T) {
+	router := testRouter(t)
+	writeDoc(t, router.Root, "inbox/candidate.md", "type: candidate\nclaim_type: inference", "Maybe X")
+	runtime := t.TempDir()
+	bin := t.TempDir()
+	fake := filepath.Join(bin, "codex")
+	script := "#!/bin/sh\nout=''\nprev=''\nfor arg in \"$@\"; do if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi; prev=\"$arg\"; done\nprintf '%s\\n' '{\"summary\":\"merge\",\"edits\":[]}' > \"$out\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	reportPath := filepath.Join(runtime, "auto-report.json")
+	args := []string{"--auto", "--runtime-dir", runtime, "--device", "fixture", "--auto-report", reportPath, "--timeout", "5"}
+	if err := runAgent(router, args, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Fatalf("agent CLI did not write the automatic report: %v", err)
+	}
+	args = []string{"--runtime-dir", runtime, "--auto-report", reportPath, "--timeout", "5"}
+	if err := runAgent(router, args, &bytes.Buffer{}); err == nil {
+		t.Fatal("agent CLI accepted --auto-report without --auto")
 	}
 }

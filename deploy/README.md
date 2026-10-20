@@ -1,9 +1,9 @@
 # Folio Service container
 
 Image: `ghcr.io/rwdai-labs/folio-service:main` (AMD64 and ARM64).
-The public image contains the compiled service, Web assets, and runtime tools only. Personal context,
-Git history, GitHub credentials and model credentials are downloaded or created
-only at runtime in the private `/data` volume. A neutral name is not an access
+The public image contains the compiled service, Web assets, and runtime tools
+only. Personal context, Git history, GitHub credentials and model credentials
+are downloaded or created only at runtime in the private `/data` volume. A neutral name is not an access
 control; keep Web authentication and the private network boundary.
 
 ## NAS deployment
@@ -60,10 +60,40 @@ Alternatively provision the supported provider configuration and credentials
 inside `/data/codex` through your secret manager. Do not put secrets in Compose,
 the context repository or chat. Inspect the Web model status after setup.
 
-The scheduler runs every 86400 seconds after startup and produces proposals
-only. Review the exact diff in Web before confirming commit/push. Set
-`MAINTENANCE_SCHEDULER_ENABLED` to `"false"` to disable it. Use only one scheduler
-for this checkout. The service drops to UID/GID 10001 after initializing `/data`.
+## Maintenance runners
+
+Scheduled maintenance uses Codex. The Web UI can also start a run immediately
+with either runner; Codex remains the default.
+
+- **Codex** is the existing path: use the device login or provider configuration
+  described above.
+- **DSH** runs the image's `dsh` CLI with its `headless` profile. It needs a
+  provider credential file at `/data/dsh/.env`, mode `0600`, owned by the
+  service user, for example:
+
+  ```
+  DEEPSEEK_API_KEY=...
+  ```
+
+  Headless mode ignores credentials saved in the DSH Web GUI. The DSH runner
+  uses the headless profile's default model and runs read-only; model
+  credentials never enter the request, a maintenance report or the
+  repository. The first DSH run initializes `/data/dsh/profiles/headless`, so allow network
+  access to the provider. Do not put real credentials in Compose, the context
+  repository or chat; create the file through your secret manager or a private
+  shell, never through a shared log.
+
+The scheduler runs every 86400 seconds after startup. Each tick pulls the
+latest checkout, asks the runner for bounded Markdown edits, validates and
+pushes them, and records the run. Set `MAINTENANCE_SCHEDULER_ENABLED` to
+`"false"` to disable automatic runs; the Web UI still allows an immediate run.
+Use only one scheduler for this checkout. The service drops to UID/GID 10001
+after initializing `/data`.
+
+Run audits are private: `/data/runtime/runs` holds at most 40 JSON records with
+status, pull/commit/push evidence, summary, and per-file diffs. The Web UI shows
+the latest run, history, and exact diffs to the authenticated owner. Tune
+`MAINTENANCE_INTERVAL_SECONDS` to change the schedule.
 
 `folio-data` persists private data across container/image updates. Back it up
 privately; do not run `docker compose down -v` when preserving data. To update:

@@ -1,5 +1,5 @@
 // Package contextrepo contains the deterministic, repository-owned context
-// router and the proposal-only maintenance worker.
+// router and the automatic maintenance worker.
 package contextrepo
 
 import (
@@ -21,7 +21,7 @@ import (
 
 const (
 	dateFormat     = "2006-01-02"
-	defaultRuntime = ".local/share/personal-context"
+	defaultRuntime = ".local/share/folio"
 )
 
 var (
@@ -77,11 +77,11 @@ func New(root string) (*Router, error) {
 	return &Router{Root: filepath.Clean(resolved), Now: time.Now}, nil
 }
 
-// NewFromEnv resolves the checkout from PERSONAL_CONTEXT_ROOT. The current
+// NewFromEnv resolves the checkout from FOLIO_CONTEXT_ROOT. The current
 // working directory is the local CLI fallback when the trusted setting is
 // absent; model-facing inputs never participate in root selection.
 func NewFromEnv() (*Router, error) {
-	root := strings.TrimSpace(os.Getenv("PERSONAL_CONTEXT_ROOT"))
+	root := strings.TrimSpace(os.Getenv("FOLIO_CONTEXT_ROOT"))
 	if root == "" {
 		var err error
 		root, err = os.Getwd()
@@ -660,7 +660,7 @@ func (r *Router) RecordAccess(task string, selected []SelectedSource) error {
 }
 
 func (r *Router) telemetryPath() (string, error) {
-	if strings.TrimSpace(os.Getenv("PERSONAL_CONTEXT_RUNTIME")) == "" {
+	if strings.TrimSpace(os.Getenv("FOLIO_RUNTIME")) == "" {
 		return filepath.Join(r.Root, "generated", "usage", "access-log.jsonl"), nil
 	}
 	runtime, err := r.RuntimePath("")

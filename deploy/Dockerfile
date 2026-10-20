@@ -18,9 +18,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
 
 FROM node:24-bookworm-slim AS runtime
 
-ENV PERSONAL_CONTEXT_ROOT=/data/repository \
-    PERSONAL_CONTEXT_RUNTIME=/data/runtime \
+ENV FOLIO_CONTEXT_ROOT=/data/repository \
+    FOLIO_RUNTIME=/data/runtime \
     SERVICE_DATA_DIR=/data \
+    DSH_HOME=/data/dsh \
     HOME=/home/context
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -39,6 +40,12 @@ RUN npm install --global --omit=dev --no-audit --no-fund @openai/codex@0.147.0 \
     && npm cache clean --force \
     && test "$(codex --version | awk '{print $NF}')" = "0.147.0"
 
+# The DSH headless runner uses the same pinned installation style. Its provider
+# credential file is created at runtime in the private /data volume, never here.
+RUN npm install --global --omit=dev --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.2 \
+    && npm cache clean --force \
+    && test "$(dsh --version | awk '{print $NF}')" = "0.2.1-rc.2"
+
 RUN groupadd --system --gid 10001 context \
     && useradd --system --uid 10001 --gid context --create-home --home-dir /home/context context \
     && mkdir -p /app/web /data \
@@ -47,16 +54,17 @@ RUN groupadd --system --gid 10001 context \
 WORKDIR /app
 
 COPY --from=builder --chown=context:context /out/folio /app/folio
-COPY deploy/entrypoint /usr/local/bin/personal-context-entrypoint
+COPY deploy/entrypoint /usr/local/bin/folio-entrypoint
 COPY --chown=context:context web/ /app/web/
 
-RUN chmod 0555 /app/folio /usr/local/bin/personal-context-entrypoint \
+RUN chmod 0555 /app/folio /usr/local/bin/folio-entrypoint \
     && find /app/web -type f -exec chmod 0444 {} + \
-    && mkdir -p /data/runtime /data/home \
+    && mkdir -p /data/runtime /data/home /data/dsh \
+    && chmod 0700 /data/dsh \
     && chown -R context:context /data
 
 VOLUME ["/data"]
 EXPOSE 8080
 USER root
-ENTRYPOINT ["/usr/local/bin/personal-context-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/folio-entrypoint"]
 CMD ["/app/folio", "serve", "--host", "0.0.0.0", "--port", "8080"]

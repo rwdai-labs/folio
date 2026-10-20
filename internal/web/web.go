@@ -68,11 +68,11 @@ type Backend interface {
 	Logout() (map[string]any, error)
 	ConnectRepository(fullName string) (map[string]any, error)
 	SyncRepository() (map[string]any, error)
-	RunMaintenance(mode, model string) (map[string]any, error)
+	RunMaintenance(mode, model, runner string) (map[string]any, error)
+	RunAutomation(trigger, runner, model string) (map[string]any, error)
+	ListAutomation() (map[string]any, error)
+	AutomationRun(runID string) (map[string]any, error)
 	SchedulerTick() (map[string]any, error)
-	ListProposals() (map[string]any, error)
-	PreviewChange(reportID string, index int, target, content string) (map[string]any, error)
-	ApplyChange(reviewID, message string) (map[string]any, error)
 }
 
 // Options configures the local web boundary.
@@ -176,8 +176,9 @@ type Server struct {
 	logins   *loginLimiter
 	jobs     *jobStore
 
-	schedulerMu sync.Mutex
-	scheduler   bool
+	schedulerMu   sync.Mutex
+	scheduler     bool
+	schedulerNext time.Time
 }
 
 // New initializes the password verifier and bounded in-memory service state.
@@ -226,8 +227,9 @@ func New(store Backend, opts Options) (*Server, error) {
 // Handler returns the complete standard-library HTTP handler.
 func (s *Server) Handler() http.Handler { return s }
 
-// StartScheduler starts proposal-only scheduled maintenance when enabled. It
-// returns after launching the goroutine; cancellation of ctx stops it.
+// StartScheduler starts automatic scheduled maintenance when enabled. Each
+// tick pulls the checkout, organizes bounded Markdown edits, validates them,
+// and pushes a commit. The next scheduled time is exposed for observability.
 func (s *Server) StartScheduler(ctx context.Context) {
 	if !s.opts.SchedulerEnabled {
 		return
@@ -238,24 +240,43 @@ func (s *Server) StartScheduler(ctx context.Context) {
 		return
 	}
 	s.scheduler = true
+	interval := s.opts.SchedulerInterval
+	s.schedulerNext = time.Now().Add(interval)
 	s.schedulerMu.Unlock()
 	go func() {
-		ticker := time.NewTicker(s.opts.SchedulerInterval)
-		defer ticker.Stop()
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				s.schedulerMu.Lock()
 				s.scheduler = false
+				s.schedulerNext = time.Time{}
 				s.schedulerMu.Unlock()
 				return
-			case <-ticker.C:
-				s.startJob("scheduler", func() (map[string]any, error) {
+			case <-timer.C:
+				s.schedulerMu.Lock()
+				s.schedulerNext = time.Now().Add(interval)
+				s.schedulerMu.Unlock()
+				s.startJob("scheduler:automation", func() (map[string]any, error) {
 					return s.store.SchedulerTick()
 				})
+				timer.Reset(interval)
 			}
 		}
 	}()
+}
+
+func (s *Server) schedulerNextAt() any {
+	if !s.opts.SchedulerEnabled {
+		return nil
+	}
+	s.schedulerMu.Lock()
+	defer s.schedulerMu.Unlock()
+	if s.schedulerNext.IsZero() {
+		return nil
+	}
+	return s.schedulerNext.UTC().Format(time.RFC3339Nano)
 }
 
 // loadPassword returns the verifier plus the plaintext password only when this
@@ -919,6 +940,31 @@ func validModel(value any) (string, bool) {
 	return model, true
 }
 
+// validRunner defaults an absent or empty selector to Codex. The DSH profile
+// chooses its own model, so callers must not combine it with --model.
+func validRunner(payload map[string]any) (string, bool) {
+	value, exists := payload["runner"]
+	if !exists {
+		return "codex", true
+	}
+	runner, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	switch runner {
+	case "", "codex":
+		return "codex", true
+	case "dsh":
+		return "dsh", true
+	default:
+		return "", false
+	}
+}
+
+func maintenanceJobName(runner, mode string) string {
+	return "maintenance:" + runner + ":" + mode
+}
+
 func validMessage(value any) (string, bool) {
 	message, ok := value.(string)
 	if !ok {
@@ -990,6 +1036,7 @@ func (s *Server) writeStatic(w http.ResponseWriter, name string) {
 	allowed := map[string]string{
 		"index.html": "text/html; charset=utf-8",
 		"app.js":     "text/javascript; charset=utf-8",
+		"i18n.js":    "text/javascript; charset=utf-8",
 		"styles.css": "text/css; charset=utf-8",
 	}
 	contentType, ok := allowed[name]
@@ -1067,7 +1114,7 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 		s.writeStatic(w, "index.html")
 		return
 	}
-	if path == "/app.js" || path == "/styles.css" {
+	if path == "/app.js" || path == "/i18n.js" || path == "/styles.css" {
 		s.writeStatic(w, strings.TrimPrefix(path, "/"))
 		return
 	}
@@ -1078,6 +1125,25 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			payload["csrf_token"] = item.csrf
 		}
 		s.writeJSON(w, http.StatusOK, payload, nil)
+		return
+	}
+	if strings.HasPrefix(path, "/api/automation/runs/") {
+		_, _, ok := s.session(r)
+		if !ok {
+			s.writeError(w, http.StatusUnauthorized, "authentication_required")
+			return
+		}
+		runID := strings.TrimPrefix(path, "/api/automation/runs/")
+		if !safeReportID.MatchString(runID) {
+			s.writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		value, err := s.store.AutomationRun(runID)
+		if err != nil {
+			s.writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 		return
 	}
 	if strings.HasPrefix(path, "/api/jobs/") {
@@ -1116,17 +1182,23 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		state = safeMap(state)
-		state["service"] = map[string]any{"scheduler_enabled": s.opts.SchedulerEnabled, "scheduler_interval_seconds": int(s.opts.SchedulerInterval / time.Second), "jobs": s.jobs.summary()}
+		state["service"] = map[string]any{"scheduler_enabled": s.opts.SchedulerEnabled, "scheduler_interval_seconds": int(s.opts.SchedulerInterval / time.Second), "scheduler_next_at": s.schedulerNextAt(), "jobs": s.jobs.summary()}
 		s.writeJSON(w, http.StatusOK, state, nil)
-	case "/api/proposals":
-		value, err := s.store.ListProposals()
+	case "/api/automation":
+		value, err := s.store.ListAutomation()
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "operation_failed")
 			return
 		}
-		s.writeJSON(w, http.StatusOK, value, nil)
+		clean := safeMap(value)
+		if latest, ok := clean["latest"].(map[string]any); ok {
+			if id, _ := latest["run_id"].(string); id == "" {
+				clean["latest"] = nil
+			}
+		}
+		s.writeJSON(w, http.StatusOK, clean, nil)
 	case "/api/report":
-		id, started := s.startJob("maintenance:report", func() (map[string]any, error) { return s.store.RunMaintenance("report", "") })
+		id, started := s.startJob(maintenanceJobName("codex", "report"), func() (map[string]any, error) { return s.store.RunMaintenance("report", "", "codex") })
 		if id == "" {
 			s.writeError(w, http.StatusServiceUnavailable, "job_unavailable")
 			return
@@ -1158,7 +1230,7 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		s.login(w, r, payload)
 		return
 	}
-	token, item, ok := s.requireSession(w, r)
+	token, _, ok := s.requireSession(w, r)
 	if !ok {
 		return
 	}
@@ -1195,6 +1267,29 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "started": started, "status": jobStatus(started)}, nil)
+	case "/api/automation/run":
+		runner, runnerOK := validRunner(payload)
+		if !runnerOK {
+			s.writeError(w, http.StatusBadRequest, "invalid_runner")
+			return
+		}
+		model, modelOK := validModel(payload["model"])
+		if !modelOK {
+			s.writeError(w, http.StatusBadRequest, "invalid_model")
+			return
+		}
+		if runner == "dsh" && model != "" {
+			s.writeError(w, http.StatusBadRequest, "invalid_model")
+			return
+		}
+		id, started := s.startJob("automation:"+runner, func() (map[string]any, error) {
+			return s.store.RunAutomation("manual", runner, model)
+		})
+		if id == "" {
+			s.writeError(w, http.StatusServiceUnavailable, "job_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "started": started, "runner": runner, "status": jobStatus(started)}, nil)
 	case "/api/maintenance", "/api/maintenance/run":
 		mode, modeOK := payload["mode"].(string)
 		if !modeOK || mode == "" {
@@ -1204,54 +1299,26 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusBadRequest, "invalid_maintenance_mode")
 			return
 		}
+		runner, runnerOK := validRunner(payload)
+		if !runnerOK {
+			s.writeError(w, http.StatusBadRequest, "invalid_runner")
+			return
+		}
 		model, modelOK := validModel(payload["model"])
 		if !modelOK {
 			s.writeError(w, http.StatusBadRequest, "invalid_model")
 			return
 		}
-		id, started := s.startJob("maintenance:"+mode, func() (map[string]any, error) { return s.store.RunMaintenance(mode, model) })
+		if runner == "dsh" && model != "" {
+			s.writeError(w, http.StatusBadRequest, "invalid_model")
+			return
+		}
+		id, started := s.startJob(maintenanceJobName(runner, mode), func() (map[string]any, error) { return s.store.RunMaintenance(mode, model, runner) })
 		if id == "" {
 			s.writeError(w, http.StatusServiceUnavailable, "job_unavailable")
 			return
 		}
-		s.writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "started": started, "mode": mode, "status": jobStatus(started)}, nil)
-	case "/api/proposals/preview", "/api/preview":
-		reportID, reportOK := payload["report_id"].(string)
-		indexFloat, indexOK := payload["proposal_index"].(float64)
-		target, targetOK := validTarget(payload["target"])
-		content, contentOK := validContent(payload["content"])
-		if !reportOK || !safeReportID.MatchString(reportID) || !indexOK || indexFloat < 0 || indexFloat >= 100 || indexFloat != float64(int(indexFloat)) || !targetOK || !contentOK {
-			s.writeError(w, http.StatusBadRequest, "invalid_change")
-			return
-		}
-		value, callErr := s.store.PreviewChange(reportID, int(indexFloat), target, content)
-		if callErr != nil {
-			s.writeError(w, http.StatusBadRequest, "invalid_request")
-			return
-		}
-		reviewID, reviewOK := value["review_id"].(string)
-		if !reviewOK || reviewID == "" {
-			s.writeError(w, http.StatusInternalServerError, "preview_unavailable")
-			return
-		}
-		previewID, tokenErr := newToken(24)
-		if tokenErr != nil {
-			s.writeError(w, http.StatusServiceUnavailable, "preview_unavailable")
-			return
-		}
-		s.sessions.mu.Lock()
-		if len(item.previews) >= maxPreviews {
-			for oldID := range item.previews {
-				delete(item.previews, oldID)
-				break
-			}
-		}
-		item.previews[previewID] = preview{target: target, content: content, digest: digestChange(target, content), reviewID: reviewID, createdAt: time.Now()}
-		s.sessions.mu.Unlock()
-		result := map[string]any{"preview_id": previewID, "report_id": reportID, "proposal_index": int(indexFloat), "target": target, "content_digest": digestChange(target, content), "preview": value}
-		s.writeJSON(w, http.StatusOK, result, nil)
-	case "/api/proposals/apply", "/api/apply":
-		s.apply(w, item, payload)
+		s.writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "started": started, "mode": mode, "runner": runner, "status": jobStatus(started)}, nil)
 	default:
 		s.writeError(w, http.StatusNotFound, "not_found")
 	}
@@ -1263,54 +1330,6 @@ func (s *Server) writeBackendResult(w http.ResponseWriter, err error, value map[
 		return
 	}
 	s.writeJSON(w, http.StatusOK, value, nil)
-}
-
-func (s *Server) apply(w http.ResponseWriter, item *session, payload map[string]any) {
-	if payload["confirm"] != true {
-		s.writeError(w, http.StatusBadRequest, "explicit_confirmation_required")
-		return
-	}
-	previewID, previewOK := payload["preview_id"].(string)
-	target, targetOK := validTarget(payload["target"])
-	content, contentOK := validContent(payload["content"])
-	message, messageOK := validMessage(payload["message"])
-	if !messageOK && payload["message"] == nil {
-		message = "Reviewed context change"
-		messageOK = true
-	}
-	if !previewOK || !safePreviewID.MatchString(previewID) || !targetOK || !contentOK || !messageOK {
-		s.writeError(w, http.StatusBadRequest, "invalid_change")
-		return
-	}
-	itemPreview, ok := func() (preview, bool) {
-		s.sessions.mu.Lock()
-		defer s.sessions.mu.Unlock()
-		value, exists := item.previews[previewID]
-		if !exists {
-			return preview{}, false
-		}
-		if time.Since(value.createdAt) > previewTTL {
-			delete(item.previews, previewID)
-			return preview{}, false
-		}
-		if value.target != target || value.digest != digestChange(target, content) {
-			return preview{}, false
-		}
-		return value, true
-	}()
-	if !ok {
-		s.writeError(w, http.StatusConflict, "preview_expired_or_mismatch")
-		return
-	}
-	value, err := s.store.ApplyChange(itemPreview.reviewID, message)
-	if err != nil {
-		s.writeError(w, http.StatusConflict, "review_apply_failed")
-		return
-	}
-	s.sessions.mu.Lock()
-	delete(item.previews, previewID)
-	s.sessions.mu.Unlock()
-	s.writeJSON(w, http.StatusOK, map[string]any{"applied": true, "result": value}, nil)
 }
 
 // ServeHTTP enforces host/origin checks before dispatching routes.

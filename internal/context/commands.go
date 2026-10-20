@@ -666,14 +666,18 @@ func runLinks(r *Router, args []string, out io.Writer) error {
 }
 
 func runAgent(r *Router, args []string, out io.Writer) error {
-	options, err := parseOptions(args, map[string]bool{"dry-run": true, "force": true}, map[string]bool{"device": true, "runtime-dir": true, "model": true, "timeout": true})
+	options, err := parseOptions(args, map[string]bool{"dry-run": true, "force": true, "auto": true}, map[string]bool{"auto-report": true, "device": true, "runtime-dir": true, "model": true, "runner": true, "timeout": true})
 	if err != nil {
 		return err
 	}
 	if len(options.args) != 0 {
 		return errors.New("unexpected arguments")
 	}
-	agent := AgentOptions{DryRun: options.bools["dry-run"], Force: options.bools["force"], Device: "NAS", RuntimeDir: options.values["runtime-dir"], Model: options.values["model"], Timeout: 15 * time.Minute}
+	runner := options.values["runner"]
+	if runner == "" {
+		runner = "codex"
+	}
+	agent := AgentOptions{DryRun: options.bools["dry-run"], Force: options.bools["force"], Device: "NAS", RuntimeDir: options.values["runtime-dir"], Model: options.values["model"], Runner: runner, Auto: options.bools["auto"], AutoReport: options.values["auto-report"], Timeout: 15 * time.Minute}
 	if raw := options.values["device"]; raw != "" {
 		agent.Device = raw
 	}

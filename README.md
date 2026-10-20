@@ -2,11 +2,12 @@
 
 A self-hosted maintenance service for a private Markdown context repository.
 It provides a small Web UI for GitHub device authorization, repository cloning,
-scheduled proposal generation, diff review, and explicitly confirmed
-commit/push.
+and automatic scheduled maintenance: pull the latest checkout, ask a model
+runner for bounded Markdown edits, validate them, commit, and push. Every run is
+recorded with its changes, reasons, and diffs for later inspection.
 
 The service never runs code from the cloned context repository. Personal
-context, credentials, proposals, and runtime state stay in the private data
+context, credentials, run audits, and runtime state stay in the private data
 volume. This repository contains only generic service code and Web assets.
 
 ## Image
@@ -30,7 +31,7 @@ docker build -f deploy/Dockerfile -t folio-service .
 
 ```text
 cmd/folio/      service entrypoint and CLI
-internal/       context router, proposal worker, Git/GitHub store, Web server
+internal/       context router, maintenance worker, Git/GitHub store, Web server
 web/            static Web UI served by the Go binary
 deploy/         Dockerfile, entrypoint and deployment notes
 compose.yaml    NAS Compose example
@@ -41,11 +42,19 @@ compose.yaml    NAS Compose example
 The image is public and must never contain canonical context, inbox contents,
 Git history, generated packets, reports, credentials, or runtime volumes. The
 service clones a private repository only after owner authorization; the
-checkout, proposals, and secrets live in separate private volume directories.
-Scheduled jobs produce pending-review proposals. Only an authenticated owner
-may preview and confirm a small canonical diff before commit and push.
+checkout, run audits, and secrets live in separate private volume directories.
+Scheduled jobs pull first, then accept at most eight Markdown files from the
+runner, reject sensitive or non-canonical paths, verify that the checkout
+contains only those edits, commit, and push. A failed validation or push is
+rolled back and recorded; it never leaves a partial commit. Automatic runs use
+Codex by default. An operator can trigger a run with DSH from the Web UI when
+its headless profile is installed. See `deploy/README.md` for DSH setup.
 
-The Codex sandbox is not an OS boundary against every readable file. Keep
+Each run stores status (`pushed`, `no_changes`, `skipped`, `failed`), pull and
+push evidence, commit, summary, per-file reasons and diffs under the private
+runtime directory. The Web UI exposes the latest run, history, and exact diffs.
+
+A maintenance runtime sandbox is not an OS boundary against every readable file. Keep
 unrelated secrets off the service account and volume, and expose the Web UI only
 through loopback, an SSH tunnel, or an authenticated HTTPS reverse proxy.
 

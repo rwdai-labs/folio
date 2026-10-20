@@ -3,140 +3,269 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <meta name="referrer" content="no-referrer">
-  <title>Personal Context Maintainer</title>
+  <title>Folio · Context maintainer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231d6b57'/%3E%3Cpath d='M20 18h26v8H28v8h14v8H28v12h-8z' fill='%23fff'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">Personal Context</p>
-        <h1>Maintainer</h1>
-      </div>
-      <div class="session-actions">
-        <span id="connection-state" class="status-dot" data-state="offline">Offline</span>
-        <button id="logout-button" class="button secondary" type="button" hidden>Log out</button>
-      </div>
-    </header>
+  <a class="skip-link" href="#main" data-i18n="app.skip">Skip to content</a>
 
-    <section id="login-panel" class="panel login-panel" aria-labelledby="login-heading">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">Local owner</p>
-          <h2 id="login-heading">Sign in</h2>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">F</span>
+        <span class="brand-text">
+          <span class="brand-name">Folio</span>
+          <span class="brand-tagline" data-i18n="app.tagline">Context maintenance console</span>
+        </span>
+      </a>
+      <div class="header-tools">
+        <span id="connection-state" class="status-pill" data-state="checking">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connection-label">Checking…</span>
+        </span>
+        <div class="lang-switch" role="group" aria-label="Language" data-i18n-aria-label="lang.aria">
+          <button type="button" class="lang-option" data-lang="zh" lang="zh-CN">中文</button>
+          <button type="button" class="lang-option" data-lang="en" lang="en">EN</button>
         </div>
+        <button id="logout-button" class="btn ghost small" type="button" hidden>
+          <span class="btn-label" data-i18n="auth.logout">Log out</span>
+        </button>
       </div>
-      <form id="login-form" class="stack-form">
-        <label for="password">Admin password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096">
-        <button class="button primary" type="submit">Sign in</button>
-      </form>
-      <p id="login-message" class="message" role="status" aria-live="polite"></p>
+    </div>
+  </header>
+
+  <main id="main" class="shell">
+    <section id="login-view" class="login-view" aria-labelledby="login-heading">
+      <div class="login-card">
+        <p class="eyebrow" data-i18n="login.eyebrow">Local owner</p>
+        <h1 id="login-heading" data-i18n="login.title">Sign in</h1>
+        <p class="lede" data-i18n="login.lead">This console is bound to this host. Use the administrator password from the private data volume.</p>
+        <form id="login-form" class="form" novalidate>
+          <div class="field">
+            <label for="password" data-i18n="login.password">Administrator password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096" placeholder="Enter the administrator password" data-i18n-placeholder="login.placeholder">
+          </div>
+          <button id="login-submit" class="btn primary block" type="submit">
+            <span class="btn-label" data-i18n="login.submit">Sign in</span>
+          </button>
+          <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
+        </form>
+        <p class="hint" data-i18n="login.hint">Stored at secrets/admin-password in the service data volume.</p>
+      </div>
     </section>
 
-    <div id="workspace" hidden>
-      <section class="panel" aria-labelledby="github-heading">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">Provider</p>
-            <h2 id="github-heading">GitHub</h2>
-          </div>
-          <div class="button-row">
-            <button id="github-start" class="button secondary" type="button">Start device login</button>
-            <button id="github-poll" class="button secondary" type="button">Check login</button>
-            <button id="github-logout" class="button quiet" type="button">Disconnect</button>
-          </div>
-        </div>
-        <div id="github-output" class="output" aria-live="polite"></div>
-      </section>
+    <div id="app-view" class="app-layout" hidden>
+      <aside class="sidebar">
+        <nav class="section-nav" aria-label="Sections" data-i18n-aria-label="nav.aria">
+          <a href="#github-section" data-i18n="nav.github">GitHub</a>
+          <a href="#repository-section" data-i18n="nav.repository">Repository</a>
+          <a href="#automation-section" data-i18n="nav.automation">Automation</a>
+        </nav>
 
-      <section class="panel" aria-labelledby="repository-heading">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">Remote</p>
-            <h2 id="repository-heading">Repository</h2>
-          </div>
-          <button id="sync-button" class="button primary" type="button">Sync repository</button>
-        </div>
-        <form id="repository-form" class="repo-form">
-          <label for="repo-owner">Owner</label>
-          <input id="repo-owner" name="owner" autocomplete="off" maxlength="100" required>
-          <label for="repo-name">Name</label>
-          <input id="repo-name" name="name" autocomplete="off" maxlength="100" required>
-          <button class="button secondary" type="submit">Connect</button>
-        </form>
-        <div id="repository-output" class="output" aria-live="polite"></div>
-      </section>
+        <section class="side-card" aria-labelledby="state-heading">
+          <h2 id="state-heading" class="side-title" data-i18n="state.title">Current state</h2>
+          <dl class="facts">
+            <div class="fact"><dt data-i18n="state.github">GitHub</dt><dd id="fact-github">—</dd></div>
+            <div class="fact"><dt data-i18n="state.repository">Repository</dt><dd id="fact-repository">—</dd></div>
+            <div class="fact"><dt data-i18n="state.branch">Branch</dt><dd id="fact-branch">—</dd></div>
+            <div class="fact"><dt data-i18n="state.head">HEAD</dt><dd id="fact-head">—</dd></div>
+            <div class="fact"><dt data-i18n="state.model">Codex</dt><dd id="fact-model">—</dd></div>
+            <div class="fact"><dt data-i18n="state.scheduler">Scheduler</dt><dd id="fact-scheduler">—</dd></div>
+            <div class="fact"><dt data-i18n="state.last_run">Last run</dt><dd id="fact-last-run">—</dd></div>
+          </dl>
+          <button id="refresh-button" class="btn ghost small" type="button">
+            <span class="btn-label" data-i18n="common.refresh">Refresh</span>
+          </button>
+        </section>
+      </aside>
 
-      <section class="panel" aria-labelledby="maintenance-heading">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">Review queue</p>
-            <h2 id="maintenance-heading">Maintenance</h2>
-          </div>
-          <div class="button-row">
-            <button id="refresh-button" class="button quiet" type="button">Refresh</button>
-            <button id="run-button" class="button primary" type="button">Run report</button>
-            <button id="run-agent-button" class="button secondary" type="button">Run Codex review</button>
-          </div>
-        </div>
-        <div class="maintenance-controls">
-          <label for="model-input">Model (optional)</label>
-          <input id="model-input" name="model" autocomplete="off" maxlength="128" placeholder="Default model">
-        </div>
-        <div class="maintenance-grid">
-          <div>
-            <h3>Current state</h3>
-            <pre id="state-output" class="output pre-output"></pre>
-          </div>
-          <div>
-            <h3>Deterministic report</h3>
-            <pre id="report-output" class="output pre-output"></pre>
-          </div>
-        </div>
-        <p id="maintenance-message" class="message" role="status" aria-live="polite"></p>
-      </section>
+      <div class="panels">
+        <section id="github-section" class="card" aria-labelledby="github-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="github.kicker">Identity</p>
+              <h2 id="github-heading" data-i18n="github.title">GitHub</h2>
+            </div>
+            <span id="github-badge" class="badge" data-state="unknown">Not checked</span>
+          </header>
+          <p class="lede" data-i18n="github.lead">Authorize Folio to read and push to your private context repository. The token stays in the private data volume.</p>
 
-      <section class="panel" aria-labelledby="proposals-heading">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">Pending review</p>
-            <h2 id="proposals-heading">Codex proposals</h2>
+          <div id="github-device" class="device-card" hidden>
+            <div class="device-head">
+              <div>
+                <p class="device-label" data-i18n="github.code_label">One-time code</p>
+                <code id="github-user-code" class="device-code" aria-live="polite">----</code>
+              </div>
+              <div class="device-side">
+                <p id="github-expiry" class="device-expiry" role="status"></p>
+                <button id="github-copy" class="btn ghost small" type="button">
+                  <span class="btn-label" data-i18n="github.copy_code">Copy code</span>
+                </button>
+              </div>
+            </div>
+            <div class="device-actions">
+              <a id="github-open" class="btn primary" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">
+                <span class="btn-label" data-i18n="github.open">Open GitHub device page</span>
+              </a>
+            </div>
+            <p class="device-hint" data-i18n="github.instructions">Open the GitHub page, enter this code, and approve access. This page checks automatically.</p>
           </div>
-          <button id="proposals-refresh" class="button quiet" type="button">Refresh proposals</button>
-        </div>
-        <div id="proposals-list" class="proposal-list" aria-live="polite"></div>
-      </section>
 
-      <section class="panel" aria-labelledby="editor-heading">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">Reviewed edit</p>
-            <h2 id="editor-heading">Preview change</h2>
+          <div class="actions">
+            <button id="github-start" class="btn primary" type="button">
+              <span class="btn-label" data-i18n="github.start">Start device login</span>
+            </button>
+            <button id="github-poll" class="btn secondary" type="button">
+              <span class="btn-label" data-i18n="github.poll">Check status</span>
+            </button>
+            <button id="github-logout" class="btn ghost" type="button" hidden>
+              <span class="btn-label" data-i18n="github.logout">Disconnect</span>
+            </button>
           </div>
-        </div>
-        <form id="editor-form" class="editor-form">
-          <label for="change-target">Target</label>
-          <input id="change-target" name="target" placeholder="inbox/candidate.md" autocomplete="off" maxlength="512" required>
-          <label for="change-content">Content</label>
-          <textarea id="change-content" name="content" rows="16" maxlength="262144" required></textarea>
-          <label for="commit-message">Commit message</label>
-          <input id="commit-message" name="message" value="Reviewed context change" maxlength="200" required>
-          <button id="preview-button" class="button secondary" type="submit">Preview diff</button>
-        </form>
-        <div class="preview-wrap">
-          <pre id="preview-output" class="output pre-output"></pre>
-          <label id="confirm-row" class="confirm-row" hidden>
-            <input id="confirm-change" type="checkbox">
-            <span>I reviewed this preview and authorize the commit and push.</span>
-          </label>
-          <button id="apply-button" class="button primary" type="button" disabled>Commit and push reviewed change</button>
-        </div>
-        <p id="editor-message" class="message" role="status" aria-live="polite"></p>
-      </section>
+          <p id="github-message" class="form-message" role="status" aria-live="polite"></p>
+          <details class="raw-details">
+            <summary data-i18n="common.details">Technical details</summary>
+            <pre id="github-output" class="output raw-output"></pre>
+          </details>
+        </section>
+
+        <section id="repository-section" class="card" aria-labelledby="repository-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="repo.kicker">Remote</p>
+              <h2 id="repository-heading" data-i18n="repo.title">Repository</h2>
+            </div>
+            <span id="repository-badge" class="badge" data-state="unknown">Not connected</span>
+          </header>
+          <p class="lede" data-i18n="repo.lead">Connect the private Markdown repository. The checkout stays in the private data volume.</p>
+
+          <div id="repository-summary" class="repo-summary" hidden>
+            <div class="repo-summary-main">
+              <p class="device-label" data-i18n="repo.current">Current repository</p>
+              <strong id="repo-current-name">—</strong>
+            </div>
+            <dl class="repo-meta">
+              <div>
+                <dt data-i18n="repo.branch">Branch</dt>
+                <dd><code id="repo-current-branch">—</code></dd>
+              </div>
+              <div>
+                <dt data-i18n="repo.head">HEAD</dt>
+                <dd><code id="repo-current-head">—</code></dd>
+              </div>
+            </dl>
+          </div>
+
+          <form id="repository-form" class="form form-inline" novalidate>
+            <div class="field">
+              <label for="repo-owner" data-i18n="repo.owner">Owner</label>
+              <input id="repo-owner" name="owner" autocomplete="off" maxlength="100" required>
+            </div>
+            <div class="field">
+              <label for="repo-name" data-i18n="repo.name">Name</label>
+              <input id="repo-name" name="name" autocomplete="off" maxlength="100" required>
+            </div>
+            <div class="actions">
+              <button id="repo-connect" class="btn secondary" type="submit">
+                <span class="btn-label" data-i18n="repo.connect">Connect</span>
+              </button>
+            </div>
+          </form>
+          <p class="hint" data-i18n="repo.connect_hint">Use the owner and repository name, for example owner/context.</p>
+
+          <div class="actions">
+            <button id="sync-button" class="btn primary" type="button">
+              <span class="btn-label" data-i18n="repo.sync">Sync repository</span>
+            </button>
+          </div>
+          <p id="repository-message" class="form-message" role="status" aria-live="polite"></p>
+          <details class="raw-details">
+            <summary data-i18n="common.details">Technical details</summary>
+            <pre id="repository-output" class="output raw-output"></pre>
+          </details>
+        </section>
+
+        <section id="automation-section" class="card" aria-labelledby="automation-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="automation.kicker">Autopilot</p>
+              <h2 id="automation-heading" data-i18n="automation.title">Automatic maintenance</h2>
+            </div>
+            <span id="automation-badge" class="badge" data-state="unknown">Not checked</span>
+          </header>
+          <p class="lede" data-i18n="automation.lead">Folio pulls the latest context, asks the runner for bounded Markdown edits, validates them, and pushes the result. Every run is recorded below with its edits and diffs.</p>
+
+          <dl class="facts automation-facts">
+            <div class="fact"><dt data-i18n="automation.schedule">Schedule</dt><dd id="automation-schedule">—</dd></div>
+            <div class="fact"><dt data-i18n="automation.next_run">Next run</dt><dd id="automation-next">—</dd></div>
+            <div class="fact"><dt data-i18n="automation.last_run">Last run</dt><dd id="automation-last">—</dd></div>
+          </dl>
+
+          <form id="automation-form" class="form form-inline" novalidate>
+            <div class="field">
+              <label for="runner-select" data-i18n="automation.runner">Runner</label>
+              <select id="runner-select" name="runner">
+                <option value="codex" data-i18n="runner.codex">Codex</option>
+                <option value="dsh" data-i18n="runner.dsh">DSH</option>
+              </select>
+              <p id="runner-hint" class="hint" hidden></p>
+            </div>
+            <div class="field grow">
+              <label for="model-input" data-i18n="automation.model">Model (optional)</label>
+              <input id="model-input" name="model" autocomplete="off" maxlength="128" placeholder="Provider default" data-i18n-placeholder="automation.model_placeholder">
+            </div>
+            <div class="actions">
+              <button id="run-now-button" class="btn primary" type="button">
+                <span class="btn-label" data-i18n="automation.run_now">Run now</span>
+              </button>
+            </div>
+          </form>
+          <p class="hint" data-i18n="automation.runner_hint">Scheduled runs always use Codex. Run now can use Codex or the installed DSH runner.</p>
+          <p id="automation-message" class="form-message" role="status" aria-live="polite"></p>
+
+          <section class="automation-panel" aria-labelledby="latest-run-heading">
+            <div class="section-subhead">
+              <h3 id="latest-run-heading" data-i18n="automation.latest">Latest run</h3>
+              <button id="automation-refresh" class="btn ghost small" type="button">
+                <span class="btn-label" data-i18n="automation.refresh">Refresh runs</span>
+              </button>
+            </div>
+            <div id="latest-run" class="run-detail" aria-live="polite"></div>
+          </section>
+
+          <section class="automation-panel" aria-labelledby="runs-heading">
+            <div class="section-subhead">
+              <h3 id="runs-heading" data-i18n="automation.history">Run history</h3>
+              <span class="hint" data-i18n="automation.history_hint">Newest first. Select a run to inspect its edits.</span>
+            </div>
+            <div id="runs-list" class="run-list" aria-live="polite"></div>
+          </section>
+
+          <details class="raw-details">
+            <summary data-i18n="common.details">Technical details</summary>
+            <pre id="automation-output" class="output raw-output"></pre>
+          </details>
+        </section>
+      </div>
     </div>
   </main>
+
+  <footer class="site-footer">
+    <div class="shell">
+      <p data-i18n="app.footer">Runs locally. Automatic maintenance pulls, organizes, validates, and pushes on its own schedule.</p>
+    </div>
+  </footer>
+
+  <noscript>
+    <div class="shell">
+      <p class="noscript">This console requires JavaScript. / 此控制台需要启用 JavaScript。</p>
+    </div>
+  </noscript>
+
+  <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>
