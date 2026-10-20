@@ -1,0 +1,16 @@
+# Optional Compose override: reuse the host Codex and DSH CLI configuration.
+#
+#   docker compose -f compose.yaml -f deploy/compose.host-config.yaml up -d
+#
+# The mounts are read-only. The entrypoint copies only the small configuration
+# subset it needs into the private /data volume; host ownership, history, and
+# session state are not touched. Remove DSH_CREDENTIALS: stored if you prefer
+# to supply /data/dsh/.env through a secret manager instead of reusing the DSH
+# credential file.
+services:
+  folio:
+    volumes:
+      - ${HOME}/.codex:/host/codex:ro
+      - ${HOME}/.dsh:/host/dsh:ro
+    environment:
+      DSH_CREDENTIALS: stored

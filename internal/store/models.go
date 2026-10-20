@@ -5,35 +5,47 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"folio/internal/dshconfig"
 )
 
 const (
-	maxModelOptions = 24
+	maxModelOptions = 64
 	modelCatalogTTL = 10 * time.Minute
 )
 
-// DSH's headless profile ships these official DeepSeek routes. The model
-// selector also accepts free-form ids, so a deployment with a different
-// provider catalog is not limited to this list.
-var dshModelOptions = []map[string]any{
-	{"id": "deepseek-flash", "label": "DeepSeek-V4.1-Flash"},
-	{"id": "deepseek-v4-pro", "label": "DeepSeek-V4-Pro"},
+// dshRunnerEnv forwards the deployment's DSH model configuration to the worker
+// that launches DSH. Paths are resolved by the worker, so a host mount and a
+// service-owned import behave the same way. The worker validates every value
+// before use.
+func dshRunnerEnv() map[string]string {
+	result := make(map[string]string)
+	for _, key := range []string{"DSH_CONFIG_PATCH", "DSH_CONFIG_HOME", "DSH_MODEL_PROVIDER", "DSH_CREDENTIALS"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			result[key] = value
+		}
+	}
+	return result
 }
 
-// dshProviderEnv forwards an optional deployment-level provider override to the
-// worker that launches DSH. The worker validates the value before use.
-func dshProviderEnv() map[string]string {
-	value := strings.TrimSpace(os.Getenv("DSH_MODEL_PROVIDER"))
-	if value == "" {
-		return nil
+// dshProviderForModel resolves the route for a selected model from the actual
+// DSH profile patch. A missing configuration returns an empty provider so the
+// worker can keep the profile's own default.
+func dshProviderForModel(model string) string {
+	if provider := strings.TrimSpace(os.Getenv("DSH_MODEL_PROVIDER")); provider != "" {
+		return provider
 	}
-	return map[string]string{"DSH_MODEL_PROVIDER": value}
+	config, err := dshconfig.LoadFromEnv()
+	if err != nil {
+		return ""
+	}
+	return config.ProviderForModel(model)
 }
 
 // ModelCatalog returns bounded suggestions for the runner model selector. It
 // never exposes credentials or provider endpoints: Codex contributes only the
-// display name and slug from its local catalog, and DSH contributes the public
-// model ids shipped with its headless profile.
+// display name and slug from its local catalog, and DSH contributes only model
+// ids declared by the mounted/active profile patch.
 func (s *Store) ModelCatalog() map[string]any {
 	s.modelCatalogMu.Lock()
 	defer s.modelCatalogMu.Unlock()
@@ -42,11 +54,40 @@ func (s *Store) ModelCatalog() map[string]any {
 	}
 	catalog := map[string]any{
 		"codex": s.codexModelOptions(),
-		"dsh":   dshModelOptions,
+		"dsh":   dshModelOptions(),
 	}
 	s.modelCatalogData = catalog
 	s.modelCatalogAt = time.Now()
 	return catalog
+}
+
+// dshModelOptions reads the configured DSH profile. There is deliberately no
+// built-in list: a profile with no model declarations has no suggestions,
+// while the free-form field remains available.
+func dshModelOptions() []map[string]any {
+	config, err := dshconfig.LoadFromEnv()
+	if err != nil {
+		return []map[string]any{}
+	}
+	options := make([]map[string]any, 0, len(config.Models))
+	for _, model := range config.Models {
+		if len(options) >= maxModelOptions {
+			break
+		}
+		if !modelRE.MatchString(model.ID) {
+			continue
+		}
+		label := publicText(model.Label, 120)
+		if label == "" {
+			label = model.ID
+		}
+		option := map[string]any{"id": model.ID, "label": label}
+		if model.Provider != "" {
+			option["provider"] = model.Provider
+		}
+		options = append(options, option)
+	}
+	return options
 }
 
 // codexModelOptions reads the installed CLI's catalog. Older Codex builds may

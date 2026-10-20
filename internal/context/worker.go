@@ -18,6 +18,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"folio/internal/dshconfig"
 )
 
 var claimTypes = map[string]bool{
@@ -45,6 +47,7 @@ type AgentOptions struct {
 	Device     string
 	RuntimeDir string
 	Model      string
+	Provider   string
 	Runner     string
 	Timeout    time.Duration
 	Auto       bool
@@ -766,6 +769,10 @@ func (r *Router) buildWorkerEnv(providerEnv string, runtime string) ([]string, e
 }
 
 func safeEnvName(key string) bool {
+	switch key {
+	case "DSH_CONFIG_PATCH", "DSH_CONFIG_HOME", "DSH_CREDENTIALS", "DSH_MODEL_PROVIDER":
+		return true
+	}
 	upper := strings.ToUpper(key)
 	for _, marker := range []string{"TOKEN", "SECRET", "PASSWORD", "PRIVATE", "CREDENTIAL", "AUTH"} {
 		if strings.Contains(upper, marker) {
@@ -955,8 +962,17 @@ func reviewDSHPrompt(prompt []byte, schema string) []byte {
 
 const defaultDSHModelProvider = "deepseek-official"
 
-func dshModelProvider() (string, error) {
+func dshModelProvider(model, explicit string, config dshconfig.Config) (string, error) {
 	provider := strings.TrimSpace(os.Getenv("DSH_MODEL_PROVIDER"))
+	if provider == "" {
+		provider = strings.TrimSpace(explicit)
+	}
+	if provider == "" {
+		provider = config.ProviderForModel(model)
+	}
+	if provider == "" {
+		provider = config.DefaultProvider
+	}
 	if provider == "" {
 		provider = defaultDSHModelProvider
 	}
@@ -966,11 +982,34 @@ func dshModelProvider() (string, error) {
 	return provider, nil
 }
 
+func dshStoredCredentials() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("DSH_CREDENTIALS"))) {
+	case "stored", "host":
+		return true
+	default:
+		return false
+	}
+}
+
 // dshModelPatch is a temporary launcher overlay. Headless mode has no model
 // flag, so the selected model is applied to the composition's default model
-// row for this one process only.
-func dshModelPatch(model, provider string) []byte {
-	return []byte(fmt.Sprintf("- id: agent-default-model\n  config:\n    provider: %q\n    model: %q\n", provider, model))
+// row for this one process only. When the selected route came from a mounted
+// DSH profile, its provider declaration is copied into the same overlay; the
+// host profile itself is never modified.
+func dshModelPatch(model, provider string, config dshconfig.Config, storedCredentials bool) []byte {
+	var patch strings.Builder
+	if provider != "" {
+		patch.WriteString(config.ProviderPatch(provider))
+	}
+	if storedCredentials {
+		patch.WriteString("- id: credentials\n  disabled: false\n")
+		patch.WriteString("- id: authorization\n  disabled: false\n")
+		patch.WriteString("- id: deepseek-account\n  disabled: false\n")
+	}
+	if model != "" {
+		fmt.Fprintf(&patch, "- id: agent-default-model\n  config:\n    provider: %q\n    model: %q\n", provider, model)
+	}
+	return []byte(patch.String())
 }
 
 func workerDSHArgs(modelPatch string) []string {
@@ -1090,14 +1129,19 @@ func (r *Router) runDSHReview(options AgentOptions, data ReviewData, digest stri
 	}
 	defer os.RemoveAll(work)
 	_ = os.Chmod(work, 0o700)
+	dshConfig, configErr := dshconfig.LoadFromEnv()
+	if configErr != nil && options.Model != "" {
+		return errors.New("DSH model configuration is unavailable")
+	}
+	provider, err := dshModelProvider(options.Model, options.Provider, dshConfig)
+	if err != nil {
+		return err
+	}
+	patch := dshModelPatch(options.Model, provider, dshConfig, dshStoredCredentials())
 	modelPatch := ""
-	if options.Model != "" {
-		provider, err := dshModelProvider()
-		if err != nil {
-			return err
-		}
+	if len(patch) > 0 {
 		modelPatch = filepath.Join(work, "model.yml")
-		if err := os.WriteFile(modelPatch, dshModelPatch(options.Model, provider), 0o600); err != nil {
+		if err := os.WriteFile(modelPatch, patch, 0o600); err != nil {
 			return errors.New("DSH review could not be prepared")
 		}
 	}
@@ -1471,6 +1515,14 @@ func validateAgentOptions(options AgentOptions) error {
 	}
 	if options.Model != "" && (!workerModelPattern.MatchString(options.Model) || len([]rune(options.Model)) > maxWorkerModelLen) {
 		return errors.New("model name is invalid")
+	}
+	if options.Provider != "" {
+		if options.Runner == "codex" {
+			return errors.New("provider is only valid for dsh")
+		}
+		if !workerModelPattern.MatchString(options.Provider) || len([]rune(options.Provider)) > maxWorkerModelLen {
+			return errors.New("model provider is invalid")
+		}
 	}
 	if options.Auto && strings.TrimSpace(options.AutoReport) == "" {
 		return errors.New("automatic maintenance report path is required")

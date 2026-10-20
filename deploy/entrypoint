@@ -3,6 +3,60 @@ set -eu
 
 # A bind mount or a new Docker volume may be root-owned. Repair only the
 # dedicated service volume, then drop privileges before reading it.
-mkdir -p /data
+mkdir -p /data /data/runtime /data/home /data/dsh /data/codex
+
+# Import a deliberately small, documented subset of the host CLI homes. The
+# host directories are expected to be mounted read-only at /host/codex and
+# /host/dsh; this function never writes to them and never copies history,
+# sessions, plugins, or other unbounded runtime state.
+import_codex_home() {
+  source="${CODEX_CONFIG_HOME:-/host/codex}"
+  [ -d "$source" ] || return 0
+  for file in auth.json config.toml models_cache.json; do
+    [ -f "$source/$file" ] || continue
+    cp -f "$source/$file" "/data/codex/$file"
+    chmod 0600 "/data/codex/$file"
+  done
+}
+
+import_dsh_home() {
+  source="${DSH_CONFIG_HOME:-/host/dsh}"
+  [ -d "$source" ] || return 0
+  mkdir -p /data/dsh/imported
+
+  for file in .credentials.yaml .env; do
+    [ -f "$source/$file" ] || continue
+    cp -f "$source/$file" "/data/dsh/$file"
+    chmod 0600 "/data/dsh/$file"
+  done
+
+  profiles="$source/profiles"
+  if [ -d "$profiles" ]; then
+    for patch in "$profiles"/*/cordis.patch.yml; do
+      [ -f "$patch" ] || continue
+      name=$(basename "$(dirname "$patch")")
+      case "$name" in
+        ""|*[!A-Za-z0-9._-]*) continue ;;
+      esac
+      mkdir -p "/data/dsh/imported/profiles/$name"
+      cp -f "$patch" "/data/dsh/imported/profiles/$name/cordis.patch.yml"
+      chmod 0600 "/data/dsh/imported/profiles/$name/cordis.patch.yml"
+    done
+  fi
+  if [ -f "$source/cordis.patch.yml" ]; then
+    cp -f "$source/cordis.patch.yml" "/data/dsh/imported/cordis.patch.yml"
+    chmod 0600 "/data/dsh/imported/cordis.patch.yml"
+  fi
+
+  # Let the service discover the imported profile patches unless the operator
+  # pointed it at a specific file or another home.
+  if [ -z "${DSH_CONFIG_PATCH:-}" ]; then
+    export DSH_CONFIG_HOME=/data/dsh/imported
+  fi
+}
+
+import_codex_home
+import_dsh_home
+
 chown -R context:context /data
 exec gosu context "$@"

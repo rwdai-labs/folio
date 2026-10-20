@@ -68,25 +68,58 @@ with either runner; Codex remains the default.
 - **Codex** is the existing path: use the device login or provider configuration
   described above. The Web UI suggests models from the installed Codex catalog
   and also accepts a typed model id.
-- **DSH** runs the image's `dsh` CLI with its `headless` profile. It needs a
-  provider credential file at `/data/dsh/.env`, mode `0600`, owned by the
-  service user, for example:
+- **DSH** runs the image's `dsh` CLI with its `headless` profile. It can use
+  either a provider credential file at `/data/dsh/.env` (mode `0600`, for
+  example `DEEPSEEK_API_KEY=...`) or the credentials saved by the host DSH
+  installation. The model selector reads the actual `llm-pi-ai` providers and
+  models declared by a mounted DSH profile; it has no built-in model list. A
+  selected model is applied through a temporary one-process profile patch that
+  also carries the selected provider's declaration, so the host profile is
+  never modified. The field remains free-form for a model id not in the
+  mounted profile. Set `DSH_MODEL_PROVIDER` to override the provider used for a
+  typed id. Leave the field blank to keep the profile default.
 
-  ```
-  DEEPSEEK_API_KEY=...
-  ```
+  The runner stays read-only; model credentials never enter the request, a
+  maintenance report or the repository. The first DSH run initializes
+  `/data/dsh/profiles/headless`, so allow network access to the provider. Do
+  not put real credentials in Compose, the context repository or chat; create
+  the file through your secret manager or a private shell, never through a
+  shared log.
 
-  Headless mode ignores credentials saved in the DSH Web GUI. The model field
-  offers the headless profile's official DeepSeek suggestions and accepts any
-  other id. A selected model is applied through a temporary one-process profile
-  patch using the `deepseek-official` provider; set `DSH_MODEL_PROVIDER` when a
-  custom deployment uses a different registered provider route. Leave the field
-  blank to keep the profile default. The runner stays read-only; model
-  credentials never enter the request, a maintenance report or the repository.
-  The first DSH run initializes `/data/dsh/profiles/headless`, so allow network
-  access to the provider. Do not put real credentials in Compose, the context
-  repository or chat; create the file through your secret manager or a private
-  shell, never through a shared log.
+### Reuse the host Codex/DSH configuration
+
+The optional [`compose.host-config.yaml`](compose.host-config.yaml) override
+mounts `~/.codex` and `~/.dsh` read-only at `/host/codex` and `/host/dsh`:
+
+```bash
+docker compose -f compose.yaml -f deploy/compose.host-config.yaml up -d
+```
+
+The entrypoint imports only a bounded configuration subset into the private
+`/data` volume before dropping privileges:
+
+| Host source | Imported into | Purpose |
+| --- | --- | --- |
+| `~/.codex/auth.json`, `config.toml`, `models_cache.json` | `/data/codex/` | Existing Codex sign-in and provider routing |
+| `~/.dsh/.credentials.yaml` | `/data/dsh/.credentials.yaml` | Stored DSH provider keys |
+| `~/.dsh/.env` | `/data/dsh/.env` | DSH provider environment fallback |
+| `~/.dsh/profiles/*/cordis.patch.yml` | `/data/dsh/imported/profiles/` | Actual DSH model/provider catalog |
+
+History databases, sessions, plugins, and `node_modules` are not copied. The
+host directories are mounted read-only and are never chowned; only `/data`
+changes ownership. The service discovers imported profile patches
+automatically (preferring `web`, then `headless`, then another profile).
+
+To enable the imported stored DSH credentials, the override sets
+`DSH_CREDENTIALS: stored`. This restores the headless profile's credential,
+authorization, and DeepSeek-account rows for the one-process overlay. Without
+that setting, headless mode keeps its normal behavior and uses environment /
+`.env` credentials only. Remove the setting if you provide credentials through
+a secret manager instead.
+
+For a custom location, set `CODEX_CONFIG_HOME` / `DSH_CONFIG_HOME` to the
+mounted directory, or set `DSH_CONFIG_PATCH` to one specific
+`cordis.patch.yml`. An explicit `DSH_CONFIG_PATCH` wins over profile discovery.
 
 The scheduler runs every 86400 seconds after startup. Each tick pulls the
 latest checkout, asks the runner for bounded Markdown edits, validates and
@@ -110,7 +143,9 @@ docker compose up -d
 
 For an HTTPS reverse proxy, configure explicit `TRUSTED_HOSTS` and
 `TRUSTED_ORIGINS` and enable `COOKIE_SECURE=true`. Do not expose the plain HTTP
-port on the public internet. No host home directory or Docker socket is mounted.
+port on the public internet. The base Compose file mounts no host home
+directory or Docker socket. The optional host-config override mounts only
+`~/.codex` and `~/.dsh` read-only and imports a bounded subset into `/data`.
 
 ## Package and build boundary
 

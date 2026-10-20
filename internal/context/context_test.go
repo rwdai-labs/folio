@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"folio/internal/dshconfig"
 )
 
 func testRouter(t *testing.T) *Router {
@@ -360,18 +362,60 @@ func TestWorkerDSHArgsAndPrompt(t *testing.T) {
 
 func TestDSHModelPatch(t *testing.T) {
 	t.Setenv("DSH_MODEL_PROVIDER", "")
-	provider, err := dshModelProvider()
+	provider, err := dshModelProvider("example-large", "", dshconfig.Config{})
 	if err != nil || provider != "deepseek-official" {
 		t.Fatalf("default provider=%q err=%v", provider, err)
 	}
-	patch := string(dshModelPatch("deepseek-v4-pro", provider))
-	for _, required := range []string{"- id: agent-default-model", `provider: "deepseek-official"`, `model: "deepseek-v4-pro"`} {
+	patch := string(dshModelPatch("example-large", provider, dshconfig.Config{}, false))
+	for _, required := range []string{"- id: agent-default-model", `provider: "deepseek-official"`, `model: "example-large"`} {
 		if !strings.Contains(patch, required) {
 			t.Fatalf("patch omitted %q: %s", required, patch)
 		}
 	}
+	if _, err := dshModelProvider("", "bad provider", dshconfig.Config{}); err == nil {
+		t.Fatal("invalid DSH model provider was accepted")
+	}
+
+	path := filepath.Join(t.TempDir(), "cordis.patch.yml")
+	if err := os.WriteFile(path, []byte(`- id: agent-default-model
+  config:
+    provider: example-route
+    model: example-large:1017
+- id: llm-pi-ai
+  config:
+    providers:
+      example-route:
+        apiKeyEnv: EXAMPLE_API_KEY
+        api: openai-responses
+        baseURL: https://example.invalid/v1
+        models:
+          - id: example-large:1017
+            name: Example Large
+          - id: example-small
+            name: Example Small
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := dshconfig.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err = dshModelProvider("example-small", "", config)
+	if err != nil || provider != "example-route" {
+		t.Fatalf("configured provider=%q err=%v", provider, err)
+	}
+	patch = string(dshModelPatch("example-small", provider, config, true))
+	for _, required := range []string{
+		"- id: llm-pi-ai", "example-route:", "apiKeyEnv: EXAMPLE_API_KEY",
+		`provider: "example-route"`, `model: "example-small"`,
+		"- id: credentials", "- id: authorization", "- id: deepseek-account",
+	} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("configured patch omitted %q: %s", required, patch)
+		}
+	}
 	t.Setenv("DSH_MODEL_PROVIDER", "bad provider")
-	if _, err := dshModelProvider(); err == nil {
+	if _, err := dshModelProvider("example-small", "", config); err == nil {
 		t.Fatal("invalid DSH model provider was accepted")
 	}
 }
@@ -383,6 +427,17 @@ func TestLimitedWriterCapsDSHOutput(t *testing.T) {
 	}
 	if n, err := writer.Write([]byte("x")); n != 1 || err != nil || writer.buffer.Len() != 4 {
 		t.Fatalf("second write n=%d err=%v len=%d", n, err, writer.buffer.Len())
+	}
+}
+
+func TestWorkerDSHConfigEnvironmentIsForwarded(t *testing.T) {
+	for _, key := range []string{"DSH_CONFIG_PATCH", "DSH_CONFIG_HOME", "DSH_MODEL_PROVIDER", "DSH_CREDENTIALS"} {
+		if !safeEnvName(key) {
+			t.Fatalf("%s was filtered from the worker environment", key)
+		}
+	}
+	if safeEnvName("DSH_SOMETHING_ELSE") {
+		t.Fatal("unrelated DSH environment was allowed")
 	}
 }
 
@@ -515,7 +570,7 @@ func TestWorkerDSHRunnerProducesProposalOnlyReport(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "fixture-key")
 	t.Setenv("DSH_MODEL_PROVIDER", "")
 	var output bytes.Buffer
-	options := AgentOptions{Runner: "dsh", RuntimeDir: runtime, Device: "fixture", Model: "deepseek-v4-pro", Timeout: 5 * time.Second}
+	options := AgentOptions{Runner: "dsh", RuntimeDir: runtime, Device: "fixture", Model: "example-large", Timeout: 5 * time.Second}
 	if err := router.RunAgent(options, &output, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +585,7 @@ func TestWorkerDSHRunnerProducesProposalOnlyReport(t *testing.T) {
 	if !strings.Contains(got, "args:--profile headless --patch ") || !strings.Contains(got, " --json -") || !strings.Contains(got, "permission:read-only") || !strings.Contains(got, "home:"+home) {
 		t.Fatalf("dsh invocation was not isolated: %s", got)
 	}
-	if !strings.Contains(got, `provider: "deepseek-official"`) || !strings.Contains(got, `model: "deepseek-v4-pro"`) {
+	if !strings.Contains(got, `provider: "deepseek-official"`) || !strings.Contains(got, `model: "example-large"`) {
 		t.Fatalf("dsh model patch missing: %s", got)
 	}
 	if !strings.Contains(got, "provider_key:\n") || strings.Contains(got, "fixture-key") {

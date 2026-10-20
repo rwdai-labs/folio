@@ -403,6 +403,11 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 	command = append(command, "agent", "--auto", "--device", "Docker", "--runtime-dir", s.runtimeDir, "--runner", runner, "--auto-report", reportPath, "--timeout", "1200")
 	if model != "" {
 		command = append(command, "--model", model)
+		if runner == "dsh" {
+			if provider := dshProviderForModel(model); provider != "" {
+				command = append(command, "--provider", provider)
+			}
+		}
 	}
 	env := map[string]string{
 		"FOLIO_CONTEXT_ROOT": s.repositoryDir,
@@ -410,7 +415,7 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 		"CODEX_HOME":         s.codexDir,
 		"DSH_HOME":           s.dshDir,
 	}
-	for key, value := range dshProviderEnv() {
+	for key, value := range dshRunnerEnv() {
 		env[key] = value
 	}
 	if _, err := s.runCommand(command, s.toolRoot, "", 20*time.Minute, true, env); err != nil {

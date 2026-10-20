@@ -177,6 +177,11 @@ func (s *Store) runMaintenanceLocked(mode, model, runner string) (map[string]any
 		command = append(command, "agent", "--device", "Docker", "--runtime-dir", s.runtimeDir, "--runner", runner)
 		if model != "" {
 			command = append(command, "--model", model)
+			if runner == "dsh" {
+				if provider := dshProviderForModel(model); provider != "" {
+					command = append(command, "--provider", provider)
+				}
+			}
 		}
 	}
 	env := map[string]string{
@@ -185,7 +190,7 @@ func (s *Store) runMaintenanceLocked(mode, model, runner string) (map[string]any
 		"CODEX_HOME":         s.codexDir,
 		"DSH_HOME":           s.dshDir,
 	}
-	for key, value := range dshProviderEnv() {
+	for key, value := range dshRunnerEnv() {
 		env[key] = value
 	}
 	result, err := s.runCommand(command, s.toolRoot, "", 15*time.Minute, true, env)

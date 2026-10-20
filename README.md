@@ -49,8 +49,9 @@ contains only those edits, commit, and push. A failed validation or push is
 rolled back and recorded; it never leaves a partial commit. Automatic runs use
 Codex by default. An operator can trigger a run with Codex or DSH from the Web
 UI when its headless profile is installed; both accept a selected model, and
-the field remains free-form for ids not in the suggestions. See
-`deploy/README.md` for DSH setup.
+the field remains free-form for ids not in the suggestions. Codex suggestions
+come from the installed CLI catalog; DSH suggestions come from the actual
+mounted profile patch. See `deploy/README.md` for DSH and host-config setup.
 
 Each run stores status (`pushed`, `no_changes`, `skipped`, `failed`), runner and
 model, pull and push evidence, commit, summary, per-file reasons and diffs under

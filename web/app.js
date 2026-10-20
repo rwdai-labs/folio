@@ -733,7 +733,8 @@
       if (!item || typeof item.id !== "string" || !item.id || seen.has(item.id)) return;
       seen.add(item.id);
       const label = typeof item.label === "string" && item.label.trim() ? item.label.trim() : item.id;
-      options.push({ id: item.id, label });
+      const provider = typeof item.provider === "string" ? item.provider.trim() : "";
+      options.push({ id: item.id, label, provider });
     });
     return options;
   }
@@ -808,7 +809,8 @@
       option.setAttribute("role", "option");
       option.dataset.modelValue = entry.id;
       option.setAttribute("aria-selected", entry.id === input.value.trim() ? "true" : "false");
-      option.setAttribute("aria-label", entry.id ? `${entry.label} (${entry.id})` : entry.label);
+      const detail = entry.provider ? `${entry.provider} · ${entry.id}` : entry.id;
+      option.setAttribute("aria-label", entry.id ? `${entry.label} (${detail})` : entry.label);
       const label = document.createElement("span");
       label.className = "model-option-label";
       label.textContent = entry.label;
@@ -816,7 +818,7 @@
       if (entry.id) {
         const id = document.createElement("span");
         id.className = "model-option-id";
-        id.textContent = entry.id;
+        id.textContent = detail;
         option.appendChild(id);
       }
       menu.appendChild(option);

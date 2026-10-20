@@ -360,9 +360,26 @@ func TestRunAutomationPassesDSHModelToWorker(t *testing.T) {
 	bin := t.TempDir()
 	capture := filepath.Join(t.TempDir(), "folio-args.txt")
 	providerCapture := filepath.Join(t.TempDir(), "folio-provider.txt")
+	configCapture := filepath.Join(t.TempDir(), "folio-config.txt")
+	configPath := filepath.Join(t.TempDir(), "cordis.patch.yml")
+	if err := os.WriteFile(configPath, []byte(`- id: agent-default-model
+  config:
+    provider: example-route
+    model: example-large
+- id: llm-pi-ai
+  config:
+    providers:
+      example-route:
+        models:
+          - id: example-large
+            name: Example Large
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	script := "#!/bin/sh\n" +
 		"printf '%s' \"$*\" > \"" + capture + "\"\n" +
 		"printf '%s' \"$DSH_MODEL_PROVIDER\" > \"" + providerCapture + "\"\n" +
+		"printf '%s' \"$DSH_CONFIG_PATCH\" > \"" + configCapture + "\"\n" +
 		"while [ \"$#\" -gt 0 ]; do\n" +
 		"  case \"$1\" in\n" +
 		"    --auto-report) shift; report=\"$1\" ;;\n" +
@@ -380,15 +397,16 @@ func TestRunAutomationPassesDSHModelToWorker(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+":/usr/bin:/bin")
 	t.Setenv("DSH_MODEL_PROVIDER", "custom-dsh-provider")
+	t.Setenv("DSH_CONFIG_PATCH", configPath)
 
-	result, err := store.RunAutomation("manual", "dsh", "deepseek-v4-pro")
+	result, err := store.RunAutomation("manual", "dsh", "example-large")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["status"] != "no_changes" || result["runner"] != "dsh" || result["model"] != "deepseek-v4-pro" {
+	if result["status"] != "no_changes" || result["runner"] != "dsh" || result["model"] != "example-large" {
 		t.Fatalf("automation result=%v", result)
 	}
-	if summary := automationSummary(result); summary["runner"] != "dsh" || summary["model"] != "deepseek-v4-pro" {
+	if summary := automationSummary(result); summary["runner"] != "dsh" || summary["model"] != "example-large" {
 		t.Fatalf("automation summary=%v", summary)
 	}
 	raw, err := os.ReadFile(capture)
@@ -396,7 +414,7 @@ func TestRunAutomationPassesDSHModelToWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := string(raw)
-	if !strings.Contains(args, "--runner dsh") || !strings.Contains(args, "--model deepseek-v4-pro") {
+	if !strings.Contains(args, "--runner dsh") || !strings.Contains(args, "--model example-large") || !strings.Contains(args, "--provider custom-dsh-provider") {
 		t.Fatalf("worker args=%s", args)
 	}
 	provider, err := os.ReadFile(providerCapture)
@@ -405,5 +423,12 @@ func TestRunAutomationPassesDSHModelToWorker(t *testing.T) {
 	}
 	if string(provider) != "custom-dsh-provider" {
 		t.Fatalf("worker provider=%q", provider)
+	}
+	configValue, err := os.ReadFile(configCapture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(configValue) != configPath {
+		t.Fatalf("worker config=%q", configValue)
 	}
 }

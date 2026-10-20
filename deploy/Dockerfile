@@ -10,6 +10,7 @@ ARG TARGETARCH
 COPY go.mod ./go.mod
 COPY cmd/folio/main.go ./cmd/folio/main.go
 COPY internal/context/ ./internal/context/
+COPY internal/dshconfig/ ./internal/dshconfig/
 COPY internal/store/ ./internal/store/
 COPY internal/web/ ./internal/web/
 
