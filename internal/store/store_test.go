@@ -205,13 +205,13 @@ func TestMaintenanceUsesOnlyInstalledFolioBinary(t *testing.T) {
 	}
 }
 
-func TestMaintenanceRejectsInvalidRunnerAndDSHModel(t *testing.T) {
+func TestMaintenanceRejectsInvalidRunnerAndModel(t *testing.T) {
 	store := newTestStore(t)
 	if _, err := store.RunMaintenance("agent", "", "other"); err == nil || err.Error() != "runner must be codex or dsh" {
 		t.Fatalf("invalid runner err=%v", err)
 	}
-	if _, err := store.RunMaintenance("agent", "gpt-test", "dsh"); err == nil || err.Error() != "model must be empty for the dsh runner" {
-		t.Fatalf("dsh with model err=%v", err)
+	if _, err := store.RunMaintenance("agent", "bad model", "dsh"); err == nil || err.Error() != "model name is invalid" {
+		t.Fatalf("invalid model err=%v", err)
 	}
 	for _, runner := range []string{"", "codex", "dsh"} {
 		if normalized, err := normalizeRunner(runner); err != nil || (runner == "" && normalized != "codex") || (runner != "" && normalized != runner) {

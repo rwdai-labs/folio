@@ -51,6 +51,7 @@ const (
 
 var (
 	safeRepositoryPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
+	safeModel          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
 	safeJobID          = regexp.MustCompile(`^[0-9a-f-]{36}$`)
 	safePreviewID      = regexp.MustCompile(`^[A-Za-z0-9_-]{20,100}$`)
 	safeReportID       = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
@@ -72,6 +73,7 @@ type Backend interface {
 	RunAutomation(trigger, runner, model string) (map[string]any, error)
 	ListAutomation() (map[string]any, error)
 	AutomationRun(runID string) (map[string]any, error)
+	ModelCatalog() map[string]any
 	SchedulerTick() (map[string]any, error)
 }
 
@@ -934,14 +936,18 @@ func validModel(value any) (string, bool) {
 		return "", true
 	}
 	model, ok := value.(string)
-	if !ok || len(model) > 128 || strings.ContainsAny(model, "\r\n\x00") {
+	if !ok {
 		return "", false
 	}
-	return model, true
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", true
+	}
+	return model, safeModel.MatchString(model)
 }
 
-// validRunner defaults an absent or empty selector to Codex. The DSH profile
-// chooses its own model, so callers must not combine it with --model.
+// validRunner defaults an absent or empty selector to Codex. Both runners
+// accept a model; DSH applies it to a temporary headless profile overlay.
 func validRunner(payload map[string]any) (string, bool) {
 	value, exists := payload["runner"]
 	if !exists {
@@ -1191,6 +1197,7 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		clean := safeMap(value)
+		clean["models"] = safeMap(s.store.ModelCatalog())
 		if latest, ok := clean["latest"].(map[string]any); ok {
 			if id, _ := latest["run_id"].(string); id == "" {
 				clean["latest"] = nil
@@ -1278,10 +1285,6 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusBadRequest, "invalid_model")
 			return
 		}
-		if runner == "dsh" && model != "" {
-			s.writeError(w, http.StatusBadRequest, "invalid_model")
-			return
-		}
 		id, started := s.startJob("automation:"+runner, func() (map[string]any, error) {
 			return s.store.RunAutomation("manual", runner, model)
 		})
@@ -1306,10 +1309,6 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		}
 		model, modelOK := validModel(payload["model"])
 		if !modelOK {
-			s.writeError(w, http.StatusBadRequest, "invalid_model")
-			return
-		}
-		if runner == "dsh" && model != "" {
 			s.writeError(w, http.StatusBadRequest, "invalid_model")
 			return
 		}

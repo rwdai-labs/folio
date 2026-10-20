@@ -66,7 +66,8 @@ Scheduled maintenance uses Codex. The Web UI can also start a run immediately
 with either runner; Codex remains the default.
 
 - **Codex** is the existing path: use the device login or provider configuration
-  described above.
+  described above. The Web UI suggests models from the installed Codex catalog
+  and also accepts a typed model id.
 - **DSH** runs the image's `dsh` CLI with its `headless` profile. It needs a
   provider credential file at `/data/dsh/.env`, mode `0600`, owned by the
   service user, for example:
@@ -75,10 +76,14 @@ with either runner; Codex remains the default.
   DEEPSEEK_API_KEY=...
   ```
 
-  Headless mode ignores credentials saved in the DSH Web GUI. The DSH runner
-  uses the headless profile's default model and runs read-only; model
-  credentials never enter the request, a maintenance report or the
-  repository. The first DSH run initializes `/data/dsh/profiles/headless`, so allow network
+  Headless mode ignores credentials saved in the DSH Web GUI. The model field
+  offers the headless profile's official DeepSeek suggestions and accepts any
+  other id. A selected model is applied through a temporary one-process profile
+  patch using the `deepseek-official` provider; set `DSH_MODEL_PROVIDER` when a
+  custom deployment uses a different registered provider route. Leave the field
+  blank to keep the profile default. The runner stays read-only; model
+  credentials never enter the request, a maintenance report or the repository.
+  The first DSH run initializes `/data/dsh/profiles/headless`, so allow network
   access to the provider. Do not put real credentials in Compose, the context
   repository or chat; create the file through your secret manager or a private
   shell, never through a shared log.

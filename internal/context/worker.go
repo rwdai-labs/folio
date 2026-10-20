@@ -953,8 +953,32 @@ func reviewDSHPrompt(prompt []byte, schema string) []byte {
 	return append(result, '\n')
 }
 
-func workerDSHArgs() []string {
-	return []string{"--profile", "headless", "--json", "-"}
+const defaultDSHModelProvider = "deepseek-official"
+
+func dshModelProvider() (string, error) {
+	provider := strings.TrimSpace(os.Getenv("DSH_MODEL_PROVIDER"))
+	if provider == "" {
+		provider = defaultDSHModelProvider
+	}
+	if !workerModelPattern.MatchString(provider) || len([]rune(provider)) > maxWorkerModelLen {
+		return "", errors.New("DSH model provider is invalid")
+	}
+	return provider, nil
+}
+
+// dshModelPatch is a temporary launcher overlay. Headless mode has no model
+// flag, so the selected model is applied to the composition's default model
+// row for this one process only.
+func dshModelPatch(model, provider string) []byte {
+	return []byte(fmt.Sprintf("- id: agent-default-model\n  config:\n    provider: %q\n    model: %q\n", provider, model))
+}
+
+func workerDSHArgs(modelPatch string) []string {
+	args := []string{"--profile", "headless"}
+	if modelPatch != "" {
+		args = append(args, "--patch", modelPatch)
+	}
+	return append(args, "--json", "-")
 }
 
 // limitedWriter keeps at most limit bytes and silently discards the rest.
@@ -1066,7 +1090,18 @@ func (r *Router) runDSHReview(options AgentOptions, data ReviewData, digest stri
 	}
 	defer os.RemoveAll(work)
 	_ = os.Chmod(work, 0o700)
-	cmd := exec.Command(dsh, workerDSHArgs()...)
+	modelPatch := ""
+	if options.Model != "" {
+		provider, err := dshModelProvider()
+		if err != nil {
+			return err
+		}
+		modelPatch = filepath.Join(work, "model.yml")
+		if err := os.WriteFile(modelPatch, dshModelPatch(options.Model, provider), 0o600); err != nil {
+			return errors.New("DSH review could not be prepared")
+		}
+	}
+	cmd := exec.Command(dsh, workerDSHArgs(modelPatch)...)
 	cmd.Dir = work
 	schema := proposalSchema
 	if options.Auto {

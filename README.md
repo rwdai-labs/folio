@@ -47,12 +47,15 @@ Scheduled jobs pull first, then accept at most eight Markdown files from the
 runner, reject sensitive or non-canonical paths, verify that the checkout
 contains only those edits, commit, and push. A failed validation or push is
 rolled back and recorded; it never leaves a partial commit. Automatic runs use
-Codex by default. An operator can trigger a run with DSH from the Web UI when
-its headless profile is installed. See `deploy/README.md` for DSH setup.
+Codex by default. An operator can trigger a run with Codex or DSH from the Web
+UI when its headless profile is installed; both accept a selected model, and
+the field remains free-form for ids not in the suggestions. See
+`deploy/README.md` for DSH setup.
 
-Each run stores status (`pushed`, `no_changes`, `skipped`, `failed`), pull and
-push evidence, commit, summary, per-file reasons and diffs under the private
-runtime directory. The Web UI exposes the latest run, history, and exact diffs.
+Each run stores status (`pushed`, `no_changes`, `skipped`, `failed`), runner and
+model, pull and push evidence, commit, summary, per-file reasons and diffs under
+the private runtime directory. The Web UI exposes the latest run, history, and
+exact diffs.
 
 A maintenance runtime sandbox is not an OS boundary against every readable file. Keep
 unrelated secrets off the service account and volume, and expose the Web UI only

@@ -131,9 +131,6 @@ func (s *Store) RunMaintenance(mode, model, runner string) (map[string]any, erro
 	if model != "" && !modelRE.MatchString(model) {
 		return nil, errStore("model name is invalid")
 	}
-	if runner == "dsh" && model != "" {
-		return nil, errStore("model must be empty for the dsh runner")
-	}
 	return s.withLock(func() (map[string]any, error) {
 		return s.runMaintenanceLocked(mode, model, runner)
 	})
@@ -182,12 +179,16 @@ func (s *Store) runMaintenanceLocked(mode, model, runner string) (map[string]any
 			command = append(command, "--model", model)
 		}
 	}
-	result, err := s.runCommand(command, s.toolRoot, "", 15*time.Minute, true, map[string]string{
+	env := map[string]string{
 		"FOLIO_CONTEXT_ROOT": s.repositoryDir,
 		"FOLIO_RUNTIME":      s.runtimeDir,
 		"CODEX_HOME":         s.codexDir,
 		"DSH_HOME":           s.dshDir,
-	})
+	}
+	for key, value := range dshProviderEnv() {
+		env[key] = value
+	}
+	result, err := s.runCommand(command, s.toolRoot, "", 15*time.Minute, true, env)
 	if err != nil {
 		return nil, errStore("maintenance operation failed")
 	}

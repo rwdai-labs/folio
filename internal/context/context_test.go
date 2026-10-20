@@ -334,7 +334,7 @@ func TestValidateAgentOptionsRunnerSelection(t *testing.T) {
 }
 
 func TestWorkerDSHArgsAndPrompt(t *testing.T) {
-	args := workerDSHArgs()
+	args := workerDSHArgs("")
 	if strings.Join(args, " ") != "--profile headless --json -" {
 		t.Fatalf("unexpected dsh args: %v", args)
 	}
@@ -342,6 +342,10 @@ func TestWorkerDSHArgsAndPrompt(t *testing.T) {
 		if strings.Contains(strings.Join(args, " "), forbidden) {
 			t.Fatalf("dsh args contain forbidden %q: %v", forbidden, args)
 		}
+	}
+	patched := workerDSHArgs("/tmp/model.yml")
+	if strings.Join(patched, " ") != "--profile headless --patch /tmp/model.yml --json -" {
+		t.Fatalf("unexpected patched dsh args: %v", patched)
 	}
 	prompt := string(reviewDSHPrompt([]byte("base prompt"), proposalSchema))
 	if !strings.HasPrefix(prompt, "base prompt") {
@@ -351,6 +355,24 @@ func TestWorkerDSHArgsAndPrompt(t *testing.T) {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("dsh prompt omitted %q", required)
 		}
+	}
+}
+
+func TestDSHModelPatch(t *testing.T) {
+	t.Setenv("DSH_MODEL_PROVIDER", "")
+	provider, err := dshModelProvider()
+	if err != nil || provider != "deepseek-official" {
+		t.Fatalf("default provider=%q err=%v", provider, err)
+	}
+	patch := string(dshModelPatch("deepseek-v4-pro", provider))
+	for _, required := range []string{"- id: agent-default-model", `provider: "deepseek-official"`, `model: "deepseek-v4-pro"`} {
+		if !strings.Contains(patch, required) {
+			t.Fatalf("patch omitted %q: %s", required, patch)
+		}
+	}
+	t.Setenv("DSH_MODEL_PROVIDER", "bad provider")
+	if _, err := dshModelProvider(); err == nil {
+		t.Fatal("invalid DSH model provider was accepted")
 	}
 }
 
@@ -474,6 +496,13 @@ func TestWorkerDSHRunnerProducesProposalOnlyReport(t *testing.T) {
 	fake := filepath.Join(bin, "dsh")
 	script := "#!/bin/sh\n" +
 		"printf 'args:%s\\n' \"$*\" > \"" + capture + "\"\n" +
+		"previous=\n" +
+		"patch=\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$previous\" = \"--patch\" ]; then patch=\"$arg\"; fi\n" +
+		"  previous=\"$arg\"\n" +
+		"done\n" +
+		"if [ -n \"$patch\" ]; then printf 'patch:\\n' >> \"" + capture + "\"; cat \"$patch\" >> \"" + capture + "\"; fi\n" +
 		"printf 'permission:%s\\n' \"${DSH_PERMISSION_MODE-}\" >> \"" + capture + "\"\n" +
 		"printf 'home:%s\\n' \"${DSH_HOME-}\" >> \"" + capture + "\"\n" +
 		"printf 'provider_key:%s\\n' \"${DEEPSEEK_API_KEY-}\" >> \"" + capture + "\"\n" +
@@ -481,11 +510,12 @@ func TestWorkerDSHRunnerProducesProposalOnlyReport(t *testing.T) {
 	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", bin)
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
 	t.Setenv("DSH_HOME", home)
 	t.Setenv("DEEPSEEK_API_KEY", "fixture-key")
+	t.Setenv("DSH_MODEL_PROVIDER", "")
 	var output bytes.Buffer
-	options := AgentOptions{Runner: "dsh", RuntimeDir: runtime, Device: "fixture", Timeout: 5 * time.Second}
+	options := AgentOptions{Runner: "dsh", RuntimeDir: runtime, Device: "fixture", Model: "deepseek-v4-pro", Timeout: 5 * time.Second}
 	if err := router.RunAgent(options, &output, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
@@ -497,8 +527,11 @@ func TestWorkerDSHRunnerProducesProposalOnlyReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(captured)
-	if !strings.Contains(got, "args:--profile headless --json -") || !strings.Contains(got, "permission:read-only") || !strings.Contains(got, "home:"+home) {
+	if !strings.Contains(got, "args:--profile headless --patch ") || !strings.Contains(got, " --json -") || !strings.Contains(got, "permission:read-only") || !strings.Contains(got, "home:"+home) {
 		t.Fatalf("dsh invocation was not isolated: %s", got)
+	}
+	if !strings.Contains(got, `provider: "deepseek-official"`) || !strings.Contains(got, `model: "deepseek-v4-pro"`) {
+		t.Fatalf("dsh model patch missing: %s", got)
 	}
 	if !strings.Contains(got, "provider_key:\n") || strings.Contains(got, "fixture-key") {
 		t.Fatalf("provider key entered the dsh environment: %s", got)

@@ -76,6 +76,10 @@ type Store struct {
 
 	threadMu sync.Mutex
 
+	modelCatalogMu   sync.Mutex
+	modelCatalogAt   time.Time
+	modelCatalogData map[string]any
+
 	authDeviceCode      string
 	authDeviceExpiresAt time.Time
 	authDeviceInterval  int

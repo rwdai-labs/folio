@@ -214,8 +214,14 @@
               <p id="runner-hint" class="hint" hidden></p>
             </div>
             <div class="field grow">
-              <label for="model-input" data-i18n="automation.model">Model (optional)</label>
-              <input id="model-input" name="model" autocomplete="off" maxlength="128" placeholder="Provider default" data-i18n-placeholder="automation.model_placeholder">
+              <label for="model-input" data-i18n="automation.model">Model</label>
+              <div id="model-combo" class="model-combo">
+                <input id="model-input" name="model" type="text" autocomplete="off" spellcheck="false" maxlength="200" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-options" aria-describedby="model-hint" placeholder="Runner default" data-i18n-placeholder="automation.model_placeholder">
+                <button id="model-toggle" class="model-toggle" type="button" aria-expanded="false" aria-controls="model-options" aria-label="Show model suggestions" data-i18n-aria-label="automation.model_toggle">
+                  <span aria-hidden="true"></span>
+                </button>
+                <div id="model-options" class="model-options" role="listbox" hidden></div>
+              </div>
             </div>
             <div class="actions">
               <button id="run-now-button" class="btn primary" type="button">
@@ -223,7 +229,7 @@
               </button>
             </div>
           </form>
-          <p class="hint" data-i18n="automation.runner_hint">Scheduled runs always use Codex. Run now can use Codex or the installed DSH runner.</p>
+          <p id="model-hint" class="hint" data-i18n="automation.runner_hint">Pick a suggestion or type any model ID; blank uses the runner default. Scheduled runs use Codex; Run now can use Codex or DSH.</p>
           <p id="automation-message" class="form-message" role="status" aria-live="polite"></p>
 
           <section class="automation-panel" aria-labelledby="latest-run-heading">

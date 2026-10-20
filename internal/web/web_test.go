@@ -81,6 +81,12 @@ func (b *testBackend) ListAutomation() (map[string]any, error) {
 func (b *testBackend) AutomationRun(runID string) (map[string]any, error) {
 	return map[string]any{"run_id": runID, "status": "pushed"}, nil
 }
+func (b *testBackend) ModelCatalog() map[string]any {
+	return map[string]any{
+		"codex": []any{map[string]any{"id": "gpt-test", "label": "GPT Test"}},
+		"dsh":   []any{map[string]any{"id": "deepseek-flash", "label": "DeepSeek-V4.1-Flash"}},
+	}
+}
 func (b *testBackend) SchedulerTick() (map[string]any, error) {
 	return map[string]any{"status": "skipped"}, nil
 }
@@ -372,7 +378,7 @@ func TestMaintenanceRunnerSelectionAndValidation(t *testing.T) {
 		{"unknown runner", map[string]any{"mode": "agent", "runner": "other"}, "invalid_runner"},
 		{"non-string runner", map[string]any{"mode": "agent", "runner": 7}, "invalid_runner"},
 		{"null runner", map[string]any{"mode": "agent", "runner": nil}, "invalid_runner"},
-		{"dsh with model", map[string]any{"mode": "agent", "runner": "dsh", "model": "gpt-test"}, "invalid_model"},
+		{"invalid model", map[string]any{"mode": "agent", "runner": "dsh", "model": "bad model"}, "invalid_model"},
 	} {
 		status, _, result := client.request(t, http.MethodPost, "/api/maintenance", testCase.payload, origin)
 		if status != http.StatusBadRequest || result["error"] != testCase.code {
@@ -380,7 +386,7 @@ func TestMaintenanceRunnerSelectionAndValidation(t *testing.T) {
 		}
 	}
 
-	status, _, accepted := client.request(t, http.MethodPost, "/api/maintenance", map[string]any{"mode": "agent", "runner": "dsh"}, origin)
+	status, _, accepted := client.request(t, http.MethodPost, "/api/maintenance", map[string]any{"mode": "agent", "runner": "dsh", "model": "deepseek-v4-pro"}, origin)
 	if status != http.StatusAccepted || accepted["runner"] != "dsh" {
 		t.Fatalf("dsh accepted status=%d result=%v", status, accepted)
 	}
@@ -397,7 +403,7 @@ func TestMaintenanceRunnerSelectionAndValidation(t *testing.T) {
 
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
-	if len(backend.maintenance) != 2 || backend.maintenance[0].runner != "dsh" || backend.maintenance[0].model != "" || backend.maintenance[1].runner != "codex" {
+	if len(backend.maintenance) != 2 || backend.maintenance[0].runner != "dsh" || backend.maintenance[0].model != "deepseek-v4-pro" || backend.maintenance[1].runner != "codex" {
 		t.Fatalf("maintenance calls=%v", backend.maintenance)
 	}
 }
@@ -484,6 +490,15 @@ func TestAutomationEndpointsExposeAuditAndAcceptRun(t *testing.T) {
 	if !ok || latest["status"] != "pushed" {
 		t.Fatalf("automation latest=%v", listing["latest"])
 	}
+	models, ok := listing["models"].(map[string]any)
+	if !ok {
+		t.Fatalf("automation models=%v", listing["models"])
+	}
+	codexModels, _ := models["codex"].([]any)
+	dshModels, _ := models["dsh"].([]any)
+	if len(codexModels) != 1 || len(dshModels) != 1 {
+		t.Fatalf("automation models=%v", models)
+	}
 	runID := "20261020T000000.000000000Z-abcdef12"
 	status, _, detail := client.request(t, http.MethodGet, "/api/automation/runs/"+runID, nil, "")
 	if status != http.StatusOK || detail["run_id"] != runID {
@@ -507,11 +522,15 @@ func TestAutomationEndpointsExposeAuditAndAcceptRun(t *testing.T) {
 		t.Fatalf("automation calls=%v", backend.automation)
 	}
 
-	status, _, result := client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "dsh", "model": "gpt-test"}, origin)
-	if status != http.StatusBadRequest || result["error"] != "invalid_model" {
-		t.Fatalf("dsh model status=%d result=%v", status, result)
+	status, _, accepted = client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "dsh", "model": "deepseek-v4-pro"}, origin)
+	if status != http.StatusAccepted {
+		t.Fatalf("dsh model status=%d result=%v", status, accepted)
 	}
-	status, _, result = client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "other"}, origin)
+	waitJobForTest(t, client, accepted["job_id"].(string))
+	if len(backend.automation) != 2 || backend.automation[1].runner != "dsh" || backend.automation[1].model != "deepseek-v4-pro" {
+		t.Fatalf("dsh automation calls=%v", backend.automation)
+	}
+	status, _, result := client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "other"}, origin)
 	if status != http.StatusBadRequest || result["error"] != "invalid_runner" {
 		t.Fatalf("bad runner status=%d result=%v", status, result)
 	}

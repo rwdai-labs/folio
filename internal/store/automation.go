@@ -76,9 +76,6 @@ func (s *Store) RunAutomation(trigger, runner, model string) (map[string]any, er
 	if model != "" && !modelRE.MatchString(model) {
 		return nil, errStore("model name is invalid")
 	}
-	if normalized == "dsh" && model != "" {
-		return nil, errStore("model must be empty for the dsh runner")
-	}
 	return s.withLock(func() (map[string]any, error) {
 		return s.runAutomationLocked(trigger, normalized, model)
 	})
@@ -407,12 +404,16 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 	if model != "" {
 		command = append(command, "--model", model)
 	}
-	if _, err := s.runCommand(command, s.toolRoot, "", 20*time.Minute, true, map[string]string{
+	env := map[string]string{
 		"FOLIO_CONTEXT_ROOT": s.repositoryDir,
 		"FOLIO_RUNTIME":      s.runtimeDir,
 		"CODEX_HOME":         s.codexDir,
 		"DSH_HOME":           s.dshDir,
-	}); err != nil {
+	}
+	for key, value := range dshProviderEnv() {
+		env[key] = value
+	}
+	if _, err := s.runCommand(command, s.toolRoot, "", 20*time.Minute, true, env); err != nil {
 		return autoReport{}, errStore("automation agent failed")
 	}
 	if info, statErr := os.Lstat(reportPath); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxAutoRunBytes {
@@ -577,6 +578,7 @@ func automationSummary(run map[string]any) map[string]any {
 	return map[string]any{
 		"run_id": publicText(run["run_id"], 64), "trigger": publicText(run["trigger"], 16),
 		"status": publicText(run["status"], 32), "stage": publicText(run["stage"], 32),
+		"runner": publicText(run["runner"], 16), "model": publicText(run["model"], 200),
 		"started_at": publicText(run["started_at"], 64), "finished_at": publicText(run["finished_at"], 64),
 		"summary": publicText(run["summary"], maxAutoSummaryRunes), "reason": publicText(run["reason"], 128),
 		"commit": publicText(run["commit"], 40), "files_changed": len(edits), "files": targets,

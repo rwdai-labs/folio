@@ -39,6 +39,10 @@
     automation: null,
     automationRuns: [],
     automationError: false,
+    modelValues: { codex: "", dsh: "" },
+    modelMenuOpen: false,
+    modelActive: -1,
+    modelCatalogSignature: "",
     selectedRunId: "",
     lastState: null,
     githubStatus: "unknown",
@@ -248,6 +252,10 @@
     state.automation = null;
     state.automationRuns = [];
     state.automationError = false;
+    state.modelCatalogSignature = "";
+    state.modelValues = { codex: "", dsh: "" };
+    if ($("model-input")) $("model-input").value = "";
+    closeModelMenu();
     showLogin();
     setMessage("login", "login.expired", { error: true });
   }
@@ -305,6 +313,10 @@
       state.automation = null;
       state.automationRuns = [];
       state.automationError = false;
+      state.modelCatalogSignature = "";
+      state.modelValues = { codex: "", dsh: "" };
+      if ($("model-input")) $("model-input").value = "";
+      closeModelMenu();
       stopAllTimers();
       state.device = null;
       showLogin();
@@ -707,6 +719,142 @@
     return false;
   }
 
+  function activeRunner() {
+    const select = $("runner-select");
+    return select && select.value === "dsh" ? "dsh" : "codex";
+  }
+
+  function modelOptionsFor(runner) {
+    const catalog = state.automation && state.automation.models;
+    const raw = catalog && Array.isArray(catalog[runner]) ? catalog[runner] : [];
+    const seen = new Set();
+    const options = [];
+    raw.forEach((item) => {
+      if (!item || typeof item.id !== "string" || !item.id || seen.has(item.id)) return;
+      seen.add(item.id);
+      const label = typeof item.label === "string" && item.label.trim() ? item.label.trim() : item.id;
+      options.push({ id: item.id, label });
+    });
+    return options;
+  }
+
+  function closeModelMenu() {
+    const menu = $("model-options");
+    const input = $("model-input");
+    const toggle = $("model-toggle");
+    if (!menu) return;
+    menu.hidden = true;
+    state.modelMenuOpen = false;
+    state.modelActive = -1;
+    if (input) {
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+    }
+    if (toggle) toggle.setAttribute("aria-expanded", "false");
+  }
+
+  function modelMatch(option, query) {
+    if (!query) return true;
+    const needle = query.toLowerCase();
+    return option.id.toLowerCase().includes(needle) || option.label.toLowerCase().includes(needle);
+  }
+
+  function setActiveModel(index) {
+    const menu = $("model-options");
+    const input = $("model-input");
+    if (!menu || !input) return;
+    const items = Array.from(menu.querySelectorAll(".model-option"));
+    if (!items.length) {
+      state.modelActive = -1;
+      input.removeAttribute("aria-activedescendant");
+      return;
+    }
+    state.modelActive = Math.max(0, Math.min(index, items.length - 1));
+    items.forEach((item, itemIndex) => {
+      const active = itemIndex === state.modelActive;
+      item.dataset.active = active ? "true" : "false";
+      if (active) {
+        input.setAttribute("aria-activedescendant", item.id);
+        item.scrollIntoView({ block: "nearest" });
+      }
+    });
+  }
+
+  function moveModelActive(delta) {
+    const menu = $("model-options");
+    if (!menu) return;
+    const total = menu.querySelectorAll(".model-option").length;
+    if (!total) return;
+    const current = state.modelActive < 0 ? 0 : state.modelActive;
+    setActiveModel((current + delta + total) % total);
+  }
+
+  function renderModelMenu() {
+    const menu = $("model-options");
+    const input = $("model-input");
+    if (!menu || !input || menu.hidden) return;
+    while (menu.firstChild) menu.removeChild(menu.firstChild);
+
+    const query = input.value.trim();
+    const suggestions = modelOptionsFor(activeRunner()).filter((option) => modelMatch(option, query));
+    const items = [];
+    if (!query) items.push({ id: "", label: t("automation.model_default") });
+    items.push(...suggestions);
+
+    items.forEach((entry, index) => {
+      const option = document.createElement("div");
+      option.className = "model-option";
+      option.id = `model-option-${index}`;
+      option.setAttribute("role", "option");
+      option.dataset.modelValue = entry.id;
+      option.setAttribute("aria-selected", entry.id === input.value.trim() ? "true" : "false");
+      option.setAttribute("aria-label", entry.id ? `${entry.label} (${entry.id})` : entry.label);
+      const label = document.createElement("span");
+      label.className = "model-option-label";
+      label.textContent = entry.label;
+      option.appendChild(label);
+      if (entry.id) {
+        const id = document.createElement("span");
+        id.className = "model-option-id";
+        id.textContent = entry.id;
+        option.appendChild(id);
+      }
+      menu.appendChild(option);
+    });
+
+    if (!suggestions.length) {
+      const empty = document.createElement("p");
+      empty.className = "model-option-empty";
+      empty.setAttribute("role", "presentation");
+      empty.textContent = t("automation.model_none");
+      menu.appendChild(empty);
+    }
+
+    const current = items.findIndex((entry) => entry.id === input.value.trim());
+    setActiveModel(current >= 0 ? current : 0);
+  }
+
+  function openModelMenu() {
+    const menu = $("model-options");
+    const input = $("model-input");
+    const toggle = $("model-toggle");
+    if (!menu || !input || !toggle) return;
+    state.modelMenuOpen = true;
+    menu.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    toggle.setAttribute("aria-expanded", "true");
+    renderModelMenu();
+  }
+
+  function chooseModel(value) {
+    const input = $("model-input");
+    if (!input) return;
+    input.value = value;
+    state.modelValues[activeRunner()] = value;
+    closeModelMenu();
+    input.focus();
+  }
+
   function updateRunnerUi(data) {
     const select = $("runner-select");
     const hint = $("runner-hint");
@@ -730,16 +878,18 @@
       hint.textContent = available ? "" : t("runner.unavailable");
     }
 
+    const previous = select.dataset.activeRunner;
     const model = $("model-input");
     if (model) {
-      if (selected === "dsh") {
-        model.disabled = true;
-        model.placeholder = t("automation.model_dsh");
-      } else {
-        model.disabled = false;
-        model.placeholder = t("automation.model_placeholder");
+      if (previous && previous !== selected) {
+        state.modelValues[previous] = model.value;
+        model.value = state.modelValues[selected] || "";
+        closeModelMenu();
       }
+      model.disabled = false;
+      model.placeholder = t("automation.model_placeholder");
     }
+    select.dataset.activeRunner = selected;
   }
 
   async function runAutomationNow() {
@@ -748,12 +898,10 @@
     const button = $("run-now-button");
     setBusy(button, "automation.running");
     setMessage("automation", null);
-    const runner = $("runner-select").value === "dsh" ? "dsh" : "codex";
+    const runner = activeRunner();
     const body = { runner };
-    if (runner === "codex") {
-      const model = $("model-input").value.trim();
-      if (model) body.model = model;
-    }
+    const model = $("model-input").value.trim();
+    if (model) body.model = model;
     try {
       const accepted = await api("/api/automation/run", { method: "POST", body });
       const job = await pollJob(accepted.job_id, {
@@ -1020,6 +1168,7 @@
     meta.className = "run-meta";
     const pull = run.pull || {};
     if (run.stage) addRunMeta(meta, t("automation.stage"), translateKnown(`automation.stage.${run.stage}`, run.stage));
+    addRunMeta(meta, t("automation.runner"), `${run.runner || "—"}${run.model ? " · " + run.model : ""}`);
     addRunMeta(meta, t("automation.pull"), pull.status ? `${pull.status} · ${shortHash(pull.head)}` : "—");
     addRunMeta(meta, t("automation.commit"), shortHash(run.commit));
     const push = run.push || {};
@@ -1130,7 +1279,8 @@
 
       const meta = document.createElement("span");
       meta.className = "run-history-meta";
-      meta.textContent = `${t(triggerKey(run.trigger))} · ${t("automation.files")}: ${run.files_changed || 0}`;
+      const runner = run.runner ? `${run.runner}${run.model ? " · " + run.model : ""}` : "—";
+      meta.textContent = `${t(triggerKey(run.trigger))} · ${runner} · ${t("automation.files")}: ${run.files_changed || 0}`;
       item.appendChild(meta);
 
       list.appendChild(item);
@@ -1179,6 +1329,12 @@
       state.automation = data;
       state.automationRuns = Array.isArray(data.runs) ? data.runs : [];
       state.automationError = false;
+      const signature = JSON.stringify(data.models || {});
+      if (signature !== state.modelCatalogSignature) {
+        state.modelCatalogSignature = signature;
+        if (state.lastState) updateRunnerUi(state.lastState);
+        if (state.modelMenuOpen) renderModelMenu();
+      }
       renderAutomationView();
     } catch (error) {
       if (error.code === "authentication_required") return;
@@ -1260,6 +1416,68 @@
     if (button) selectAutomationRun(button.dataset.runId);
   });
   $("runner-select").addEventListener("change", () => updateRunnerUi(state.lastState));
+  $("model-input").addEventListener("click", () => {
+    if (!state.modelMenuOpen) openModelMenu();
+  });
+  $("model-input").addEventListener("input", () => {
+    state.modelValues[activeRunner()] = $("model-input").value;
+    if (state.modelMenuOpen) renderModelMenu();
+  });
+  $("model-input").addEventListener("keydown", (event) => {
+    const menu = $("model-options");
+    if (!menu) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (!state.modelMenuOpen) openModelMenu();
+      else moveModelActive(1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!state.modelMenuOpen) {
+        openModelMenu();
+        const total = menu.querySelectorAll(".model-option").length;
+        if (total) setActiveModel(total - 1);
+      } else {
+        moveModelActive(-1);
+      }
+      return;
+    }
+    if (event.key === "Enter" && state.modelMenuOpen) {
+      const options = menu.querySelectorAll(".model-option");
+      if (state.modelActive >= 0 && state.modelActive < options.length) {
+        event.preventDefault();
+        chooseModel(options[state.modelActive].dataset.modelValue || "");
+      }
+      return;
+    }
+    if (event.key === "Escape" && state.modelMenuOpen) {
+      event.preventDefault();
+      closeModelMenu();
+      return;
+    }
+    if (event.key === "Tab") closeModelMenu();
+  });
+  $("model-toggle").addEventListener("click", () => {
+    if (state.modelMenuOpen) closeModelMenu();
+    else openModelMenu();
+    $("model-input").focus();
+  });
+  $("model-options").addEventListener("mousedown", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target && target.closest(".model-option")) event.preventDefault();
+  });
+  $("model-options").addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const option = target ? target.closest(".model-option") : null;
+    if (option) chooseModel(option.dataset.modelValue || "");
+  });
+  document.addEventListener("click", (event) => {
+    if (!state.modelMenuOpen) return;
+    const combo = $("model-combo");
+    const target = event.target instanceof Node ? event.target : null;
+    if (combo && target && !combo.contains(target)) closeModelMenu();
+  });
 
   $("refresh-button").addEventListener("click", async () => {
     if (state.refreshing) return;
@@ -1281,6 +1499,7 @@
     renderGithubBadge(state.githubStatus);
     updateGithubButtons();
     if (state.device && !state.device.expired) updateExpiryText();
+    if (state.modelMenuOpen) renderModelMenu();
     rerenderBusyLabels();
   });
 

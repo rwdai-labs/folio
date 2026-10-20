@@ -821,6 +821,116 @@ select {
   cursor: pointer;
 }
 
+.model-combo {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.model-combo input {
+  padding-right: 46px;
+}
+
+.model-toggle {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--ease), color var(--ease);
+}
+
+.model-toggle:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.model-toggle span {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-1px);
+  transition: transform var(--ease);
+}
+
+.model-toggle[aria-expanded="true"] span {
+  transform: rotate(225deg) translateY(1px);
+}
+
+.model-options {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 5px);
+  right: 0;
+  left: 0;
+  max-height: min(280px, 42vh);
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.model-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  color: var(--ink);
+  font-size: 0.83rem;
+  cursor: pointer;
+}
+
+.model-option:hover,
+.model-option[data-active="true"] {
+  background: var(--surface-2);
+}
+
+.model-option[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 650;
+}
+
+.model-option[data-active="true"] {
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+
+.model-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-option-id {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 450;
+}
+
+.model-option-empty {
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 textarea {
   min-height: 220px;
   padding: 12px;

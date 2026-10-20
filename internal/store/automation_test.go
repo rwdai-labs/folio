@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -351,5 +352,58 @@ func TestRunAutomationPublishesRunningAudit(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunAutomationPassesDSHModelToWorker(t *testing.T) {
+	store := newGitStore(t)
+	bin := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "folio-args.txt")
+	providerCapture := filepath.Join(t.TempDir(), "folio-provider.txt")
+	script := "#!/bin/sh\n" +
+		"printf '%s' \"$*\" > \"" + capture + "\"\n" +
+		"printf '%s' \"$DSH_MODEL_PROVIDER\" > \"" + providerCapture + "\"\n" +
+		"while [ \"$#\" -gt 0 ]; do\n" +
+		"  case \"$1\" in\n" +
+		"    --auto-report) shift; report=\"$1\" ;;\n" +
+		"  esac\n" +
+		"  shift\n" +
+		"done\n" +
+		"cat > \"$report\" <<'JSON'\n" +
+		`{"version":1,"status":"pending-apply","summary":"","edits":[]}` + "\n" +
+		"JSON\n"
+	if err := os.WriteFile(filepath.Join(bin, "dsh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.toolRoot, "folio"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	t.Setenv("DSH_MODEL_PROVIDER", "custom-dsh-provider")
+
+	result, err := store.RunAutomation("manual", "dsh", "deepseek-v4-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "no_changes" || result["runner"] != "dsh" || result["model"] != "deepseek-v4-pro" {
+		t.Fatalf("automation result=%v", result)
+	}
+	if summary := automationSummary(result); summary["runner"] != "dsh" || summary["model"] != "deepseek-v4-pro" {
+		t.Fatalf("automation summary=%v", summary)
+	}
+	raw, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(raw)
+	if !strings.Contains(args, "--runner dsh") || !strings.Contains(args, "--model deepseek-v4-pro") {
+		t.Fatalf("worker args=%s", args)
+	}
+	provider, err := os.ReadFile(providerCapture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(provider) != "custom-dsh-provider" {
+		t.Fatalf("worker provider=%q", provider)
 	}
 }
