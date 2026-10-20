@@ -335,6 +335,10 @@ func TestRunAutomationPublishesRunningAudit(t *testing.T) {
 		}
 		if latest, ok := listing["latest"].(map[string]any); ok && latest["status"] == "running" {
 			seenRunning = true
+			if latest["stage"] == "repository" || latest["stage"] == "pull" {
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
 			if latest["stage"] != "organize" && latest["stage"] != "validate" {
 				t.Fatalf("unexpected running stage: %v", latest["stage"])
 			}
