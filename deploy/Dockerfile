@@ -19,6 +19,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
 
 FROM node:24-bookworm-slim AS runtime
 
+ARG TARGETARCH
+ARG GH_VERSION=2.102.0
+
 ENV FOLIO_CONTEXT_ROOT=/data/repository \
     FOLIO_RUNTIME=/data/runtime \
     SERVICE_DATA_DIR=/data \
@@ -27,12 +30,30 @@ ENV FOLIO_CONTEXT_ROOT=/data/repository \
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update \
-    && apt-get install --no-install-recommends -y \
+    set -eux; \
+    apt-get update; \
+    apt-get install --no-install-recommends -y \
         ca-certificates \
+        curl \
         git \
-        gh \
-        gosu \
+        gosu; \
+    gh_targetarch="${TARGETARCH:-amd64}"; \
+    case "${gh_targetarch}" in \
+        amd64) gh_sha256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386 ;; \
+        arm64) gh_sha256=7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484 ;; \
+        *) echo "unsupported TARGETARCH: ${gh_targetarch}" >&2; exit 1 ;; \
+    esac; \
+    gh_archive="gh_${GH_VERSION}_linux_${gh_targetarch}.tar.gz"; \
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 2 --retry-all-errors \
+        --output "/tmp/${gh_archive}" \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${gh_archive}"; \
+    printf '%s  %s\n' "${gh_sha256}" "/tmp/${gh_archive}" | sha256sum -c -; \
+    tar -xzf "/tmp/${gh_archive}" -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${gh_targetarch}/bin/gh" /usr/local/bin/gh; \
+    test "$(gh --version | sed -n '1s/^gh version \([^ ]*\).*/\1/p')" = "${GH_VERSION}"; \
+    gh auth login --help | grep -F -- '--insecure-storage'; \
+    rm -rf "/tmp/${gh_archive}" "/tmp/gh_${GH_VERSION}_linux_${gh_targetarch}" \
     && rm -rf /var/lib/apt/lists/*
 
 # Keep the CLI version exact. A floating npm tag would make image contents

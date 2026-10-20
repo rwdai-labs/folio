@@ -149,6 +149,38 @@ docker compose pull
 docker compose up -d
 ```
 
+### Optional outbound proxy
+
+Compose optionally passes `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` into the
+container. It accepts either uppercase or lowercase input and supplies both
+spellings for tools that expect Git's lowercase names. When no proxy is
+configured, the HTTP and HTTPS proxy values are empty and outbound clients
+connect directly. The current custom GitHub transport does not evaluate
+`NO_PROXY`, and the `gh`/`git` child environment does not pass a standard
+comma-separated bypass list, so this setting is not a complete bypass for
+GitHub or Git operations. The health check targets `http://127.0.0.1:8080/` and
+stays local to the container loopback interface.
+
+For a temporary proxy configuration, create the local `.env.proxy` file. It is
+ignored by Git and must not be committed:
+
+```dotenv
+HTTP_PROXY=http://proxy.example.invalid:8080
+HTTPS_PROXY=http://proxy.example.invalid:8080
+NO_PROXY=localhost,127.0.0.1
+```
+
+Replace the example with a proxy address reachable from the container. A
+container's `127.0.0.1` is the container itself, so it cannot reach a proxy
+running on the NAS host through that address; use a host name or LAN address
+that the container can route to. Recreate the service after changing the env
+file:
+
+```bash
+docker compose --env-file .env.proxy pull
+docker compose --env-file .env.proxy up -d --force-recreate
+```
+
 For an HTTPS reverse proxy, configure explicit `TRUSTED_HOSTS` and
 `TRUSTED_ORIGINS` and enable `COOKIE_SECURE=true`. Do not expose the plain HTTP
 port on the public internet. The base Compose file mounts no host home

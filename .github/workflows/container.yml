@@ -102,6 +102,8 @@ jobs:
               *0.147.0) ;;
               *) exit 1 ;;
             esac
+            test "$(gh --version | cut -d " " -f 3 | head -n 1)" = "2.102.0"
+            gh auth login --help | grep -F -- "--insecure-storage"
           '
 
   image:

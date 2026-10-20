@@ -12,6 +12,12 @@ services:
       TRUSTED_HOSTS: localhost,127.0.0.1
       MAINTENANCE_SCHEDULER_ENABLED: "true"
       MAINTENANCE_INTERVAL_SECONDS: "86400"
+      HTTP_PROXY: "${HTTP_PROXY:-${http_proxy:-}}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-${https_proxy:-}}"
+      NO_PROXY: "${NO_PROXY:-${no_proxy:-localhost,127.0.0.1}}"
+      http_proxy: "${HTTP_PROXY:-${http_proxy:-}}"
+      https_proxy: "${HTTPS_PROXY:-${https_proxy:-}}"
+      no_proxy: "${NO_PROXY:-${no_proxy:-localhost,127.0.0.1}}"
     volumes:
       - folio-data:/data
     read_only: true
