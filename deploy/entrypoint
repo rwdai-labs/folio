@@ -6,9 +6,9 @@ set -eu
 mkdir -p /data /data/runtime /data/home /data/dsh /data/codex
 
 # Import a deliberately small, documented subset of the host CLI homes. The
-# host directories are expected to be mounted read-only at /host/codex and
-# /host/dsh; this function never writes to them and never copies history,
-# sessions, plugins, or other unbounded runtime state.
+# host directories are expected to be mounted read-only at /host/codex,
+# /host/dsh, and /host/gh; this function never writes to them and never copies
+# history, sessions, plugins, or other unbounded runtime state.
 import_codex_home() {
   source="${CODEX_CONFIG_HOME:-/host/codex}"
   [ -d "$source" ] || return 0
@@ -55,8 +55,19 @@ import_dsh_home() {
   fi
 }
 
+import_gh_home() {
+  source="${GH_CONFIG_HOME:-/host/gh}"
+  [ -d "$source" ] || return 0
+  [ -f "$source/hosts.yml" ] || return 0
+  mkdir -p /data/secrets/gh
+  cp -f "$source/hosts.yml" /data/secrets/gh/hosts.yml
+  chmod 0700 /data/secrets/gh
+  chmod 0600 /data/secrets/gh/hosts.yml
+}
+
 import_codex_home
 import_dsh_home
+import_gh_home
 
 chown -R context:context /data
 exec gosu context "$@"

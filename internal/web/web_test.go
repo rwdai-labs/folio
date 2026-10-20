@@ -48,6 +48,15 @@ func (b *testBackend) Poll() (map[string]any, error) {
 func (b *testBackend) Logout() (map[string]any, error) {
 	return map[string]any{"status": "logged_out"}, nil
 }
+func (b *testBackend) GitHubRepositories() (map[string]any, error) {
+	return map[string]any{
+		"repositories": []any{
+			map[string]any{"full_name": "owner/context", "private": true, "default_branch": "main"},
+			map[string]any{"full_name": "owner/notes", "private": false},
+		},
+		"count": 2,
+	}, nil
+}
 func (b *testBackend) ConnectRepository(fullName string) (map[string]any, error) {
 	return map[string]any{"full_name": fullName}, nil
 }
@@ -211,6 +220,32 @@ func TestHTTPBoundaryAndStaticAllowlist(t *testing.T) {
 	status, _, result = client.request(t, http.MethodPost, "/api/logout", map[string]any{}, "")
 	if status != http.StatusForbidden || result["error"] != "origin_forbidden" {
 		t.Fatalf("missing origin status=%d result=%v", status, result)
+	}
+}
+
+func TestGitHubRepositoriesRequiresSession(t *testing.T) {
+	backend := &testBackend{}
+	server, _ := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/github/repositories", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", status)
+	}
+
+	client.login(t, "correct horse")
+	status, _, result := client.request(t, http.MethodGet, "/api/github/repositories", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("repositories status=%d result=%v", status, result)
+	}
+	repositories, ok := result["repositories"].([]any)
+	if !ok || len(repositories) != 2 {
+		t.Fatalf("unexpected repositories: %v", result["repositories"])
+	}
+	first, _ := repositories[0].(map[string]any)
+	if first["full_name"] != "owner/context" || first["private"] != true {
+		t.Fatalf("unexpected first repository: %v", first)
 	}
 }
 

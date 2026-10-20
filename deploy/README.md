@@ -45,9 +45,12 @@ keep the credential out of the log entirely, provide the password yourself
 before the first start, for example with a secret manager file mounted and
 `ADMIN_PASSWORD_FILE` set; the service then reuses that file and prints nothing.
 
-Sign in to the local Web page, click GitHub sign-in, and complete the device
-authorization on GitHub. Connect the private repository by `owner/name`.
-The service runs installed image tools, never scripts from the cloned repo.
+Sign in to the local Web page and connect the private repository. After GitHub
+is connected, the repository field is a selector populated from the account's
+accessible repositories; there is still a manual `owner/name` fallback for a
+repository the token cannot list. Without the host-config override below, use
+the GitHub device sign-in first. The service runs installed image tools, never
+scripts from the cloned repo.
 
 GitHub login and model login are separate. To configure Codex through its
 official device login, run locally:
@@ -86,10 +89,11 @@ with either runner; Codex remains the default.
   the file through your secret manager or a private shell, never through a
   shared log.
 
-### Reuse the host Codex/DSH configuration
+### Reuse the host Codex/DSH/GitHub configuration
 
 The optional [`compose.host-config.yaml`](compose.host-config.yaml) override
-mounts `~/.codex` and `~/.dsh` read-only at `/host/codex` and `/host/dsh`:
+mounts `~/.codex`, `~/.dsh`, and `~/.config/gh` read-only at `/host/codex`,
+`/host/dsh`, and `/host/gh`:
 
 ```bash
 docker compose -f compose.yaml -f deploy/compose.host-config.yaml up -d
@@ -104,6 +108,7 @@ The entrypoint imports only a bounded configuration subset into the private
 | `~/.dsh/.credentials.yaml` | `/data/dsh/.credentials.yaml` | Stored DSH provider keys |
 | `~/.dsh/.env` | `/data/dsh/.env` | DSH provider environment fallback |
 | `~/.dsh/profiles/*/cordis.patch.yml` | `/data/dsh/imported/profiles/` | Actual DSH model/provider catalog |
+| `~/.config/gh/hosts.yml` | `/data/secrets/gh/hosts.yml` | Existing GitHub CLI login, including private-repository access |
 
 History databases, sessions, plugins, and `node_modules` are not copied. The
 host directories are mounted read-only and are never chowned; only `/data`
@@ -117,9 +122,12 @@ that setting, headless mode keeps its normal behavior and uses environment /
 `.env` credentials only. Remove the setting if you provide credentials through
 a secret manager instead.
 
-For a custom location, set `CODEX_CONFIG_HOME` / `DSH_CONFIG_HOME` to the
-mounted directory, or set `DSH_CONFIG_PATCH` to one specific
-`cordis.patch.yml`. An explicit `DSH_CONFIG_PATCH` wins over profile discovery.
+For a custom location, set `CODEX_CONFIG_HOME` / `DSH_CONFIG_HOME` /
+`GH_CONFIG_HOME` to the mounted directory, or set `DSH_CONFIG_PATCH` to one
+specific `cordis.patch.yml`. An explicit `DSH_CONFIG_PATCH` wins over profile
+discovery. If `~/.config/gh/hosts.yml` is imported, the GitHub card detects the
+existing login on the next state refresh and the repository selector includes
+private repositories visible to that login.
 
 The scheduler runs every 86400 seconds after startup. Each tick pulls the
 latest checkout, asks the runner for bounded Markdown edits, validates and
@@ -145,7 +153,8 @@ For an HTTPS reverse proxy, configure explicit `TRUSTED_HOSTS` and
 `TRUSTED_ORIGINS` and enable `COOKIE_SECURE=true`. Do not expose the plain HTTP
 port on the public internet. The base Compose file mounts no host home
 directory or Docker socket. The optional host-config override mounts only
-`~/.codex` and `~/.dsh` read-only and imports a bounded subset into `/data`.
+`~/.codex`, `~/.dsh`, and `~/.config/gh` read-only and imports a bounded subset
+into `/data`.
 
 ## Package and build boundary
 

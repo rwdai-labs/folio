@@ -1,4 +1,5 @@
-# Optional Compose override: reuse the host Codex and DSH CLI configuration.
+# Optional Compose override: reuse the host Codex, DSH, and GitHub CLI
+# configuration.
 #
 #   docker compose -f compose.yaml -f deploy/compose.host-config.yaml up -d
 #
@@ -12,5 +13,6 @@ services:
     volumes:
       - ${HOME}/.codex:/host/codex:ro
       - ${HOME}/.dsh:/host/dsh:ro
+      - ${HOME}/.config/gh:/host/gh:ro
     environment:
       DSH_CREDENTIALS: stored

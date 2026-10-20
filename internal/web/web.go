@@ -67,6 +67,7 @@ type Backend interface {
 	GitHubStart() (map[string]any, error)
 	Poll() (map[string]any, error)
 	Logout() (map[string]any, error)
+	GitHubRepositories() (map[string]any, error)
 	ConnectRepository(fullName string) (map[string]any, error)
 	SyncRepository() (map[string]any, error)
 	RunMaintenance(mode, model, runner string) (map[string]any, error)
@@ -1190,6 +1191,13 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 		state = safeMap(state)
 		state["service"] = map[string]any{"scheduler_enabled": s.opts.SchedulerEnabled, "scheduler_interval_seconds": int(s.opts.SchedulerInterval / time.Second), "scheduler_next_at": s.schedulerNextAt(), "jobs": s.jobs.summary()}
 		s.writeJSON(w, http.StatusOK, state, nil)
+	case "/api/github/repositories":
+		value, err := s.store.GitHubRepositories()
+		if err != nil {
+			s.writeError(w, http.StatusBadGateway, "github_repositories_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/automation":
 		value, err := s.store.ListAutomation()
 		if err != nil {

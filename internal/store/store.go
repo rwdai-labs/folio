@@ -29,6 +29,7 @@ const (
 	githubClientID   = "Iv1.e7b89e013f801f03"
 	githubDeviceURL  = "https://github.com/login/device/code"
 	githubTokenURL   = "https://github.com/login/oauth/access_token"
+	githubAPIURL     = "https://api.github.com"
 )
 
 var (
@@ -40,6 +41,7 @@ var (
 	reportIDRE       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 	deviceCodeRE     = regexp.MustCompile(`^[A-Za-z0-9._~:/_+\-]+$`)
 	userCodeRE       = regexp.MustCompile(`(?i)^[A-Z0-9]{4}-[A-Z0-9]{4}$`)
+	githubTokenRE    = regexp.MustCompile(`^[A-Za-z0-9_.-]{20,512}$`)
 	githubRemoteRE   = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\.git$`)
 )
 
@@ -68,6 +70,7 @@ type Store struct {
 	codexDir        string
 	dshDir          string
 	ghConfigDir     string
+	githubAPIBase   string
 	homeDir         string
 	hooksDir        string
 	authPendingPath string
@@ -118,6 +121,7 @@ func New(dataDir, toolRoot string) (*Store, error) {
 		codexDir:           filepath.Join(data, "codex"),
 		dshDir:             filepath.Join(data, "dsh"),
 		ghConfigDir:        filepath.Join(data, "secrets", "gh"),
+		githubAPIBase:      githubAPIURL,
 		homeDir:            filepath.Join(data, "home"),
 		hooksDir:           filepath.Join(data, "git-hooks"),
 		authPendingPath:    filepath.Join(data, "runtime", "github-device.json"),
@@ -143,6 +147,15 @@ func (s *Store) State() (map[string]any, error) {
 		authStatus := publicText(auth["status"], 64)
 		if authStatus == "" {
 			authStatus = "unknown"
+		}
+		// A host gh configuration imported at startup, or a login completed
+		// outside the UI, is authoritative. Refresh a stale signed-out state
+		// once so the repository selector can use the existing credentials.
+		if authStatus != "authenticated" && s.ghAuthenticated() {
+			authStatus = "authenticated"
+			if err := s.setGitHubStatus(authStatus); err != nil {
+				return nil, err
+			}
 		}
 		return map[string]any{
 			"version": 1,

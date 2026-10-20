@@ -47,6 +47,10 @@
     lastState: null,
     githubStatus: "unknown",
     githubEpoch: 0,
+    repositories: [],
+    repositoryListStatus: "idle",
+    repositoryManual: false,
+    repositoryTruncated: false,
   };
 
   const messageRegions = {
@@ -653,13 +657,207 @@
 
   /* ------------------------------------------------------------- repository */
 
+  const repositoryPart = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
+
+  function repositoryOptions() {
+    const raw = Array.isArray(state.repositories) ? state.repositories : [];
+    const seen = new Set();
+    const options = [];
+    raw.forEach((item) => {
+      if (!item || typeof item.full_name !== "string") return;
+      const parts = item.full_name.trim().split("/");
+      if (parts.length !== 2 || !repositoryPart.test(parts[0]) || !repositoryPart.test(parts[1])) return;
+      const fullName = `${parts[0]}/${parts[1]}`;
+      if (seen.has(fullName)) return;
+      seen.add(fullName);
+      options.push({
+        full_name: fullName,
+        private: item.private === true,
+        archived: item.archived === true,
+      });
+    });
+    return options;
+  }
+
+  function repositoryLabel(repository) {
+    const flags = [];
+    if (repository.private) flags.push(t("repo.private"));
+    if (repository.archived) flags.push(t("repo.archived"));
+    return flags.length ? `${repository.full_name} (${flags.join(", ")})` : repository.full_name;
+  }
+
+  function addRepositoryOption(select, value, label, disabled = false) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.disabled = disabled;
+    select.appendChild(option);
+  }
+
+  function currentRepositoryName() {
+    const repository = state.lastState && state.lastState.repository;
+    return repository && repository.connected && typeof repository.full_name === "string"
+      ? repository.full_name
+      : "";
+  }
+
+  function fillRepositoryManualFromCurrent() {
+    const fullName = currentRepositoryName();
+    if (!fullName) return;
+    if ($("repo-owner").value.trim() || $("repo-name").value.trim()) return;
+    const separator = fullName.indexOf("/");
+    if (separator <= 0) return;
+    $("repo-owner").value = fullName.slice(0, separator);
+    $("repo-name").value = fullName.slice(separator + 1);
+  }
+
+  function repositoryBaseHintKey() {
+    if (state.githubStatus === "unknown") return "repo.checking_hint";
+    if (state.githubStatus !== "authenticated") return "repo.github_required";
+    switch (state.repositoryListStatus) {
+      case "loading":
+      case "idle":
+        return "repo.loading_hint";
+      case "error":
+        return "repo.list_failed";
+      case "loaded":
+        if (state.repositoryTruncated) return "repo.truncated_hint";
+        if (!repositoryOptions().length && !currentRepositoryName()) return "repo.empty_hint";
+        return "repo.select_hint";
+      default:
+        return "repo.loading_hint";
+    }
+  }
+
+  function updateRepositoryManualVisibility() {
+    const select = $("repo-select");
+    const manual = Boolean(select && select.value === "__manual__");
+    const wasHidden = $("repo-manual").hidden;
+    $("repo-manual").hidden = !manual;
+    if (manual && wasHidden) fillRepositoryManualFromCurrent();
+    const hint = $("repo-select-hint");
+    if (hint) hint.textContent = t(manual ? "repo.manual_hint" : repositoryBaseHintKey());
+    const connect = $("repo-connect");
+    if (connect) connect.disabled = !select || !select.value;
+    const refresh = $("repo-refresh");
+    if (refresh) refresh.disabled = state.githubStatus !== "authenticated" || state.repositoryListStatus === "loading";
+  }
+
+  function renderRepositoryOptions() {
+    const select = $("repo-select");
+    if (!select) return;
+    const previous = select.value;
+    while (select.firstChild) select.removeChild(select.firstChild);
+
+    const status = state.repositoryListStatus;
+    if (state.githubStatus === "unknown") {
+      addRepositoryOption(select, "", t("repo.checking_option"), true);
+    } else if (state.githubStatus !== "authenticated") {
+      addRepositoryOption(select, "", t("repo.github_required_option"), true);
+    } else if (status === "loading" || status === "idle") {
+      addRepositoryOption(select, "", t("repo.loading_option"), true);
+    } else if (status === "error") {
+      addRepositoryOption(select, "", t("repo.list_failed_option"), true);
+    } else {
+      addRepositoryOption(select, "", t("repo.select_placeholder"), true);
+      const repositories = repositoryOptions();
+      const names = new Set(repositories.map((repository) => repository.full_name));
+      repositories.forEach((repository) => {
+        addRepositoryOption(select, repository.full_name, repositoryLabel(repository));
+      });
+      const current = currentRepositoryName();
+      if (current && !names.has(current)) {
+        addRepositoryOption(select, current, `${current} (${t("repo.current_tag")})`);
+      }
+      if (!repositories.length && !current) {
+        addRepositoryOption(select, "", t("repo.empty_option"), true);
+      }
+    }
+    addRepositoryOption(select, "__manual__", t("repo.manual_option"));
+
+    const values = new Set(Array.from(select.options).map((option) => option.value));
+    let desired = previous;
+    if (desired === "__manual__" && !state.repositoryManual) desired = "";
+    if (desired && !values.has(desired)) desired = "";
+    const current = currentRepositoryName();
+    if (!desired && current && values.has(current) && !state.repositoryManual) desired = current;
+    if (!desired && state.repositoryManual && values.has("__manual__")) desired = "__manual__";
+    if (!desired && (state.githubStatus !== "authenticated" || status === "error")) desired = "__manual__";
+    select.value = desired;
+    updateRepositoryManualVisibility();
+  }
+
+  async function loadRepositories(force = false) {
+    if (state.githubStatus !== "authenticated") {
+      state.repositories = [];
+      state.repositoryListStatus = "signed_out";
+      state.repositoryTruncated = false;
+      renderRepositoryOptions();
+      return;
+    }
+    if (state.repositoryListStatus === "loading") return;
+    if (!force && state.repositoryListStatus === "loaded") return;
+    const previousStatus = state.repositoryListStatus;
+    state.repositoryListStatus = "loading";
+    const select = $("repo-select");
+    if (!select || select.options.length <= 2 || previousStatus === "signed_out" || previousStatus === "idle") {
+      renderRepositoryOptions();
+    } else {
+      updateRepositoryManualVisibility();
+    }
+    try {
+      const result = await api("/api/github/repositories");
+      if (state.githubStatus !== "authenticated") return;
+      state.repositories = Array.isArray(result.repositories) ? result.repositories : [];
+      state.repositoryTruncated = result.truncated === true;
+      state.repositoryListStatus = "loaded";
+      setMessage("repository", null);
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      state.repositories = [];
+      state.repositoryTruncated = false;
+      state.repositoryListStatus = "error";
+      setMessage("repository", errorKey(error, "repo.list_failed"), { error: true });
+    }
+    renderRepositoryOptions();
+  }
+
+  async function refreshRepositoryList() {
+    if (state.repositoryListStatus === "loading") return;
+    if (state.githubStatus !== "authenticated") {
+      setMessage("repository", "repo.github_required", { error: true });
+      return;
+    }
+    const button = $("repo-refresh");
+    setBusy(button, "repo.refreshing_list");
+    try {
+      await loadRepositories(true);
+    } finally {
+      clearBusy(button);
+      updateRepositoryManualVisibility();
+    }
+  }
+
   async function connectRepository(event) {
     event.preventDefault();
     if (state.connecting) return;
-    const owner = $("repo-owner").value.trim();
-    const name = $("repo-name").value.trim();
-    if (!owner || !name) {
+    const select = $("repo-select");
+    let owner = "";
+    let name = "";
+    if (select && select.value === "__manual__") {
+      state.repositoryManual = true;
+      owner = $("repo-owner").value.trim();
+      name = $("repo-name").value.trim();
+    } else if (select && select.value) {
+      const separator = select.value.indexOf("/");
+      if (separator > 0) {
+        owner = select.value.slice(0, separator);
+        name = select.value.slice(separator + 1);
+      }
+    }
+    if (!repositoryPart.test(owner) || !repositoryPart.test(name)) {
       setMessage("repository", "repo.invalid", { error: true });
+      updateRepositoryManualVisibility();
       return;
     }
     state.connecting = true;
@@ -672,6 +870,7 @@
         body: { owner, name },
       });
       renderRaw("repository-output", result);
+      state.repositoryManual = false;
       setMessage("repository", "repo.connected_message");
       await refreshAll();
     } catch (error) {
@@ -682,6 +881,7 @@
     } finally {
       state.connecting = false;
       clearBusy(button);
+      updateRepositoryManualVisibility();
     }
   }
 
@@ -1011,12 +1211,19 @@
     const lastRun = latest ? latest.finished_at || latest.started_at : scheduler.finished_at;
     $("fact-last-run").textContent = lastRun ? formatTime(lastRun) || lastRun : t("automation.never");
 
-    if (connected && repository.full_name && !$("repo-owner").value.trim() && !$("repo-name").value.trim()) {
-      const separator = repository.full_name.indexOf("/");
-      if (separator > 0) {
-        $("repo-owner").value = repository.full_name.slice(0, separator);
-        $("repo-name").value = repository.full_name.slice(separator + 1);
+    if (status === "authenticated") {
+      if (state.repositoryListStatus === "idle" || state.repositoryListStatus === "signed_out") {
+        state.repositoryListStatus = "idle";
+        void loadRepositories();
+      } else {
+        renderRepositoryOptions();
       }
+    } else {
+      state.repositories = [];
+      state.repositoryTruncated = false;
+      state.repositoryManual = false;
+      state.repositoryListStatus = status === "unknown" ? "idle" : "signed_out";
+      renderRepositoryOptions();
     }
 
     updateRunnerUi(data);
@@ -1397,6 +1604,17 @@
   $("github-logout").addEventListener("click", logoutGithub);
   $("github-copy").addEventListener("click", copyDeviceCode);
   $("repository-form").addEventListener("submit", connectRepository);
+  $("repo-select").addEventListener("change", () => {
+    const select = $("repo-select");
+    state.repositoryManual = Boolean(select && select.value === "__manual__");
+    updateRepositoryManualVisibility();
+  });
+  $("repo-refresh").addEventListener("click", refreshRepositoryList);
+  ["repo-owner", "repo-name"].forEach((id) => {
+    $(id).addEventListener("input", () => {
+      if ($("repo-select").value === "__manual__") state.repositoryManual = true;
+    });
+  });
   $("sync-button").addEventListener("click", syncRepository);
   $("automation-form").addEventListener("submit", (event) => {
     event.preventDefault();

@@ -142,7 +142,7 @@ func (s *Store) Logout() (map[string]any, error) { return s.GitHubLogout() }
 func (s *Store) beginDeviceFlow() error {
 	response, err := s.githubRequest(githubDeviceURL, url.Values{
 		"client_id": {githubClientID},
-		"scope":     {"repo"},
+		"scope":     {"repo read:org"},
 	})
 	if err != nil {
 		return errStore("GitHub authorization service is unavailable")
@@ -353,6 +353,147 @@ func (s *Store) ghAuthenticated() bool {
 	}
 	result, runErr := s.runCommand([]string{gh, "auth", "status", "--hostname", "github.com"}, s.dataDir, "", 30*time.Second, false, nil)
 	return runErr == nil && result.code == 0
+}
+
+// GitHubRepositories lists the repositories visible to the stored GitHub
+// token so the Web UI can offer a selector instead of making the owner and
+// name mandatory text fields. The token never leaves this package.
+func (s *Store) GitHubRepositories() (map[string]any, error) {
+	token, err := s.githubToken()
+	if err != nil {
+		return nil, err
+	}
+	repositories, truncated, err := s.fetchGitHubRepositories(token)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"repositories": repositories,
+		"count":        len(repositories),
+		"truncated":    truncated,
+	}, nil
+}
+
+func (s *Store) githubToken() (string, error) {
+	gh, err := s.executable("gh")
+	if err != nil {
+		return "", errStore("GitHub authorization is unavailable")
+	}
+	result, runErr := s.runCommand([]string{gh, "auth", "token", "--hostname", "github.com"}, s.dataDir, "", 20*time.Second, false, nil)
+	if runErr != nil || result.code != 0 || result.truncated {
+		return "", errStore("GitHub authorization is unavailable")
+	}
+	token := strings.TrimSpace(result.stdout)
+	if !githubTokenRE.MatchString(token) {
+		return "", errStore("GitHub authorization is unavailable")
+	}
+	return token, nil
+}
+
+const (
+	githubRepositoriesPerPage = 100
+	maxGitHubRepositories     = 200
+	maxGitHubRepositoryPages  = 2
+	maxGitHubAPIPayload       = 2 * 1024 * 1024
+)
+
+type githubRepository struct {
+	FullName      string `json:"full_name"`
+	Private       bool   `json:"private"`
+	Archived      bool   `json:"archived"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+func (s *Store) fetchGitHubRepositories(token string) ([]map[string]any, bool, error) {
+	base := strings.TrimRight(s.githubAPIBase, "/")
+	if base == "" {
+		base = githubAPIURL
+	}
+	seen := make(map[string]struct{})
+	repositories := make([]map[string]any, 0, 32)
+	truncated := false
+	for page := 1; page <= maxGitHubRepositoryPages; page++ {
+		endpoint, err := url.Parse(base + "/user/repos")
+		if err != nil {
+			return nil, false, errStore("GitHub repository list is unavailable")
+		}
+		query := endpoint.Query()
+		query.Set("per_page", strconv.Itoa(githubRepositoriesPerPage))
+		query.Set("page", strconv.Itoa(page))
+		query.Set("sort", "updated")
+		query.Set("affiliation", "owner,collaborator,organization_member")
+		endpoint.RawQuery = query.Encode()
+
+		raw, err := s.githubAPIGet(endpoint.String(), token)
+		if err != nil {
+			return nil, false, err
+		}
+		var items []githubRepository
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, false, errStore("GitHub repository list is invalid")
+		}
+		for _, item := range items {
+			owner, name, err := s.validateFullName(item.FullName)
+			if err != nil {
+				continue
+			}
+			fullName := owner + "/" + name
+			if _, ok := seen[fullName]; ok {
+				continue
+			}
+			if len(repositories) >= maxGitHubRepositories {
+				truncated = true
+				break
+			}
+			seen[fullName] = struct{}{}
+			entry := map[string]any{
+				"full_name": fullName,
+				"private":   item.Private,
+				"archived":  item.Archived,
+			}
+			if branch := publicText(item.DefaultBranch, 200); branch != "" && branchRE.MatchString(branch) {
+				entry["default_branch"] = branch
+			}
+			repositories = append(repositories, entry)
+		}
+		if truncated || len(items) < githubRepositoriesPerPage {
+			break
+		}
+		if page == maxGitHubRepositoryPages {
+			truncated = true
+		}
+	}
+	return repositories, truncated, nil
+}
+
+func (s *Store) githubAPIGet(endpoint, token string) ([]byte, error) {
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, errStore("GitHub repository list is unavailable")
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("User-Agent", "folio-service/1")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy: safeProxyFunc,
+		},
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, errStore("GitHub repository list is unavailable")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, errStore("GitHub repository list is unavailable")
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxGitHubAPIPayload+1))
+	if err != nil || len(raw) > maxGitHubAPIPayload {
+		return nil, errStore("GitHub repository list is invalid")
+	}
+	return raw, nil
 }
 
 func responseString(value map[string]any, key string) string {
