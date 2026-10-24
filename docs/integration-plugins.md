@@ -60,6 +60,27 @@ gate, the commit, the rollback, and the audit record. A plugin owns the remote
 side and the credential. Swapping GitHub for S3 means implementing six methods,
 not editing the maintenance worker.
 
+### The browser host surface
+
+A built-in plugin's frontend is served from its embedded `Assets()` at
+`/plugins/{id}/`, and the shell loads `/plugins/{id}/plugin.js` after a session
+exists — on boot with a restored cookie and again after a fresh login. A plugin
+may use only this surface:
+
+| Surface | Meaning |
+| --- | --- |
+| `window.folio.api(path, {method, body})` | authenticated request with the CSRF header |
+| `window.folio.connectRepository(owner, name)` | the host's one connect transaction; resolves `{ok, reason}` |
+| `window.folio.refreshState()` | re-read host state after a plugin action |
+| `window.folio.refreshTasks()`, `formatTime`, `t` | task board and formatting helpers |
+| `folio:session` event | `{authenticated: true}` on boot and login, `{authenticated: false}` on logout or expiry |
+| `folio:languagechange` event | the owner switched the interface language |
+
+`folio:session` with `authenticated: false` obliges a plugin to drop its
+signed-in UI. The plugin mounts into markup the shell reserves and owns its own
+ids there; the host's manual repository form stays available for deployments
+without the plugin, and a mounted plugin hides it rather than competing with it.
+
 **What a plugin may do
 
 1. `POST /api/hooks/{hook_id}` with a signed body. That is the whole write API.

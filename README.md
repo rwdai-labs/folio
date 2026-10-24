@@ -146,9 +146,11 @@ Two ways to authenticate, both first class:
    line.
 
 The GitHub card and the repository picker are the plugin's own frontend,
-mounted at `/plugins/github/` and `/api/plugins/github/`. Without the plugin the
-manual owner/name form still works, so the service degrades to a plain Git
-remote instead of failing.
+mounted at `/plugins/github/` and `/api/plugins/github/`. When the plugin is
+present, the repository card offers one "Sign in to GitHub" entry and then a
+repository list: pick one, connect, done. The manual owner/name form is the
+headless fallback and is hidden while the plugin is mounted, so the service
+still degrades to a plain Git remote instead of failing when it is absent.
 
 External triggers (a context watcher, a CI job, the GitHub issue bridge) are a
 different class of plugin: they are separate programs that call the signed hook

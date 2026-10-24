@@ -64,10 +64,22 @@
 }
 
 #repo-picker-slot {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+}
+
+#repo-picker-slot .gh-row {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+}
+
+#repo-picker-slot .gh-slot-note {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  font-size: 0.875rem;
 }
 
 #repo-picker-slot select {

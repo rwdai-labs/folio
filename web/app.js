@@ -4,6 +4,18 @@
   /* --------------------------------------------------------------- helpers */
 
   const $ = (id) => document.getElementById(id);
+  // Wiring goes through on() so one renamed or optional element cannot abort
+  // the rest of the page. Missing ids are reported once, after wiring.
+  const missingElements = [];
+  function on(id, type, handler, options) {
+    const node = $(id);
+    if (!node) {
+      missingElements.push(id);
+      return null;
+    }
+    node.addEventListener(type, handler, options);
+    return node;
+  }
   const hasI18n = () => Boolean(window.FolioI18n);
   const t = (key, vars) => (hasI18n() ? window.FolioI18n.t(key, vars) : key);
   const formatTime = (value) => (hasI18n() ? window.FolioI18n.formatTime(value) : "");
@@ -292,6 +304,7 @@
     if ($("model-input")) $("model-input").value = "";
     closeModelMenu();
     showLogin();
+    leaveSession();
     setMessage("login", "login.expired", { error: true });
   }
 
@@ -316,6 +329,7 @@
       input.value = "";
       showApp();
       await refreshAll();
+      await enterSession();
     } catch (error) {
       const key =
         error.code === "login_rate_limited" || error.status === 429
@@ -355,6 +369,7 @@
       closeModelMenu();
       stopAllTimers();
       showLogin();
+      leaveSession();
       setMessage("login", null);
       state.loggingOut = false;
       clearBusy(button);
@@ -365,37 +380,47 @@
 
   const repositoryPart = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 
-  async function connectRepository(event) {
-    event.preventDefault();
-    if (state.connecting) return;
-    const owner = $("repo-owner").value.trim();
-    const name = $("repo-name").value.trim();
-    if (!repositoryPart.test(owner) || !repositoryPart.test(name)) {
-      setMessage("repository", "repo.invalid", { error: true });
-      return;
+  // connectRemote is the one connect action. The manual form and a plugin
+  // picker both call it, so there is a single code path and a single error.
+  // It reports a reason, not a translation key, so a plugin can phrase it.
+  async function connectRemote(owner, name) {
+    const cleanOwner = typeof owner === "string" ? owner.trim() : "";
+    const cleanName = typeof name === "string" ? name.trim() : "";
+    if (!repositoryPart.test(cleanOwner) || !repositoryPart.test(cleanName)) {
+      return { ok: false, reason: "invalid" };
     }
+    if (state.connecting) return { ok: false, reason: "busy" };
     state.connecting = true;
-    const button = $("repo-connect");
-    setBusy(button, "repo.connecting");
-    setMessage("repository", null);
     try {
       const result = await api("/api/repository/connect", {
         method: "POST",
-        body: { owner, name },
+        body: { owner: cleanOwner, name: cleanName },
       });
       renderRaw("repository-output", result);
-      $("repo-name").value = "";
-      setMessage("repository", "repo.connected_message");
       await refreshAll();
+      return { ok: true, result };
     } catch (error) {
-      if (error.code !== "authentication_required") {
-        setMessage("repository", errorKey(error, "repo.connect_failed"), { error: true });
-        renderErrorRaw("repository-output", error);
-      }
+      if (error.code !== "authentication_required") renderErrorRaw("repository-output", error);
+      return { ok: false, reason: "failed", key: errorKey(error, "repo.connect_failed"), error: error.code || null };
     } finally {
       state.connecting = false;
-      clearBusy(button);
     }
+  }
+
+  async function connectRepository(event) {
+    event.preventDefault();
+    const button = $("repo-connect");
+    if (button && button.disabled) return;
+    setBusy(button, "repo.connecting");
+    setMessage("repository", null);
+    const outcome = await connectRemote($("repo-owner").value, $("repo-name").value);
+    clearBusy(button);
+    if (outcome.ok) {
+      $("repo-name").value = "";
+      setMessage("repository", "repo.connected_message");
+      return;
+    }
+    setMessage("repository", outcome.reason === "invalid" ? "repo.invalid" : outcome.key, { error: true });
   }
 
   async function syncRepository() {
@@ -1859,16 +1884,16 @@
 
   /* --------------------------------------------------------------- events */
 
-  $("login-form").addEventListener("submit", login);
-  $("logout-button").addEventListener("click", logout);
-  $("repository-form").addEventListener("submit", connectRepository);
-  $("sync-button").addEventListener("click", syncRepository);
-  $("automation-form").addEventListener("submit", (event) => {
+  on("login-form", "submit", login);
+  on("logout-button", "click", logout);
+  on("repo-manual", "submit", connectRepository);
+  on("sync-button", "click", syncRepository);
+  on("automation-form", "submit", (event) => {
     event.preventDefault();
     runAutomationNow();
   });
-  $("run-now-button").addEventListener("click", runAutomationNow);
-  $("automation-refresh").addEventListener("click", async () => {
+  on("run-now-button", "click", runAutomationNow);
+  on("automation-refresh", "click", async () => {
     const button = $("automation-refresh");
     setBusy(button, "common.refreshing");
     try {
@@ -1877,20 +1902,20 @@
       clearBusy(button);
     }
   });
-  $("runs-list").addEventListener("click", (event) => {
+  on("runs-list", "click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const button = target ? target.closest("button[data-run-id]") : null;
     if (button) selectAutomationRun(button.dataset.runId);
   });
-  $("runner-select").addEventListener("change", () => updateRunnerUi(state.lastState));
-  $("model-input").addEventListener("click", () => {
+  on("runner-select", "change", () => updateRunnerUi(state.lastState));
+  on("model-input", "click", () => {
     if (!state.modelMenuOpen) openModelMenu();
   });
-  $("model-input").addEventListener("input", () => {
+  on("model-input", "input", () => {
     state.modelValues[activeRunner()] = $("model-input").value;
     if (state.modelMenuOpen) renderModelMenu();
   });
-  $("model-input").addEventListener("keydown", (event) => {
+  on("model-input", "keydown", (event) => {
     const menu = $("model-options");
     if (!menu) return;
     if (event.key === "ArrowDown") {
@@ -1925,16 +1950,16 @@
     }
     if (event.key === "Tab") closeModelMenu();
   });
-  $("model-toggle").addEventListener("click", () => {
+  on("model-toggle", "click", () => {
     if (state.modelMenuOpen) closeModelMenu();
     else openModelMenu();
     $("model-input").focus();
   });
-  $("model-options").addEventListener("mousedown", (event) => {
+  on("model-options", "mousedown", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (target && target.closest(".model-option")) event.preventDefault();
   });
-  $("model-options").addEventListener("click", (event) => {
+  on("model-options", "click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const option = target ? target.closest(".model-option") : null;
     if (option) chooseModel(option.dataset.modelValue || "");
@@ -1946,31 +1971,31 @@
     if (combo && target && !combo.contains(target)) closeModelMenu();
   });
 
-  $("tasks-pause").addEventListener("click", toggleTasksPaused);
-  $("tasks-list").addEventListener("click", (event) => {
+  on("tasks-pause", "click", toggleTasksPaused);
+  on("tasks-list", "click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const button = target ? target.closest("button[data-task-action]") : null;
     if (button) taskAction(button);
   });
 
-  $("usage-window").addEventListener("change", (event) => {
+  on("usage-window", "change", (event) => {
     const next = Number.parseInt(event.target.value, 10);
     state.usageWindow = Number.isFinite(next) && next > 0 ? next : 30;
     refreshUsage();
   });
 
-  $("hook-form").addEventListener("submit", createHook);
-  $("hook-secret-copy").addEventListener("click", copyHookSecret);
-  $("hooks-list").addEventListener("click", (event) => {
+  on("hook-form", "submit", createHook);
+  on("hook-secret-copy", "click", copyHookSecret);
+  on("hooks-list", "click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const button = target ? target.closest("button[data-hook-action]") : null;
     if (button) hookAction(button);
   });
 
-  $("bark-form").addEventListener("submit", saveBark);
-  $("bark-test").addEventListener("click", testBark);
+  on("bark-form", "submit", saveBark);
+  on("bark-test", "click", testBark);
 
-  $("refresh-button").addEventListener("click", async () => {
+  on("refresh-button", "click", async () => {
     if (state.refreshing) return;
     state.refreshing = true;
     const button = $("refresh-button");
@@ -2005,8 +2030,7 @@
         state.csrf = typeof session.csrf_token === "string" ? session.csrf_token : "";
         showApp();
         await refreshAll();
-        loadPlugins();
-        document.dispatchEvent(new CustomEvent("folio:session", { detail: { authenticated: true } }));
+        await enterSession();
       } else {
         showLogin();
       }
@@ -2014,6 +2038,20 @@
       showLogin();
       setMessage("login", error.network ? "error.network" : "login.unavailable", { error: true });
     }
+  }
+
+  // enterSession runs whenever the shell gains a session: from boot with a
+  // restored cookie and from a fresh login. A plugin that is already loaded
+  // hears folio:session and re-reads its status instead of staying signed out.
+  async function enterSession() {
+    await loadPlugins();
+    document.dispatchEvent(new CustomEvent("folio:session", { detail: { authenticated: true } }));
+  }
+
+  // leaveSession is the other half: a plugin must drop its signed-in state
+  // instead of leaving a picker on screen after the owner logs out.
+  function leaveSession() {
+    document.dispatchEvent(new CustomEvent("folio:session", { detail: { authenticated: false } }));
   }
 
   // Built-in plugins are compiled into the binary and served from their own
@@ -2036,15 +2074,20 @@
     }
   }
 
-  // The host surface a plugin may use: authenticated requests and a single
-  // refresh entry point. Plugins never reach into the store or the DOM state.
+  // The host surface a plugin may use: authenticated requests, the one connect
+  // action, a single refresh entry point, and the session signal. Plugins never
+  // reach into the store or the DOM state.
   window.folio = {
     api,
+    connectRepository: connectRemote,
     refreshState: () => refreshAll(),
     refreshTasks,
     formatTime,
     t,
   };
 
+  if (missingElements.length) {
+    window.console.warn("folio: missing elements: " + Array.from(new Set(missingElements)).join(", "));
+  }
   boot();
 })();

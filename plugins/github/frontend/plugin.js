@@ -61,12 +61,15 @@
 
   function render() {
     card.replaceChildren();
-    card.hidden = false;
+    const status = state.status || { status: "loading" };
+    // The card is the sign-in detail surface: it appears while authorization is
+    // pending, when signed in, or when something needs attention. Signed out,
+    // the repository card's slot carries the single sign-in entry point.
+    card.hidden = status.status === "signed_out" || status.status === "loading";
     const head = element("div", "gh-head");
     const heading = element("h2", "", text("GitHub", "GitHub"));
     heading.id = "plugin-github-heading";
     head.append(heading);
-    const status = state.status || { status: "loading" };
     const badge = element("span", "badge", badgeText(status));
     badge.dataset.state = status.status || "loading";
     head.append(badge);
@@ -76,6 +79,7 @@
     const note = element("p", "gh-hint");
     card.append(body, note);
     renderBody(body, note, status);
+    renderSlot();
   }
 
   function badgeText(status) {
@@ -99,7 +103,6 @@
       }
       row.append(button(text("重新授权", "Sign in again"), () => startSignIn()));
       body.append(row);
-      renderPicker();
       return;
     }
     if (status.status === "pending") {
@@ -120,47 +123,86 @@
       return;
     }
     body.append(element("p", "gh-hint", text(
-      "登录 GitHub 后可以直接选择仓库；也可以使用下方的 owner/name 手动填写。",
-      "Sign in to GitHub to pick a repository, or use the manual owner/name fields below.")));
-    row.append(button(text("登录 GitHub", "Sign in to GitHub"), () => startSignIn(), "btn"));
+      "登录 GitHub 后可以直接选择仓库，不需要手动填写。",
+      "Sign in to GitHub to pick a repository from a list; no manual typing.")));
+    row.append(button(text("登录 GitHub", "Sign in to GitHub"), () => startSignIn(), "btn primary"));
     body.append(row);
     message(note, status.message || "", status.status === "error");
   }
 
-  // The picker lives in the repository card, not in this card: it is an input
-  // method for the same connect action. It fills the core inputs, so the
-  // existing connect button keeps working unchanged.
-  function renderPicker() {
+  // The picker lives in the repository card, not in this card: it is the input
+  // method for the same connect action. With the plugin present the manual
+  // owner/name form is hidden, so the repository card never asks for typing.
+  function renderSlot() {
     if (!slot) return;
+    const status = state.status || { status: "loading" };
     slot.replaceChildren();
-    hideManualInputs(true);
     slot.hidden = false;
-    const wrapper = element("div", "gh-row");
-    const select = element("select");
-    select.id = "gh-repo-select";
-    select.setAttribute("aria-label", text("选择仓库", "Choose repository"));
-    const placeholder = element("option", "", text("选择仓库…", "Choose repository…"));
-    placeholder.value = "";
-    select.append(placeholder);
-    for (const repo of state.repositories || []) {
-      const option = element("option", "", repo.full_name + (repo.private ? " · " + text("私有", "private") : ""));
-      option.value = repo.full_name;
-      select.append(option);
+    const note = element("p", "gh-hint gh-slot-note");
+    note.id = "gh-slot-note";
+    const row = element("div", "gh-row");
+    if (status.status === "authenticated") {
+      const select = element("select");
+      select.id = "gh-repo-select";
+      select.setAttribute("aria-label", text("选择仓库", "Choose repository"));
+      const placeholder = element("option", "", text("选择仓库…", "Choose repository…"));
+      placeholder.value = "";
+      select.append(placeholder);
+      for (const repo of state.repositories || []) {
+        const option = element("option", "", repo.full_name + (repo.private ? " · " + text("私有", "private") : ""));
+        option.value = repo.full_name;
+        select.append(option);
+      }
+      if (!state.repositories) {
+        select.disabled = true;
+        placeholder.textContent = text("正在加载仓库…", "Loading repositories…");
+      }
+      const connect = button(text("连接仓库", "Connect repository"), () => connectSelected(select, note), "btn primary");
+      connect.id = "gh-connect";
+      connect.disabled = true;
+      select.addEventListener("change", () => {
+        connect.disabled = !select.value;
+        note.textContent = "";
+      });
+      row.append(select, button(text("刷新列表", "Refresh list"), () => loadRepositories()), connect);
+      note.textContent = text(
+        "选择仓库后点连接；检出内容保存在私有数据卷中。",
+        "Pick a repository and connect. The checkout stays in the private data volume.");
+    } else if (status.status === "pending") {
+      note.textContent = text(
+        "等待 GitHub 授权，授权后这里会出现仓库列表。",
+        "Waiting for GitHub authorization; the repository list appears here after approval.");
+    } else if (status.status === "loading") {
+      note.textContent = text("正在检查 GitHub 登录状态…", "Checking GitHub sign-in…");
+    } else {
+      row.append(button(text("登录 GitHub", "Sign in to GitHub"), () => startSignIn(), "btn primary"));
+      note.textContent = text(
+        "一键登录 GitHub 后可直接从列表选择仓库。",
+        "Sign in to GitHub once, then pick the repository from a list.");
     }
-    if (!state.repositories) {
-      select.disabled = true;
-      placeholder.textContent = text("正在加载仓库…", "Loading repositories…");
+    slot.append(note, row);
+  }
+
+  // connectSelected hands the chosen owner/name to the host. The host owns the
+  // connect transaction, the response text, and the refreshed state.
+  async function connectSelected(select, note) {
+    const value = select.value;
+    if (!value) return;
+    const [owner, name] = value.split("/");
+    const host = window.folio;
+    if (!host || typeof host.connectRepository !== "function") {
+      note.textContent = text("宿主不支持连接操作，请刷新页面。", "The host cannot connect; reload the page.");
+      return;
     }
-    select.addEventListener("change", () => {
-      const [owner, name] = select.value.split("/");
-      const ownerInput = document.getElementById("repo-owner");
-      const nameInput = document.getElementById("repo-name");
-      if (ownerInput) ownerInput.value = owner || "";
-      if (nameInput) nameInput.value = name || "";
-    });
-    wrapper.append(select);
-    wrapper.append(button(text("刷新列表", "Refresh list"), () => loadRepositories()));
-    slot.append(wrapper);
+    note.textContent = text("正在连接…", "Connecting…");
+    const outcome = await host.connectRepository(owner, name);
+    if (!outcome || !outcome.ok) {
+      note.textContent = outcome && outcome.reason === "invalid"
+        ? text("仓库名无效。", "That repository name is not valid.")
+        : text("连接失败，请检查仓库名与访问权限。", "Could not connect. Check the repository name and access.");
+      return;
+    }
+    note.textContent = text("已连接 " + value, "Connected " + value);
   }
 
   /* ---------------------------------------------------------------- actions */
@@ -211,7 +253,6 @@
     try {
       state.status = await api(API + "/auth/logout", { method: "POST", body: {} });
       state.repositories = null;
-      clearPicker();
     } catch (error) {
       state.status = { status: "error", message: text("退出登录失败。", "Sign-out failed.") };
     } finally {
@@ -253,18 +294,10 @@
 
   /* ------------------------------------------------------------------ setup */
 
-  function hideManualInputs(hidden) {
-    const holder = document.querySelector("#repo-manual .form-inline");
-    if (holder) holder.hidden = hidden;
-  }
-
-  function clearPicker() {
-    if (slot) {
-      slot.replaceChildren();
-      slot.hidden = true;
-    }
-    hideManualInputs(false);
-  }
+  // With the plugin mounted, the repository card never falls back to typing:
+  // the host's manual form is the headless path and stays hidden.
+  const manualForm = document.getElementById("repo-manual");
+  if (manualForm) manualForm.hidden = true;
 
   async function loadStatus() {
     try {
@@ -274,7 +307,6 @@
       state.status = { status: "signed_out" };
     }
     render();
-    if (state.status.status !== "authenticated") clearPicker();
   }
 
   document.addEventListener("folio:languagechange", () => {
@@ -283,12 +315,21 @@
   });
 
   // The host signals a completed sign-in so a plugin loaded before login
-  // refreshes its status instead of staying on the signed-out view.
+  // refreshes its status instead of staying on the signed-out view. The
+  // signed-out signal drops the picker with the host session.
   document.addEventListener("folio:session", (event) => {
-    if (!event.detail || !event.detail.authenticated) return;
-    loadStatus();
+    const authenticated = Boolean(event.detail && event.detail.authenticated);
+    if (authenticated) {
+      loadStatus();
+      return;
+    }
+    stopPolling();
+    state.repositories = null;
+    state.status = { status: "signed_out" };
+    render();
   });
 
-  card.hidden = false;
+  // The card stays hidden until the first status answer: the slot is the
+  // visible sign-in entry, and an empty card would flash above it.
   loadStatus();
 })();
