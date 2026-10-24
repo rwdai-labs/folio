@@ -7,12 +7,13 @@ FROM golang:1.24-bookworm AS builder
 
 WORKDIR /src
 ARG TARGETARCH
-COPY go.mod ./go.mod
-COPY cmd/folio/main.go ./cmd/folio/main.go
-COPY internal/context/ ./internal/context/
-COPY internal/dshconfig/ ./internal/dshconfig/
-COPY internal/store/ ./internal/store/
-COPY internal/web/ ./internal/web/
+
+# Copy the whole context instead of a hand-maintained list of directories. The
+# previous allowlist silently omitted new packages (internal/plugin,
+# internal/storage, internal/notify, plugins/github) and every CI run failed at
+# go build while local tests passed. What may enter the context is decided in
+# .dockerignore, and cmd/folio's guard test keeps that allowlist honest.
+COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags='-s -w' -o /out/folio ./cmd/folio

@@ -220,6 +220,10 @@ docker --config "$docker_config_dir" pull ghcr.io/rwdai-labs/folio-service:main
 ```
 
 CI builds from the repository root with an explicit `.dockerignore` allowlist
-and runs a runtime smoke test before publishing. Context, inbox, `.git`,
-reports, runtime state, and secrets may not enter any image layer or public
-artifact. BuildKit publishes SBOM and provenance attestations for release builds.
+and runs a runtime smoke test before publishing. The builder copies the whole
+allowed context (`COPY . .`) instead of a hand-maintained list of directories, so
+a new Go package cannot be missing from the image; `cmd/folio` has a guard test
+that fails if a source directory is not allowlisted or the Dockerfile goes back
+to copying directories by hand. Context, inbox, `.git`, reports, runtime state,
+and secrets may not enter any image layer or public artifact. BuildKit publishes
+SBOM and provenance attestations for release builds.
