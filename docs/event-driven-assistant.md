@@ -68,23 +68,27 @@ The same shape covers GitHub without webhooks: `GET /repos/{r}/issues?state=open
 with `If-None-Match` and the stored ETag. A 304 costs one rate-limit unit and no
 response body. At personal scale this is effectively free.
 
-### A watcher is a plugin, and GitHub is one of them
+### Plugins: one class owns the remote, one class reports events
 
-Everything outside the service that notices an event and calls the hook API is
-an **integration plugin**. The dependency runs one way: a plugin depends on
-Folio, never the reverse. A plugin owns its credentials, its state, and its
-schedule; Folio owns the task, the run, and the audit trail. See
-[integration-plugins.md](integration-plugins.md).
+Folio is not a GitHub client, and it is not a Git-only service either. The code
+host sits behind `internal/storage.Remote`, implemented by the built-in
+`plugins/github`. That plugin owns the remote (clone, fast-forward, push,
+ls-remote), the credential (`gh` device sign-in or `GIT_AUTH_TOKEN`), the sign-in
+card, and the repository picker. Folio owns the checkout, the clean-check gate,
+the model run, the commit, the rollback, and the audit trail; it calls the
+plugin through one interface and never sees the token. A network drive or an S3
+bucket is a new implementation of six methods, not a change to the worker.
 
-This is why GitHub does not belong inside Folio. Folio needs exactly one thing
-from a code host — an HTTPS git credential for the context repository
-(`GIT_AUTH_TOKEN`, with an existing `gh` session as the compatibility fallback).
-Everything that treats GitHub as a *service* — login, repository discovery,
-issues, pull requests, checks — is the plugin's job, with the plugin's own PAT.
-`plugins/github-bridge` is the reference implementation.
+External triggers are the other class: a separate program with its own
+credentials and state that notices an event and calls the signed hook API. The
+context watcher, a CI job, and `plugins/github-bridge` (issues) are that class.
+The dependency direction is the defining difference:
 
-The plugin cannot choose what Folio does. The hook's action decides the task
-kind, and the owner sets it in Folio. That keeps the dangerous half of an
+- built-in capability plugin: Folio → plugin (compiled in, host mounts it);
+- external event plugin: plugin → Folio (hook API only).
+
+The trigger plugin cannot choose what Folio does: the hook's action decides the
+task kind, and the owner sets it in Folio. That keeps the dangerous half of an
 integration — the action, not the trigger — behind the owner's configuration.
 
 ### The hook API is the only inbound trigger

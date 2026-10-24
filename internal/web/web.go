@@ -1,7 +1,7 @@
 // Package web exposes the authenticated local maintainer HTTP surface.
 //
-// The package deliberately depends on the small Backend interface only.  Git,
-// GitHub, and maintenance implementation details stay in the store package.
+// The package deliberately depends on the small Backend interface only. Git,
+// the storage plugin, and maintenance implementation details stay out of it.
 package web
 
 import (
@@ -27,6 +27,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"folio/internal/plugin"
+	"folio/internal/storage"
 )
 
 const (
@@ -73,6 +76,8 @@ var (
 // Backend is the store contract consumed by the HTTP adapter.
 type Backend interface {
 	State() (map[string]any, error)
+	// Executor is the host process boundary handed to built-in plugins.
+	Executor() storage.Executor
 	ConnectRepository(fullName string) (map[string]any, error)
 	SyncRepository() (map[string]any, error)
 	RunMaintenance(mode, model, runner string) (map[string]any, error)
@@ -118,7 +123,9 @@ type TaskBackend interface {
 
 // Options configures the local web boundary.
 type Options struct {
-	DataDir           string
+	DataDir string
+	// Plugins are the built-in capability plugins compiled into this binary.
+	Plugins           *plugin.Registry
 	PasswordFile      string
 	AssetsDir         string
 	TrustedHosts      []string
@@ -1511,6 +1518,18 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 		s.writeStatic(w, strings.TrimPrefix(path, "/"))
 		return
 	}
+	if path == "/api/plugins" {
+		s.pluginList(w)
+		return
+	}
+	if strings.HasPrefix(path, "/api/plugins/") {
+		s.pluginAPI(w, r, nil)
+		return
+	}
+	if strings.HasPrefix(path, "/plugins/") {
+		s.pluginAsset(w, r)
+		return
+	}
 	if path == "/api/session" {
 		_, item, ok := s.session(r)
 		payload := map[string]any{"authenticated": ok}
@@ -1681,6 +1700,10 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	token, _, ok := s.requireSession(w, r)
 	if !ok {
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/plugins/") {
+		s.pluginAPI(w, r, payload)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/tasks/") && s.taskAdmin(w, r, payload) {

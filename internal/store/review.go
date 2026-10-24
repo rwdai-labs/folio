@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"folio/internal/storage"
 )
 
 // ListProposals returns only validated, non-sensitive review data.
@@ -406,7 +409,9 @@ func (s *Store) ApplyChange(reviewID, message string) (map[string]any, error) {
 			keepWorkingTree = true
 			return nil, errStore("commit contains an unreviewed path; no push performed")
 		}
-		if _, err := s.runGit([]string{"push", "--no-verify", remoteURL, "HEAD:refs/heads/" + branch}, s.repositoryDir, 5*time.Minute, nil); err != nil {
+		if _, pushErr := s.remote.Publish(context.Background(), executor{s}, storage.Options{
+			Dir: s.repositoryDir, Remote: remoteURL, Branch: branch, TestMode: s.allowFileRemoteForTests,
+		}); pushErr != nil {
 			return nil, errStore("push failed; reviewed local commit retained; no retry performed")
 		}
 		remote, err = s.remoteHead(branch)

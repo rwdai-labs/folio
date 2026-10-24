@@ -45,23 +45,29 @@ keep the credential out of the log entirely, provide the password yourself
 before the first start, for example with a secret manager file mounted and
 `ADMIN_PASSWORD_FILE` set; the service then reuses that file and prints nothing.
 
-The service needs one credential for the private repository: a GitHub HTTPS git
-token. Put it in `.env` next to `compose.yaml`:
+The service needs one credential for the private repository. There are two
+first-class paths:
+
+**Sign in on the Web page.** Open the GitHub card and enter the device code at
+`github.com/login/device`. The plugin stores the token through `gh`, so git and
+the API share it, and the repository picker lists your repositories.
+
+**Or set a deployment token**, for an unattended deployment. Put it in `.env`
+next to `compose.yaml`:
 
 ```bash
 GIT_AUTH_TOKEN=github_pat_...
 ```
 
 Use a fine-grained token limited to the context repository with contents
-read/write. The service writes it to a private credential file (mode `0600`) and
-never prints it. An existing `gh` session inside the data volume still works as
-a compatibility fallback, so an upgraded deployment keeps pushing without a
-change, but a fresh deployment should use the token.
+read/write. The plugin writes it to a private credential file (mode `0600`) and
+never prints it. `gh` stays in the image because the device flow and the git
+credential helper use it.
 
-Sign in to the local Web page and connect the private repository by typing
-`owner/name`. Folio no longer lists repositories or signs in to GitHub: that is
-an integration plugin's job. The service runs installed image tools, never
-scripts from the cloned repo.
+Sign in to the local Web page and connect the private repository with the
+picker, or type `owner/name` manually. The GitHub card and the picker are served
+by the built-in GitHub plugin; the service itself runs installed image tools,
+never scripts from the cloned repo.
 
 GitHub login and model login are separate. To configure Codex through its
 official device login, run locally:

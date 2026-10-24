@@ -34,7 +34,8 @@ cmd/folio/      service entrypoint and CLI
 internal/       context router, maintenance worker, Git/GitHub store, Web server
 internal/notify outbound push channels (Bark today); no inbound traffic
 scripts/        external watcher and hook client; not part of the service
-plugins/        separate integration modules that call the hook API
+plugins/        built-in capability plugins compiled into the binary (GitHub),
+                plus a separate external bridge module for issue events
 web/            static Web UI served by the Go binary
 deploy/         Dockerfile, entrypoint and deployment notes
 docs/           design and research notes; no runtime behaviour
@@ -115,23 +116,28 @@ the host.
 
 ## Credentials and integrations
 
-Folio is not a GitHub client. It needs one thing from the code host: an HTTPS git
-credential for the context repository. Supply it as a deployment secret:
+Folio keeps the checkout, the model run, the commit, and the audit trail. The
+code host is a **built-in plugin**: `plugins/github` owns the remote, the
+credential, and the sign-in flow. A storage plugin can be replaced (a network
+drive, an S3 bucket) without touching the maintenance worker.
 
-```yaml
-environment:
-  GIT_AUTH_TOKEN: "${GIT_AUTH_TOKEN}"
-```
+Two ways to authenticate, both first class:
 
-The token is written once to `data/secrets/git-credentials` (0600) and used by
-`git-credential-store`; it never appears in a command line or in the environment
-of a model run. Without it, Folio falls back to an existing `gh` session
-(`gh auth token`), which keeps upgraded deployments working. The image still
-ships `gh` for that fallback only.
+1. Sign in on the Web page (device code → `gh auth login`). This is the
+   original flow and the one to use when you want the full experience.
+2. Set `GIT_AUTH_TOKEN` for a non-interactive deployment. The token is written
+   once to `data/secrets/git-credentials` (0600) and used through
+   `git-credential-store`; it never enters a model environment or a command
+   line.
 
-Everything else that treats GitHub as a service — repository discovery, issues,
-pull requests, checks — belongs to an integration plugin. See
-[docs/integration-plugins.md](docs/integration-plugins.md) and
+The GitHub card and the repository picker are the plugin's own frontend,
+mounted at `/plugins/github/` and `/api/plugins/github/`. Without the plugin the
+manual owner/name form still works, so the service degrades to a plain Git
+remote instead of failing.
+
+External triggers (a context watcher, a CI job, the GitHub issue bridge) are a
+different class of plugin: they are separate programs that call the signed hook
+API. See [docs/integration-plugins.md](docs/integration-plugins.md) and
 [plugins/github-bridge](plugins/github-bridge/README.md).
 
 ## Related repository

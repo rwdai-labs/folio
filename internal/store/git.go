@@ -13,7 +13,12 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"folio/internal/storage"
 )
+
+// maxGitTimeout bounds a single process run; plugins cannot extend it.
+const maxGitTimeout = 10 * time.Minute
 
 type commandResult struct {
 	stdout    string
@@ -92,10 +97,17 @@ func safeProxyValue(value string) bool {
 }
 
 func (s *Store) runCommand(command []string, cwd string, input string, timeout time.Duration, check bool, envExtra map[string]string) (commandResult, error) {
+	return s.runCommandContext(context.Background(), command, cwd, input, timeout, check, envExtra)
+}
+
+func (s *Store) runCommandContext(parent context.Context, command []string, cwd string, input string, timeout time.Duration, check bool, envExtra map[string]string) (commandResult, error) {
 	if len(command) == 0 {
 		return commandResult{}, errStore("operation could not be started")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	if cwd != "" {
@@ -181,8 +193,8 @@ func (s *Store) gitCommand(args []string, config []string) ([]string, error) {
 		"-c", "core.sshCommand=",
 		"-c", "core.fsmonitor=false",
 		"-c", "commit.gpgSign=false",
+		"-c", "credential.helper=",
 	}
-	command = append(command, s.gitCredentialArgs()...)
 	command = append(command,
 		"-c", "http.extraHeader=",
 		"-c", "diff.external=",
@@ -204,11 +216,17 @@ func (s *Store) gitCommand(args []string, config []string) ([]string, error) {
 }
 
 func (s *Store) runGit(args []string, cwd string, timeout time.Duration, config []string) (commandResult, error) {
+	return s.runGitContext(context.Background(), args, cwd, timeout, config)
+}
+
+// runGitContext is the same hardened git invocation, cancellable by the caller.
+// Only storage plugins and the local checkout plumbing reach it.
+func (s *Store) runGitContext(ctx context.Context, args []string, cwd string, timeout time.Duration, config []string) (commandResult, error) {
 	command, err := s.gitCommand(args, config)
 	if err != nil {
 		return commandResult{}, err
 	}
-	return s.runCommand(command, cwd, "", timeout, true, nil)
+	return s.runCommandContext(ctx, command, cwd, "", timeout, true, nil)
 }
 
 func (s *Store) gitOutput(args []string, cwd string, timeout time.Duration) (string, error) {
@@ -243,48 +261,46 @@ func (s *Store) branch() (string, error) {
 	return branch, nil
 }
 
+// verifyRemote reads the checkout origin and asks the storage plugin whether
+// it belongs to that backend. Folio keeps this check because it is about the
+// checkout, not about the code host.
 func (s *Store) verifyRemote(expected string) (string, error) {
 	remote, err := s.gitOutput([]string{"remote", "get-url", "origin"}, s.repositoryDir, 2*time.Minute)
 	if err != nil {
-		return "", errStore("origin must be an HTTPS GitHub URL")
+		return "", errStore("origin is not configured")
 	}
 	remote = strings.TrimSpace(remote)
 	pushRemote, err := s.gitOutput([]string{"remote", "get-url", "--push", "origin"}, s.repositoryDir, 2*time.Minute)
 	if err != nil || strings.TrimSpace(pushRemote) != remote {
 		return "", errStore("origin fetch and push URLs must match")
 	}
-	if s.allowFileRemoteForTests {
-		if strings.HasPrefix(remote, "file://") || filepath.IsAbs(remote) {
-			if expected != "" && remote != expected {
-				return "", errStore("connected repository does not match the requested repository")
-			}
-			return remote, nil
-		}
-	}
-	if !githubRemoteRE.MatchString(remote) {
-		return "", errStore("origin must be an HTTPS GitHub URL")
-	}
 	if expected != "" && remote != expected {
-		return "", errStore("connected repository does not match the requested GitHub repository")
+		return "", errStore("connected repository does not match the requested repository")
+	}
+	if s.remote == nil {
+		return "", errStore("no storage plugin is configured")
+	}
+	if err := s.remote.Validate(remote, s.allowFileRemoteForTests); err != nil {
+		return "", errStore("origin is not accepted by the storage plugin")
 	}
 	return remote, nil
 }
 
+// head reads the remote branch head through the storage plugin.
 func (s *Store) remoteHead(branch string) (string, error) {
-	if !branchRE.MatchString(branch) {
-		return "", errStore("branch name is invalid")
+	if s.remote == nil {
+		return "", errStore("no storage plugin is configured")
 	}
-	output, err := s.gitOutput([]string{"ls-remote", "origin", "refs/heads/" + branch}, s.repositoryDir, 2*time.Minute)
+	head, err := s.remote.Head(context.Background(), executor{s}, storage.Options{
+		Dir:      s.repositoryDir,
+		Remote:   s.configuredRemote(),
+		Branch:   branch,
+		TestMode: s.allowFileRemoteForTests,
+	})
 	if err != nil {
 		return "", errStore("remote branch is unavailable")
 	}
-	for _, line := range strings.Split(output, "\n") {
-		pieces := strings.Fields(line)
-		if len(pieces) >= 2 && pieces[1] == "refs/heads/"+branch && shaRE.MatchString(pieces[0]) {
-			return pieces[0], nil
-		}
-	}
-	return "", errStore("remote branch is unavailable")
+	return head, nil
 }
 
 func (s *Store) statusPaths(unstagedOnly bool) (map[string]struct{}, error) {
@@ -381,17 +397,6 @@ func (s *Store) indexDigest() (string, error) {
 	}
 	digest := sha256.Sum256([]byte(output))
 	return hex.EncodeToString(digest[:]), nil
-}
-
-func (s *Store) validateFullName(fullName string) (string, string, error) {
-	if strings.Count(fullName, "/") != 1 {
-		return "", "", errStore("repository must use owner/name")
-	}
-	owner, name, _ := strings.Cut(fullName, "/")
-	if !repositoryNameRE.MatchString(owner) || !repositoryNameRE.MatchString(name) {
-		return "", "", errStore("repository name is invalid")
-	}
-	return owner, name, nil
 }
 
 func (s *Store) validateTarget(target string, allowMissing bool) (string, error) {

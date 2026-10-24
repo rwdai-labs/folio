@@ -1,8 +1,17 @@
 # Integration plugins
 
-A plugin is any program outside Folio that notices something in the world and
-asks Folio to do work. The context-repository watcher, a CI job, and the GitHub
-bridge are all plugins. This document is the contract between them and Folio.
+Folio has two kinds of plugin, and the difference is the dependency direction.
+
+| Class | Lives in | Direction | May do |
+| --- | --- | --- | --- |
+| **Built-in capability** | `plugins/`, compiled into the binary | Folio → plugin (host mounts it) | own the storage remote, serve backend routes, ship a frontend |
+| **External event** | its own repository or module | plugin → Folio (hook API) | notice a change and ask for work |
+
+The GitHub integration is both: `plugins/github` is the built-in capability
+plugin (remote, credential, device sign-in, repository picker), and
+`plugins/github-bridge` is an external event plugin that reports issues.
+
+
 
 ```
 external system ──▶ plugin ──▶ POST /api/hooks/{id} ──▶ task queue ──▶ run
@@ -12,7 +21,10 @@ external system ──▶ plugin ──▶ POST /api/hooks/{id} ──▶ task q
 
 ## Dependency direction
 
-**A plugin depends on Folio. Folio never depends on a plugin.**
+**An external plugin depends on Folio. Folio never depends on an external
+plugin.** Built-in plugins are the opposite by construction: they are compiled
+in, they implement an interface Folio defines (`internal/storage`), and Folio
+calls them. That is why they can own the remote while an external plugin cannot.
 
 That single rule decides everything else:
 
@@ -21,7 +33,7 @@ That single rule decides everything else:
 | Can Folio import, link, or configure a plugin? | No. No shared code, no shared data directory. |
 | Does Folio call a plugin? | No. Folio is passive; the plugin is the caller. |
 | Can Folio run without any plugin? | Yes. Manual runs, the scheduler, the board, and usage are complete on their own. |
-| Who owns GitHub credentials? | The plugin. Folio holds only the git credential for the context repository. |
+| Who owns code-host credentials? | The storage plugin. Folio never sees the token. |
 | Who owns plugin state? | The plugin. Folio stores tasks, runs, and notifications, nothing else. |
 | What if the plugin dies? | The queue drains and waits. Nothing in Folio breaks. |
 
@@ -29,7 +41,26 @@ The boundary is HTTP plus a shared secret. The plugin may live in another
 repository, another language, another container, or on another machine. Only the
 contract in this document is stable.
 
-## What a plugin may do
+## The storage boundary (built-in plugins)
+
+`internal/storage.Remote` is the one interface a capability plugin implements:
+
+```go
+Resolve(input)       // owner input -> canonical repository
+Validate(remote)     // is this remote mine?
+Sync(...)            // clone or fast-forward the checkout
+Head(...)            // remote branch tip
+Publish(...)         // push and verify
+Status(...)          // auth mode, never a secret
+```
+
+Folio owns everything on the local side: the hardened git process boundary
+(`storage.Executor`, which the plugin may call but not bypass), the clean-check
+gate, the commit, the rollback, and the audit record. A plugin owns the remote
+side and the credential. Swapping GitHub for S3 means implementing six methods,
+not editing the maintenance worker.
+
+**What a plugin may do
 
 1. `POST /api/hooks/{hook_id}` with a signed body. That is the whole write API.
 2. Read nothing. A plugin does not query Folio for tasks or runs; the hook
@@ -105,6 +136,7 @@ approves them in Folio. A plugin never holds an approval gate.
 | `scripts/folio-watch-git.sh` | context remote HEAD changed | maintenance | shell |
 | `scripts/folio-hook.sh` | any external script or CI job | maintenance | shell |
 | `plugins/github-bridge` | GitHub issue opened or updated | maintenance | Go, own PAT |
+| `plugins/github` | storage, sign-in, repository picker | n/a (capability) | Go + JS, built in |
 
 The GitHub bridge is the reference implementation of this contract: separate Go
 module, own PAT, own state, no import of Folio internals.

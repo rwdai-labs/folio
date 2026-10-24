@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"folio/plugins/github"
 )
 
 func TestStateUsesLegacyPathsAndRedactsUnknownState(t *testing.T) {
@@ -308,7 +310,11 @@ func newTestStore(t *testing.T) *Store {
 	if err := os.MkdirAll(tools, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(data, tools)
+	remote, err := github.New(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(data, tools, remote.Storage())
 	if err != nil {
 		t.Fatal(err)
 	}

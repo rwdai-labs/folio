@@ -86,6 +86,10 @@
       </aside>
 
       <div class="panels">
+        <!-- A built-in plugin mounts its own card here. Without the plugin the
+             manual owner/name form below is the whole experience. -->
+        <section id="plugin-github" class="card" aria-labelledby="plugin-github-heading" hidden></section>
+
         <section id="repository-section" class="card" aria-labelledby="repository-heading">
           <header class="card-head">
             <div>
@@ -113,7 +117,9 @@
             </dl>
           </div>
 
-          <form id="repository-form" class="form" novalidate>
+          <div id="repo-picker-slot" hidden></div>
+
+          <form id="repo-manual" class="form" novalidate>
             <div class="form form-inline">
               <div class="field">
                 <label for="repo-owner" data-i18n="repo.owner">Owner</label>

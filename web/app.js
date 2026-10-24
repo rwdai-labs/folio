@@ -25,9 +25,6 @@
     authenticated: false,
     loggingIn: false,
     loggingOut: false,
-    startingGithub: false,
-    pollingGithub: false,
-    loggingOutGithub: false,
     connecting: false,
     syncing: false,
     refreshing: false,
@@ -694,8 +691,8 @@
 
   function renderState(data) {
     if (!data) return;
-    const git = data.git || {};
-    const credential = typeof git.mode === "string" ? git.mode : "missing";
+    const storage = data.storage || {};
+    const credential = typeof storage.auth === "string" ? storage.auth : "missing";
 
     const repository = data.repository || {};
     const connected = Boolean(repository.connected);
@@ -1965,6 +1962,8 @@
         state.csrf = typeof session.csrf_token === "string" ? session.csrf_token : "";
         showApp();
         await refreshAll();
+        loadPlugins();
+        document.dispatchEvent(new CustomEvent("folio:session", { detail: { authenticated: true } }));
       } else {
         showLogin();
       }
@@ -1973,6 +1972,36 @@
       setMessage("login", error.network ? "error.network" : "login.unavailable", { error: true });
     }
   }
+
+  // Built-in plugins are compiled into the binary and served from their own
+  // module. The shell asks which ones exist and loads their frontend, so a
+  // plugin that is not compiled in simply never appears.
+  async function loadPlugins() {
+    try {
+      const response = await api("/api/plugins");
+      for (const item of response.plugins || []) {
+        if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(item.id)) continue;
+        if (document.querySelector(`script[data-plugin="${item.id}"]`)) continue;
+        const script = document.createElement("script");
+        script.src = `/plugins/${item.id}/plugin.js`;
+        script.defer = true;
+        script.dataset.plugin = item.id;
+        document.head.append(script);
+      }
+    } catch (_) {
+      // A missing plugin only means the manual fallback stays in place.
+    }
+  }
+
+  // The host surface a plugin may use: authenticated requests and a single
+  // refresh entry point. Plugins never reach into the store or the DOM state.
+  window.folio = {
+    api,
+    refreshState: () => refreshAll(),
+    refreshTasks,
+    formatTime,
+    t,
+  };
 
   boot();
 })();

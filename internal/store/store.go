@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"folio/internal/storage"
 )
 
 const (
@@ -35,7 +37,6 @@ var (
 	modelRE          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
 	reportIDRE       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 	githubTokenRE    = regexp.MustCompile(`^[A-Za-z0-9_.-]{20,512}$`)
-	githubRemoteRE   = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\.git$`)
 )
 
 var (
@@ -69,10 +70,9 @@ type Store struct {
 	statePath     string
 	lockPath      string
 
-	// gitCredentialPath is a private git-credential-store file written from
-	// GIT_AUTH_TOKEN. gitCredentialSource is "token", "gh", or "" (missing).
-	gitCredentialPath   string
-	gitCredentialSource string
+	// remote is the storage plugin that owns the code host. Folio keeps the
+	// checkout, the commit, and the audit trail; the plugin owns the remote.
+	remote storage.Remote
 
 	threadMu sync.Mutex
 
@@ -116,7 +116,7 @@ type Store struct {
 // New creates a Store rooted in an external data directory. Both arguments
 // are absolute trusted paths after construction; no repository content is
 // executed by this package.
-func New(dataDir, toolRoot string) (*Store, error) {
+func New(dataDir, toolRoot string, remote storage.Remote) (*Store, error) {
 	data, err := resolvePath(dataDir)
 	if err != nil {
 		return nil, errStore("runtime data path is invalid")
@@ -129,36 +129,33 @@ func New(dataDir, toolRoot string) (*Store, error) {
 		return nil, errStore("runtime data must be outside the tool root")
 	}
 	s := &Store{
-		dataDir:            data,
-		toolRoot:           tools,
-		repositoryDir:      filepath.Join(data, "repository"),
-		runtimeDir:         filepath.Join(data, "runtime"),
-		runsDir:            filepath.Join(data, "runtime", "runs"),
-		reviewsDir:         filepath.Join(data, "runtime", "reviews"),
-		pendingDir:         filepath.Join(data, "runtime", "pending-reviews"),
-		reportsDir:         filepath.Join(data, "runtime", "reports"),
-		codexDir:           filepath.Join(data, "codex"),
-		dshDir:             filepath.Join(data, "dsh"),
-		secretsDir:         filepath.Join(data, "secrets"),
-		ghConfigDir:        filepath.Join(data, "secrets", "gh"),
-		gitCredentialPath:  filepath.Join(data, "secrets", "git-credentials"),
-		homeDir:            filepath.Join(data, "home"),
-		hooksDir:           filepath.Join(data, "git-hooks"),
-		statePath:          filepath.Join(data, "state.json"),
-		lockPath:           filepath.Join(data, "store.lock"),
-		channelsPath:       filepath.Join(data, "secrets", "channels.json"),
-		deliveriesPath:     filepath.Join(data, "runtime", "notifications.jsonl"),
-		hooksPath:          filepath.Join(data, "secrets", "hooks.json"),
-		tasksPath:          filepath.Join(data, "runtime", "tasks.json"),
-		policyPath:         policyPathFor(data),
-		replayPath:         filepath.Join(data, "runtime", "hook-replay.json"),
-		notifyLast:         map[string]time.Time{},
-		hookCalls:          map[string][]time.Time{},
+		dataDir:        data,
+		toolRoot:       tools,
+		repositoryDir:  filepath.Join(data, "repository"),
+		runtimeDir:     filepath.Join(data, "runtime"),
+		runsDir:        filepath.Join(data, "runtime", "runs"),
+		reviewsDir:     filepath.Join(data, "runtime", "reviews"),
+		pendingDir:     filepath.Join(data, "runtime", "pending-reviews"),
+		reportsDir:     filepath.Join(data, "runtime", "reports"),
+		codexDir:       filepath.Join(data, "codex"),
+		dshDir:         filepath.Join(data, "dsh"),
+		secretsDir:     filepath.Join(data, "secrets"),
+		ghConfigDir:    filepath.Join(data, "secrets", "gh"),
+		homeDir:        filepath.Join(data, "home"),
+		hooksDir:       filepath.Join(data, "git-hooks"),
+		statePath:      filepath.Join(data, "state.json"),
+		lockPath:       filepath.Join(data, "store.lock"),
+		channelsPath:   filepath.Join(data, "secrets", "channels.json"),
+		deliveriesPath: filepath.Join(data, "runtime", "notifications.jsonl"),
+		hooksPath:      filepath.Join(data, "secrets", "hooks.json"),
+		tasksPath:      filepath.Join(data, "runtime", "tasks.json"),
+		policyPath:     policyPathFor(data),
+		replayPath:     filepath.Join(data, "runtime", "hook-replay.json"),
+		remote:         remote,
+		notifyLast:     map[string]time.Time{},
+		hookCalls:      map[string][]time.Time{},
 	}
 	if err := s.ensureDirs(); err != nil {
-		return nil, err
-	}
-	if err := s.prepareGitCredential(); err != nil {
 		return nil, err
 	}
 	// A task left running by a previous process never finished; say so instead
@@ -176,11 +173,9 @@ func (s *Store) State() (map[string]any, error) {
 		scheduler := mapValue(saved, "scheduler")
 		return map[string]any{
 			"version": 1,
-			"git": map[string]any{
-				// "mode", not "credential": the response redactor treats any
-				// credential-shaped key as secret, and this is a status string.
-				"mode": s.gitCredentialMode(),
-			},
+			// "auth", not "credential": the response redactor treats any
+			// credential-shaped key as secret, and this is a status string.
+			"storage": s.storageStatus(),
 			"repository": map[string]any{
 				"connected": s.repositoryConnected(repository),
 				"full_name": publicText(repository["full_name"], 201),
@@ -404,18 +399,10 @@ func (s *Store) recordRepositoryHead(head, branch string) error {
 func (s *Store) configuredRemote() string {
 	saved := s.loadState()
 	repository := mapValue(saved, "repository")
-	if remote, ok := repository["remote"].(string); ok && strings.TrimSpace(remote) != "" {
+	if remote, ok := repository["remote"].(string); ok {
 		return strings.TrimSpace(remote)
 	}
-	fullName, ok := repository["full_name"].(string)
-	if !ok {
-		return ""
-	}
-	owner, name, err := s.validateFullName(fullName)
-	if err != nil {
-		return ""
-	}
-	return "https://github.com/" + owner + "/" + name + ".git"
+	return ""
 }
 
 func nowString() string { return time.Now().UTC().Format(time.RFC3339Nano) }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"folio/internal/storage"
 )
 
 const (
@@ -409,7 +412,9 @@ func (s *Store) applyAutoEditsLocked(edits []autoEdit, runID string) (autoApplyR
 	if err != nil || !samePaths(committedPaths, targets) {
 		return autoApplyResult{}, nil, "commit", errStore("commit contains an unexpected path")
 	}
-	if _, err := s.runGit([]string{"push", "--no-verify", remoteURL, "HEAD:refs/heads/" + branch}, s.repositoryDir, 5*time.Minute, nil); err != nil {
+	if _, pushErr := s.remote.Publish(context.Background(), executor{s}, storage.Options{
+		Dir: s.repositoryDir, Remote: remoteURL, Branch: branch, TestMode: s.allowFileRemoteForTests,
+	}); pushErr != nil {
 		remoteAfter, verifyErr := s.remoteHead(branch)
 		if verifyErr != nil || remoteAfter != newHead {
 			return autoApplyResult{}, nil, "push", errStore("push failed; the local commit was rolled back")

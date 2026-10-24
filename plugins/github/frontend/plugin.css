@@ -1,0 +1,76 @@
+/* GitHub plugin styles. Scoped under #plugin-github and #repo-picker-slot. */
+
+#plugin-github[hidden] {
+  display: none;
+}
+
+#plugin-github .gh-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+#plugin-github .gh-body {
+  display: grid;
+  gap: 0.75rem;
+}
+
+#plugin-github .gh-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+#plugin-github .gh-hint {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  font-size: 0.875rem;
+}
+
+#plugin-github .gh-device {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 0.5rem;
+}
+
+#plugin-github .gh-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.5rem;
+  letter-spacing: 0.15em;
+  font-weight: 600;
+}
+
+#plugin-github .gh-link {
+  width: fit-content;
+}
+
+#plugin-github .gh-account {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+#plugin-github .gh-error {
+  color: var(--danger, #b91c1c);
+}
+
+#repo-picker-slot[hidden] {
+  display: none;
+}
+
+#repo-picker-slot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+#repo-picker-slot select {
+  min-width: 16rem;
+  max-width: 100%;
+}

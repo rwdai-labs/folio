@@ -1,18 +1,24 @@
 package store
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"time"
+
+	"folio/internal/storage"
 )
 
-// ConnectRepository binds the external checkout to one narrow GitHub name.
+// ConnectRepository asks the storage plugin to resolve the requested
+// repository and to create the checkout when it does not exist yet.
 func (s *Store) ConnectRepository(fullName string) (map[string]any, error) {
-	owner, name, err := s.validateFullName(fullName)
-	if err != nil {
-		return nil, err
+	if s.remote == nil {
+		return nil, errStore("no storage plugin is configured")
 	}
-	expectedRemote := "https://github.com/" + owner + "/" + name + ".git"
+	resolved, err := s.remote.Resolve(fullName, s.allowFileRemoteForTests)
+	if err != nil {
+		return nil, errStore("repository name is invalid")
+	}
 	return s.withLock(func() (map[string]any, error) {
 		target := s.repositoryDir
 		if info, statErr := os.Lstat(target); statErr == nil {
@@ -23,14 +29,16 @@ func (s *Store) ConnectRepository(fullName string) (map[string]any, error) {
 			if gitErr != nil || gitInfo.Mode()&os.ModeSymlink != 0 || (!gitInfo.IsDir() && !gitInfo.Mode().IsRegular()) {
 				return nil, errStore("repository directory is not a Git checkout")
 			}
-			if _, verifyErr := s.verifyRemote(expectedRemote); verifyErr != nil {
+			if _, verifyErr := s.verifyRemote(resolved.Remote); verifyErr != nil {
 				return nil, verifyErr
 			}
 		} else if os.IsNotExist(statErr) {
-			if _, cloneErr := s.runGit([]string{"clone", "--no-tags", expectedRemote, target}, s.dataDir, 5*time.Minute, nil); cloneErr != nil {
+			if _, cloneErr := s.remote.Sync(context.Background(), executor{s}, storage.Options{
+				Dir: target, Remote: resolved.Remote, TestMode: s.allowFileRemoteForTests,
+			}); cloneErr != nil {
 				return nil, errStore("repository could not be connected")
 			}
-			if _, verifyErr := s.verifyRemote(expectedRemote); verifyErr != nil {
+			if _, verifyErr := s.verifyRemote(resolved.Remote); verifyErr != nil {
 				return nil, verifyErr
 			}
 		} else {
@@ -46,12 +54,12 @@ func (s *Store) ConnectRepository(fullName string) (map[string]any, error) {
 		}
 		saved := s.loadState()
 		previous := mapValue(saved, "repository")
-		if previousName, ok := previous["full_name"].(string); ok && previousName != "" && previousName != owner+"/"+name {
+		if previousName, ok := previous["full_name"].(string); ok && previousName != "" && previousName != resolved.Name {
 			return nil, errStore("a different repository is already connected")
 		}
 		saved["repository"] = map[string]any{
-			"full_name": owner + "/" + name,
-			"remote":    expectedRemote,
+			"full_name": resolved.Name,
+			"remote":    resolved.Remote,
 			"branch":    branch,
 			"head":      head,
 		}
@@ -60,14 +68,14 @@ func (s *Store) ConnectRepository(fullName string) (map[string]any, error) {
 		}
 		return map[string]any{
 			"status":    "connected",
-			"full_name": owner + "/" + name,
+			"full_name": resolved.Name,
 			"branch":    branch,
 			"head":      head,
 		}, nil
 	})
 }
 
-// SyncRepository fast-forwards a clean checkout from its fixed origin.
+// SyncRepository fast-forwards a clean checkout through the storage plugin.
 func (s *Store) SyncRepository() (map[string]any, error) {
 	return s.withLock(func() (map[string]any, error) {
 		return s.syncRepositoryLocked()
@@ -88,34 +96,23 @@ func (s *Store) syncRepositoryLocked() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	remoteHead, err := s.remoteHead(branch)
+	result, err := s.remote.Sync(context.Background(), executor{s}, storage.Options{
+		Dir:      s.repositoryDir,
+		Remote:   s.configuredRemote(),
+		Branch:   branch,
+		TestMode: s.allowFileRemoteForTests,
+	})
 	if err != nil {
-		return nil, err
-	}
-	localHead, err := s.gitHead()
-	if err != nil {
-		return nil, err
-	}
-	if remoteHead == localHead {
-		if err := s.recordRepositoryHead(localHead, branch); err != nil {
-			return nil, err
-		}
-		return map[string]any{"status": "up_to_date", "branch": branch, "head": localHead}, nil
-	}
-	if _, err := s.runGit([]string{"fetch", "--no-tags", "origin", "refs/heads/" + branch + ":refs/remotes/origin/" + branch}, s.repositoryDir, 5*time.Minute, nil); err != nil {
 		return nil, errStore("repository sync failed")
 	}
-	if _, err := s.runGit([]string{"merge", "--ff-only", "refs/remotes/origin/" + branch}, s.repositoryDir, 2*time.Minute, nil); err != nil {
-		return nil, errStore("repository sync failed")
-	}
-	head, err := s.gitHead()
-	if err != nil {
+	if err := s.recordRepositoryHead(result.Head, result.Branch); err != nil {
 		return nil, err
 	}
-	if err := s.recordRepositoryHead(head, branch); err != nil {
-		return nil, err
+	response := map[string]any{"status": result.Status, "branch": result.Branch, "head": result.Head}
+	if result.RemoteHead != "" && result.RemoteHead != result.Head {
+		response["remote"] = result.RemoteHead
 	}
-	return map[string]any{"status": "synced", "branch": branch, "head": head, "remote": remoteHead}, nil
+	return response, nil
 }
 
 // RunMaintenance invokes only the installed folio binary. The checkout is

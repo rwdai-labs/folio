@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"folio/internal/storage"
 )
 
 type testBackend struct {
@@ -32,6 +34,8 @@ type testBackend struct {
 	syncDone     chan struct{}
 	channelSaves []map[string]any
 }
+
+func (b *testBackend) Executor() storage.Executor { return nil }
 
 func (b *testBackend) State() (map[string]any, error) {
 	return map[string]any{

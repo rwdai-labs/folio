@@ -20,8 +20,10 @@ import (
 	_ "time/tzdata"
 
 	contextrepo "folio/internal/context"
+	"folio/internal/plugin"
 	"folio/internal/store"
 	"folio/internal/web"
+	"folio/plugins/github"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -69,12 +71,23 @@ func serve(args []string) error {
 	if *assetsDir == "" {
 		*assetsDir = filepath.Join(*toolRoot, "web")
 	}
-	backend, err := store.New(*dataDir, *toolRoot)
+	layout, err := store.ResolveLayout(*dataDir)
+	if err != nil {
+		return err
+	}
+	// Built-in capability plugins are compiled in and wired here. The GitHub
+	// plugin owns the remote of the context repository and its sign-in flow;
+	// Folio keeps the checkout, the run, the commit, and the audit trail.
+	githubPlugin, err := github.New(layout)
+	if err != nil {
+		return err
+	}
+	backend, err := store.New(layout, *toolRoot, githubPlugin.Storage())
 	if err != nil {
 		return err
 	}
 	application, err := web.New(backend, web.Options{
-		DataDir: *dataDir, PasswordFile: *passwordFile, AssetsDir: *assetsDir,
+		DataDir: layout, Plugins: plugin.NewRegistry(githubPlugin), PasswordFile: *passwordFile, AssetsDir: *assetsDir,
 		PasswordNotice: func(password, path string) {
 			announcePassword(os.Stderr, password, path)
 		},
