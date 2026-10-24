@@ -46,6 +46,8 @@
     hookSecret: "",
     hookSecretFor: "",
     hookBusy: "",
+    usage: null,
+    usageWindow: 30,
     modelValues: { codex: "", dsh: "" },
     modelMenuOpen: false,
     modelActive: -1,
@@ -67,6 +69,7 @@
     automation: { element: "automation-message", data: null },
     channels: { element: "channels-message", data: null },
     hooks: { element: "hooks-message", data: null },
+    usage: { element: "usage-message", data: null },
   };
 
   let busyButtons = [];
@@ -155,6 +158,8 @@
       case "invalid_hook_action":
       case "hook_invalid":
         return "hooks.failed";
+      case "usage_unavailable":
+        return "usage.failed";
       case "job_unavailable":
         return "error.job_busy";
       case "session_unavailable":
@@ -1279,6 +1284,7 @@
     await refreshAutomation({ silent: true });
     await refreshChannels();
     await refreshHooks();
+    await refreshUsage();
   }
 
   /* -------------------------------------------------------------- channels */
@@ -1644,6 +1650,141 @@
     state.timers.copy = window.setTimeout(() => {
       label.textContent = t("common.copy");
     }, 2000);
+  }
+
+  /* ----------------------------------------------------------------- usage */
+
+  function usageLocale() {
+    const lang = document.documentElement.lang;
+    return typeof lang === "string" && lang ? lang : "en";
+  }
+
+  function usageNumber(value) {
+    const number = Number(value);
+    return new Intl.NumberFormat(usageLocale()).format(Number.isFinite(number) ? number : 0);
+  }
+
+  function usageCompact(value) {
+    const number = Number(value);
+    return new Intl.NumberFormat(usageLocale(), {
+      notation: "compact",
+      maximumFractionDigits: 1,
+    }).format(Number.isFinite(number) ? number : 0);
+  }
+
+  function setUsageText(id, text) {
+    const node = $(id);
+    if (node) node.textContent = text;
+  }
+
+  function renderUsageDays(days) {
+    const list = $("usage-days");
+    if (!list) return;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!days.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = t("usage.empty");
+      list.appendChild(empty);
+      return;
+    }
+    let peak = 0;
+    days.forEach((day) => {
+      const total = Number(day && day.total_tokens) || 0;
+      if (total > peak) peak = total;
+    });
+    days.forEach((day) => {
+      const total = Number(day && day.total_tokens) || 0;
+      const row = document.createElement("div");
+      row.className = "usage-day";
+
+      const label = document.createElement("span");
+      label.className = "usage-day-label";
+      const date = typeof day.date === "string" ? day.date : "";
+      label.textContent = date.length === 10 ? date.slice(5) : date;
+
+      const track = document.createElement("span");
+      track.className = "usage-bar";
+      const fill = document.createElement("span");
+      fill.className = "usage-bar-fill";
+      fill.style.width = `${peak > 0 ? Math.max(2, Math.round((total / peak) * 100)) : 0}%`;
+      track.appendChild(fill);
+
+      const value = document.createElement("span");
+      value.className = "usage-day-value";
+      value.textContent = usageCompact(total);
+
+      row.appendChild(label);
+      row.appendChild(track);
+      row.appendChild(value);
+      list.appendChild(row);
+    });
+  }
+
+  function renderUsageModels(models) {
+    const body = $("usage-models");
+    if (!body) return;
+    while (body.firstChild) body.removeChild(body.firstChild);
+    models.forEach((model) => {
+      const row = document.createElement("tr");
+      const runner = typeof model.runner === "string" ? model.runner : "";
+      const name = typeof model.model === "string" ? model.model : "";
+      const cells = [
+        name ? `${runner} / ${name}` : runner,
+        usageNumber(model.total_tokens),
+        usageNumber(model.input_tokens),
+        usageNumber(model.cached_tokens),
+        usageNumber(model.output_tokens),
+        usageNumber(model.runs),
+      ];
+      cells.forEach((text, index) => {
+        const cell = document.createElement(index === 0 ? "th" : "td");
+        if (index === 0) cell.setAttribute("scope", "row");
+        cell.textContent = text;
+        row.appendChild(cell);
+      });
+      body.appendChild(row);
+    });
+    if (!models.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 6;
+      cell.className = "hint";
+      cell.textContent = t("usage.empty");
+      row.appendChild(cell);
+      body.appendChild(row);
+    }
+  }
+
+  function renderUsage(data) {
+    state.usage = data || null;
+    const totals = (data && data.totals) || {};
+    setUsageText("usage-total", usageNumber(totals.total_tokens));
+    setUsageText("usage-input", usageNumber(totals.input_tokens));
+    setUsageText("usage-output", usageNumber(totals.output_tokens));
+    setUsageText("usage-runs", usageNumber(totals.runs));
+    const note = $("usage-note");
+    if (note) {
+      note.textContent = data
+        ? t("usage.note", {
+            reported: usageNumber(totals.reported_runs),
+            runs: usageNumber(totals.runs),
+            missing: usageNumber(totals.unreported_runs),
+          })
+        : "";
+    }
+    renderUsageDays(Array.isArray(data && data.days) ? data.days : []);
+    renderUsageModels(Array.isArray(data && data.models) ? data.models : []);
+  }
+
+  async function refreshUsage() {
+    try {
+      const data = await api(`/api/usage?days=${encodeURIComponent(state.usageWindow)}`);
+      renderUsage(data);
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      setMessage("usage", errorKey(error, "usage.failed"), { error: true });
+    }
   }
 
   /* ----------------------------------------------------------- run display */
@@ -2098,6 +2239,12 @@
     if (combo && target && !combo.contains(target)) closeModelMenu();
   });
 
+  $("usage-window").addEventListener("change", (event) => {
+    const next = Number.parseInt(event.target.value, 10);
+    state.usageWindow = Number.isFinite(next) && next > 0 ? next : 30;
+    refreshUsage();
+  });
+
   $("hook-form").addEventListener("submit", createHook);
   $("hook-secret-copy").addEventListener("click", copyHookSecret);
   $("hooks-list").addEventListener("click", (event) => {
@@ -2132,6 +2279,7 @@
     if (state.modelMenuOpen) renderModelMenu();
     renderChannelTexts(state.channels);
     renderHooks({ hooks: state.hooks });
+    renderUsage(state.usage);
     rerenderBusyLabels();
   });
 

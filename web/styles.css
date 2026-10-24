@@ -1842,3 +1842,122 @@ textarea {
 .btn.ghost.danger:hover:not(:disabled) {
   border-color: var(--red);
 }
+
+/* --------------------------------------------------------- token usage */
+
+.usage-window-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 16px 0 10px;
+}
+
+.usage-tile {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.usage-value {
+  color: var(--ink);
+  font-size: 1.28rem;
+  font-weight: 660;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.usage-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.usage-days {
+  display: grid;
+  gap: 6px;
+  margin: 16px 0 6px;
+}
+
+.usage-day {
+  display: grid;
+  grid-template-columns: 44px 1fr 64px;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.usage-day-label,
+.usage-day-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-day-value {
+  text-align: right;
+}
+
+.usage-bar {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.usage-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.table-wrap {
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.usage-table th,
+.usage-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+}
+
+.usage-table thead th {
+  color: var(--muted);
+  font-size: 0.71rem;
+  font-weight: 620;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.usage-table thead th:first-child,
+.usage-table tbody th {
+  text-align: left;
+}
+
+.usage-table tbody th {
+  color: var(--ink);
+  font-weight: 620;
+}
+
+.usage-table td {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}

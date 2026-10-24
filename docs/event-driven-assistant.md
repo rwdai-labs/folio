@@ -197,29 +197,55 @@ trust to save money.
 
 ## 5. Token ledger and dashboard
 
-Record per run, not per UI session:
+**Implemented** as a per-run `usage` block inside the run record, not a
+separate ledger. The run record is already immutable, pruned, and read without
+the repository lock, so it is a sufficient store for a single-user deployment.
 
 ```json
-{"run_id":"…","job":"context-maintain","trigger":"watch:context-repo",
- "provider":"ds-official","model":"deepseek-v4.1","priority":"P2",
- "tokens":{"in":18422,"out":2103,"cached":0,"source":"reported"},
- "cost":{"amount":0.0536,"currency":"CNY","source":"price-table"},
- "window":"off-peak","status":"pushed","duration_ms":41230,
+{"run_id":"…","trigger":"hook","runner":"codex","model":"gpt-5.1-codex",
+ "status":"pushed","duration_ms":41230,
+ "usage":{"input_tokens":6621,"cached_tokens":8064,"output_tokens":15,
+          "total_tokens":14700,"requests":1,
+          "source":"reported","origin":"stdout"},
  "started_at":"…","finished_at":"…"}
 ```
 
-**Honesty rule:** `source` is `reported` only when the runner emitted usage.
-Otherwise it is `estimated` (character-based heuristic, clearly labelled) or
-`unknown` (cost excluded from totals, counted separately). A dashboard that
-silently guesses is worse than one that admits it.
+Semantics, chosen so the numbers mean the same thing across runners:
 
-Price table lives in the private volume (`policies.json`), editable from the
-Web UI. Unknown model → `cost.source: "unknown"` and a visible warning, never a
-silent zero.
+- `input_tokens` — uncached prompt tokens actually billed.
+- `cached_tokens` — the cached part of the prompt, billed at a lower rate.
+- `output_tokens` — completion tokens.
+- `total_tokens` — the sum the provider bills: uncached + cached + output.
 
-Dashboard (Web): today / 7 d / 30 d; by provider, model, job, priority class;
-token in/out/cached; cost; success rate; p95 duration; deferred and escalated
-counts. All derived from the JSONL ledger; rebuildable, never authoritative.
+Capture points (the worker, not the service, because that is where the CLI runs):
+
+- **Codex**: `codex exec --json` prints a `turn.completed` event carrying
+  `usage`; the values are cumulative for the turn, so the last event wins.
+  Verified against codex-cli 0.162.1 with the exact production flag set.
+- **DSH**: the JSONL stream carries `chunk.type = "usage"` per request; totals
+  are sums, not a last-wins value. `requests` counts them.
+
+**Honesty rule, enforced by absence.** A run that never called a model has no
+`usage` key at all. A run that called a model but got no report also has none.
+The dashboard prints `reported_runs` and `unreported_runs` side by side instead
+of turning a missing number into a zero. There is no character-based estimate:
+the design note allowed one, but an estimate nobody validates is worse than an
+admitted gap, so it is dropped until a real need appears.
+
+Dashboard (`GET /api/usage?days=N`, 1–365, default 30): total in/cached/out,
+per-day series, per runner/model table, and the reported/unreported split. The
+window only counts runs whose `started_at` falls inside it.
+
+**Deferred, deliberately:**
+
+- **Cost.** Requires a price table and currency; the provider catalog changes
+  too fast to hard-code, and the owner asked for it to be runtime-editable
+  data. Until that data exists, the dashboard shows tokens, not money.
+- **Priority, peak windows, budget policy.** They need the same policy data
+  plus a router; nothing consumes them yet, so building the matrix first would
+  be speculative.
+- **Job/trigger breakdown.** Every run today is the same job. The dimension
+  becomes meaningful when a second action exists.
 
 ## 6. Surfaces
 
@@ -268,7 +294,9 @@ locks.
    body, replay window, rate limit, `maintenance` action, masked state, Web UI.
 3. **External watcher** (implemented as scripts): `ls-remote` probe, SHA as
    event id. Replaces the nightly schedule for the context repository.
-4. **Ledger**: capture runner usage, price table, `/api/usage`, dashboard.
+4. **Usage capture and dashboard** (implemented): runner-reported per-run
+   usage, `/api/usage`, Web UI over 7/30/90 days. Cost waits for a maintained
+   price table.
 5. **GitHub actions**: issue triage and PR review draft, approval-gated.
 6. **Priority routing + deferral**: policy data, P0–P3, peak windows.
 7. **More channels**: DingTalk → Feishu → WeCom.

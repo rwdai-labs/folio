@@ -63,6 +63,7 @@
           <a href="#github-section" data-i18n="nav.github">GitHub</a>
           <a href="#repository-section" data-i18n="nav.repository">Repository</a>
           <a href="#automation-section" data-i18n="nav.automation">Automation</a>
+          <a href="#usage-section" data-i18n="nav.usage">Usage</a>
           <a href="#channels-section" data-i18n="nav.channels">Notifications</a>
           <a href="#hooks-section" data-i18n="nav.hooks">Event hooks</a>
         </nav>
@@ -267,6 +268,67 @@
             <summary data-i18n="common.details">Technical details</summary>
             <pre id="automation-output" class="output raw-output"></pre>
           </details>
+        </section>
+
+        <section id="usage-section" class="card" aria-labelledby="usage-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="usage.kicker">Usage</p>
+              <h2 id="usage-heading" data-i18n="usage.title">Token usage</h2>
+            </div>
+            <label class="usage-window-field">
+              <span data-i18n="usage.window">Window</span>
+              <select id="usage-window">
+                <option value="7" data-i18n="usage.days7">Last 7 days</option>
+                <option value="30" selected data-i18n="usage.days30">Last 30 days</option>
+                <option value="90" data-i18n="usage.days90">Last 90 days</option>
+              </select>
+            </label>
+          </header>
+          <p class="lede" data-i18n="usage.lead">
+            Every number below was reported by the runner itself. A run that called no model
+            has no usage at all, and a run whose runner reported nothing stays unknown — it is
+            never estimated.
+          </p>
+
+          <div class="usage-tiles">
+            <div class="usage-tile">
+              <span class="usage-value" id="usage-total">—</span>
+              <span class="usage-label" data-i18n="usage.total">Total tokens</span>
+            </div>
+            <div class="usage-tile">
+              <span class="usage-value" id="usage-input">—</span>
+              <span class="usage-label" data-i18n="usage.input">Input (uncached)</span>
+            </div>
+            <div class="usage-tile">
+              <span class="usage-value" id="usage-output">—</span>
+              <span class="usage-label" data-i18n="usage.output">Output</span>
+            </div>
+            <div class="usage-tile">
+              <span class="usage-value" id="usage-runs">—</span>
+              <span class="usage-label" data-i18n="usage.runs">Runs</span>
+            </div>
+          </div>
+          <p id="usage-note" class="hint"></p>
+
+          <div class="usage-days" id="usage-days"></div>
+
+          <div class="table-wrap">
+            <table class="usage-table">
+              <thead>
+                <tr>
+                  <th scope="col" data-i18n="usage.model">Runner / model</th>
+                  <th scope="col" data-i18n="usage.col_total">Total</th>
+                  <th scope="col" data-i18n="usage.col_input">Input</th>
+                  <th scope="col" data-i18n="usage.col_cached">Cached</th>
+                  <th scope="col" data-i18n="usage.col_output">Output</th>
+                  <th scope="col" data-i18n="usage.col_runs">Runs</th>
+                </tr>
+              </thead>
+              <tbody id="usage-models"></tbody>
+            </table>
+          </div>
+          <p id="usage-message" class="form-message" role="status" aria-live="polite"></p>
         </section>
 
         <section id="channels-section" class="card" aria-labelledby="channels-heading">

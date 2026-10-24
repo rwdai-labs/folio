@@ -83,6 +83,7 @@ type Backend interface {
 	RunAutomation(trigger, runner, model string) (map[string]any, error)
 	ListAutomation() (map[string]any, error)
 	AutomationRun(runID string) (map[string]any, error)
+	UsageSummary(days int) (map[string]any, error)
 	ModelCatalog() map[string]any
 	SchedulerTick() (map[string]any, error)
 }
@@ -800,6 +801,12 @@ func safeValue(value any, key string, depth int) any {
 		}
 	}
 	if key != "" && sensitiveKey.MatchString(key) {
+		// Numbers are counts, not credentials. Without this a token counter
+		// would be replaced by "[redacted]" just because its key says token.
+		switch value.(type) {
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+			return value
+		}
 		return "[redacted]"
 	}
 	switch item := value.(type) {
@@ -1397,6 +1404,19 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	case "/api/usage":
+		days := 30
+		if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
+			if parsed, convErr := strconv.Atoi(raw); convErr == nil {
+				days = parsed
+			}
+		}
+		value, err := s.store.UsageSummary(days)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "usage_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, value, nil)
 	case "/api/automation":
 		value, err := s.store.ListAutomation()
 		if err != nil {

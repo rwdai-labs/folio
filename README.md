@@ -75,6 +75,14 @@ hook are recorded with `trigger: hook`. Hook callers pass the same host
 allowlist as the browser UI, so `TRUSTED_HOSTS` must include the address the
 watcher connects to (for example `127.0.0.1` when it runs on the same host).
 
+Token usage is recorded per run from what the runner itself reported: Codex via
+its `turn.completed` JSON event, DSH via its per-request `usage` chunks. The
+record separates uncached, cached, and output tokens, and a run that never
+called a model carries no usage at all — the dashboard shows how many runs
+reported and how many did not instead of estimating the difference. Cost is not
+shown yet: it needs a price table the owner maintains, and a wrong price is
+worse than no price. The window is `GET /api/usage?days=7|30|90`.
+
 Outbound push is optional and strictly one-way. The operator configures a Bark
 server and device key in the Web UI; the key is stored in the private volume
 with mode 0600 and is never returned to the browser or written to the delivery

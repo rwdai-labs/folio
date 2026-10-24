@@ -86,6 +86,18 @@ func (b *testBackend) RunAutomation(trigger, runner, model string) (map[string]a
 	b.mu.Unlock()
 	return map[string]any{"run_id": "20261020T000000.000000000Z-abcdef12", "status": "pushed", "trigger": trigger, "runner": runner}, nil
 }
+func (b *testBackend) UsageSummary(days int) (map[string]any, error) {
+	return map[string]any{
+		"window_days": days,
+		"totals": map[string]any{
+			"input_tokens": 100, "cached_tokens": 50, "output_tokens": 20,
+			"total_tokens": 170, "runs": 2, "reported_runs": 1, "unreported_runs": 1,
+		},
+		"days":   []any{},
+		"models": []any{},
+	}, nil
+}
+
 func (b *testBackend) ListAutomation() (map[string]any, error) {
 	return map[string]any{"runs": []any{map[string]any{"run_id": "20261020T000000.000000000Z-abcdef12", "status": "pushed"}}, "count": 1, "latest": map[string]any{"run_id": "20261020T000000.000000000Z-abcdef12", "status": "pushed", "edits": []any{map[string]any{"target": "core/profile.md", "diff": "-old\n+new"}}}}, nil
 }
@@ -753,5 +765,27 @@ func TestHookEndpointsAcceptSignedEventsWithoutOrigin(t *testing.T) {
 	}
 	if len(backend.automation) != 1 || backend.automation[0].trigger != "hook" {
 		t.Fatalf("automation calls=%v", backend.automation)
+	}
+}
+
+func TestSafeValueKeepsNumericCountsAndRedactsCredentials(t *testing.T) {
+	value := map[string]any{
+		"total_tokens":  float64(1234),
+		"cached_tokens": int64(7),
+		"access_token":  "secret-value",
+		"nested":        map[string]any{"input_tokens": float64(10)},
+	}
+	safe, ok := safeValue(value, "", 0).(map[string]any)
+	if !ok {
+		t.Fatal("safeValue did not return a map")
+	}
+	if safe["total_tokens"] != float64(1234) || safe["cached_tokens"] != int64(7) {
+		t.Fatalf("numeric counts were redacted: %v", safe)
+	}
+	if safe["access_token"] != "[redacted]" {
+		t.Fatalf("credential string was not redacted: %v", safe)
+	}
+	if nested, _ := safe["nested"].(map[string]any); nested["input_tokens"] != float64(10) {
+		t.Fatalf("nested count was redacted: %v", safe)
 	}
 }

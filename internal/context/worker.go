@@ -423,14 +423,159 @@ type autoResult struct {
 }
 
 type autoReport struct {
-	Version     int        `json:"version"`
-	Status      string     `json:"status"`
-	Summary     string     `json:"summary"`
-	Device      string     `json:"device"`
-	Created     string     `json:"created"`
-	Skipped     int        `json:"skipped"`
-	InputDigest string     `json:"input_digest"`
-	Edits       []autoEdit `json:"edits"`
+	Version     int          `json:"version"`
+	Status      string       `json:"status"`
+	Summary     string       `json:"summary"`
+	Device      string       `json:"device"`
+	Created     string       `json:"created"`
+	Skipped     int          `json:"skipped"`
+	InputDigest string       `json:"input_digest"`
+	Usage       *usageReport `json:"usage,omitempty"`
+	Edits       []autoEdit   `json:"edits"`
+}
+
+// usageReport is what the runner itself reported for one model call. Folio
+// never estimates tokens: a run with no report carries no usage at all, and the
+// dashboard counts those separately instead of showing a made-up zero.
+//
+// Input is uncached prompt tokens, Cached is the cached part of the prompt, and
+// Total is the sum billed by the provider (uncached + cached + output).
+type usageReport struct {
+	Input    int64  `json:"input_tokens"`
+	Cached   int64  `json:"cached_tokens"`
+	Output   int64  `json:"output_tokens"`
+	Total    int64  `json:"total_tokens"`
+	Requests int    `json:"requests,omitempty"`
+	Source   string `json:"source"`
+	Origin   string `json:"origin,omitempty"`
+}
+
+type codexTokenUsage struct {
+	Input  int64 `json:"input_tokens"`
+	Cached int64 `json:"cached_input_tokens"`
+	Output int64 `json:"output_tokens"`
+	Total  int64 `json:"total_tokens"`
+}
+
+func (u codexTokenUsage) report() (usageReport, bool) {
+	if u.Input < 0 || u.Cached < 0 || u.Output < 0 || u.Total < 0 {
+		return usageReport{}, false
+	}
+	if u.Input == 0 && u.Output == 0 {
+		return usageReport{}, false
+	}
+	uncached := u.Input - u.Cached
+	if uncached < 0 {
+		uncached = 0
+	}
+	total := u.Total
+	if total == 0 {
+		total = u.Input + u.Output
+	}
+	return usageReport{Input: uncached, Cached: u.Cached, Output: u.Output, Total: total, Source: "reported", Origin: "stdout"}, true
+}
+
+// parseCodexUsage reads the JSONL event stream that `codex exec --json` prints.
+// The last matching event wins because codex reports cumulative usage for the
+// turn, not a per-request delta.
+func parseCodexUsage(stdout []byte) (usageReport, bool) {
+	report := usageReport{}
+	found := false
+	for _, line := range bytes.Split(stdout, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) < 2 || line[0] != '{' {
+			continue
+		}
+		var event struct {
+			Type  string           `json:"type"`
+			Usage *codexTokenUsage `json:"usage"`
+			Info  *struct {
+				Total codexTokenUsage `json:"total_token_usage"`
+			} `json:"info"`
+			Payload struct {
+				Type string `json:"type"`
+				Info *struct {
+					Total codexTokenUsage `json:"total_token_usage"`
+				} `json:"info"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(line, &event) != nil {
+			continue
+		}
+		var candidate codexTokenUsage
+		matched := false
+		switch {
+		case event.Type == "turn.completed" && event.Usage != nil:
+			candidate, matched = *event.Usage, true
+		case event.Payload.Type == "token_count" && event.Payload.Info != nil:
+			candidate, matched = event.Payload.Info.Total, true
+		case event.Type == "token_count" && event.Info != nil:
+			candidate, matched = event.Info.Total, true
+		}
+		if !matched {
+			continue
+		}
+		if next, ok := candidate.report(); ok {
+			report, found = next, true
+		}
+	}
+	return report, found
+}
+
+type dshTokenUsage struct {
+	Input  int64 `json:"inputTokens"`
+	Output int64 `json:"outputTokens"`
+	Total  int64 `json:"totalTokens"`
+	Cached int64 `json:"cacheReadTokens"`
+}
+
+// parseDSHUsage reads the `usage` chunks of the DSH JSONL stream. Each chunk
+// describes one request, so the totals are sums rather than a last-wins value.
+func parseDSHUsage(stdout []byte) (usageReport, bool) {
+	report := usageReport{}
+	requests := 0
+	for _, line := range bytes.Split(stdout, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) < 2 || line[0] != '{' {
+			continue
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Chunk struct {
+				Type  string         `json:"type"`
+				Usage *dshTokenUsage `json:"usage"`
+			} `json:"chunk"`
+			Usage *dshTokenUsage `json:"usage"`
+		}
+		if json.Unmarshal(line, &event) != nil {
+			continue
+		}
+		usage := event.Usage
+		if event.Type == "chunk" && event.Chunk.Type == "usage" && event.Chunk.Usage != nil {
+			usage = event.Chunk.Usage
+		}
+		if usage == nil {
+			continue
+		}
+		if usage.Input < 0 || usage.Cached < 0 || usage.Output < 0 || usage.Total < 0 {
+			continue
+		}
+		if usage.Input == 0 && usage.Output == 0 {
+			continue
+		}
+		report.Input += usage.Input
+		report.Cached += usage.Cached
+		report.Output += usage.Output
+		report.Total += usage.Total
+		requests++
+	}
+	if requests == 0 {
+		return usageReport{}, false
+	}
+	report.Requests = requests
+	report.Source = "reported"
+	report.Origin = "stdout"
+	return report, true
 }
 
 type providerConfig struct {
@@ -847,7 +992,7 @@ func (r *Router) RunAgent(options AgentOptions, out, errOut io.Writer) error {
 	}
 	if len(data.Items) == 0 && (!options.Auto || len(data.Canonical) == 0) {
 		if options.Auto {
-			if err := r.writeAutoReport(options, data, "", autoResult{Summary: "No review work was available.", Edits: []autoEdit{}}, out); err != nil {
+			if err := r.writeAutoReport(options, data, "", autoResult{Summary: "No review work was available.", Edits: []autoEdit{}}, nil, out); err != nil {
 				return err
 			}
 			return nil
@@ -928,6 +1073,8 @@ func (r *Router) runCodexReview(options AgentOptions, data ReviewData, digest st
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	stdout := &limitedWriter{limit: codexOutputLimit}
+	cmd.Stdout = stdout
 	if runErr := runWithTimeout(cmd, options.Timeout); runErr != nil {
 		return fmt.Errorf("Codex review failed; no changes applied")
 	}
@@ -939,7 +1086,11 @@ func (r *Router) runCodexReview(options AgentOptions, data ReviewData, digest st
 		if err != nil {
 			return err
 		}
-		return r.writeAutoReport(options, data, digest, proposal, out)
+		var usage *usageReport
+		if parsed, ok := parseCodexUsage(stdout.buffer.Bytes()); ok {
+			usage = &parsed
+		}
+		return r.writeAutoReport(options, data, digest, proposal, usage, out)
 	}
 	proposal, err := readAndValidateProposal(outputPath)
 	if err != nil {
@@ -949,6 +1100,10 @@ func (r *Router) runCodexReview(options AgentOptions, data ReviewData, digest st
 }
 
 const dshOutputLimit = 2 * 1024 * 1024
+
+// codexOutputLimit bounds the captured JSONL stream. It is larger than the DSH
+// limit because every completed item is one line, but still far below memory.
+const codexOutputLimit = 4 * 1024 * 1024
 
 // reviewDSHPrompt extends the shared review prompt with the output contract
 // that Codex normally receives through --output-schema.
@@ -1173,7 +1328,11 @@ func (r *Router) runDSHReview(options AgentOptions, data ReviewData, digest stri
 		if err != nil {
 			return errors.New("invalid review result")
 		}
-		return r.writeAutoReport(options, data, digest, proposal, out)
+		var usage *usageReport
+		if parsed, ok := parseDSHUsage(stdout.buffer.Bytes()); ok {
+			usage = &parsed
+		}
+		return r.writeAutoReport(options, data, digest, proposal, usage, out)
 	}
 	proposal, err := extractProposalJSON(text)
 	if err != nil {
@@ -1263,7 +1422,7 @@ func validateAutoData(data []byte) (autoResult, error) {
 	return result, nil
 }
 
-func (r *Router) writeAutoReport(options AgentOptions, data ReviewData, digest string, result autoResult, out io.Writer) error {
+func (r *Router) writeAutoReport(options AgentOptions, data ReviewData, digest string, result autoResult, usage *usageReport, out io.Writer) error {
 	runtime, err := r.RuntimePath(options.RuntimeDir)
 	if err != nil {
 		return err
@@ -1296,7 +1455,7 @@ func (r *Router) writeAutoReport(options AgentOptions, data ReviewData, digest s
 	report := autoReport{
 		Version: 1, Status: "pending-apply", Summary: result.Summary,
 		Device: options.Device, Created: time.Now().UTC().Format(time.RFC3339),
-		Skipped: data.Skipped, InputDigest: digest, Edits: result.Edits,
+		Skipped: data.Skipped, InputDigest: digest, Edits: result.Edits, Usage: usage,
 	}
 	if report.Edits == nil {
 		report.Edits = []autoEdit{}
@@ -1546,6 +1705,7 @@ func workerCodexArgs(work, schemaPath, outputPath string, connectionArgs []strin
 		"--disable", "tool_search", "--disable", "tool_suggest", "--disable", "browser_use",
 		"--disable", "browser_use_external", "--disable", "computer_use", "--disable", "image_generation",
 		"--disable", "view_image",
+		"--json",
 		"--output-schema", schemaPath, "-o", outputPath,
 	}
 	args = append(args, connectionArgs...)

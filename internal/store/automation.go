@@ -39,7 +39,41 @@ type autoReport struct {
 	Created     string     `json:"created"`
 	Skipped     int        `json:"skipped"`
 	InputDigest string     `json:"input_digest"`
+	Usage       *autoUsage `json:"usage,omitempty"`
 	Edits       []autoEdit `json:"edits"`
+}
+
+// autoUsage is the token report the worker got from the runner. It stays
+// optional: a runner that reports nothing produces a run without usage, never
+// an invented zero.
+type autoUsage struct {
+	Input    int64  `json:"input_tokens"`
+	Cached   int64  `json:"cached_tokens"`
+	Output   int64  `json:"output_tokens"`
+	Total    int64  `json:"total_tokens"`
+	Requests int    `json:"requests"`
+	Source   string `json:"source"`
+	Origin   string `json:"origin"`
+}
+
+// validUsage rejects impossible counters rather than silently storing them.
+func validUsage(usage *autoUsage) bool {
+	if usage == nil {
+		return true
+	}
+	const maxTokens = int64(1) << 40
+	for _, value := range []int64{usage.Input, usage.Cached, usage.Output, usage.Total} {
+		if value < 0 || value > maxTokens {
+			return false
+		}
+	}
+	if usage.Requests < 0 || usage.Requests > 10000 {
+		return false
+	}
+	if usage.Source != "reported" {
+		return false
+	}
+	return usage.Origin == "stdout" || usage.Origin == "session" || usage.Origin == ""
 }
 
 type autoEdit struct {
@@ -165,6 +199,17 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 	run["summary"] = publicText(report.Summary, maxAutoSummaryRunes)
 	run["skipped"] = report.Skipped
 	run["input_digest"] = publicText(report.InputDigest, 64)
+	if report.Usage != nil {
+		run["usage"] = map[string]any{
+			"input_tokens":  report.Usage.Input,
+			"cached_tokens": report.Usage.Cached,
+			"output_tokens": report.Usage.Output,
+			"total_tokens":  report.Usage.Total,
+			"requests":      report.Usage.Requests,
+			"source":        "reported",
+			"origin":        report.Usage.Origin,
+		}
+	}
 	run["stage"] = "validate"
 	if err := s.saveAutomationRun(run); err != nil {
 		return nil, err
@@ -438,6 +483,9 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 		return autoReport{}, errStore("automation report is invalid")
 	}
 	if len([]rune(report.Summary)) > maxAutoSummaryRunes || len(report.Edits) > maxAutoEdits || report.Skipped < 0 {
+		return autoReport{}, errStore("automation report is invalid")
+	}
+	if !validUsage(report.Usage) {
 		return autoReport{}, errStore("automation report is invalid")
 	}
 	for _, edit := range report.Edits {
