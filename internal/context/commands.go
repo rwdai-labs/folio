@@ -666,7 +666,7 @@ func runLinks(r *Router, args []string, out io.Writer) error {
 }
 
 func runAgent(r *Router, args []string, out io.Writer) error {
-	options, err := parseOptions(args, map[string]bool{"dry-run": true, "force": true, "auto": true}, map[string]bool{"auto-report": true, "device": true, "runtime-dir": true, "model": true, "provider": true, "runner": true, "timeout": true})
+	options, err := parseOptions(args, map[string]bool{"dry-run": true, "force": true, "auto": true}, map[string]bool{"auto-report": true, "device": true, "runtime-dir": true, "model": true, "provider": true, "runner": true, "timeout": true, "report-prompt": true, "report-out": true})
 	if err != nil {
 		return err
 	}
@@ -677,7 +677,7 @@ func runAgent(r *Router, args []string, out io.Writer) error {
 	if runner == "" {
 		runner = "codex"
 	}
-	agent := AgentOptions{DryRun: options.bools["dry-run"], Force: options.bools["force"], Device: "NAS", RuntimeDir: options.values["runtime-dir"], Model: options.values["model"], Provider: options.values["provider"], Runner: runner, Auto: options.bools["auto"], AutoReport: options.values["auto-report"], Timeout: 15 * time.Minute}
+	agent := AgentOptions{DryRun: options.bools["dry-run"], Force: options.bools["force"], Device: "NAS", RuntimeDir: options.values["runtime-dir"], Model: options.values["model"], Provider: options.values["provider"], Runner: runner, Auto: options.bools["auto"], AutoReport: options.values["auto-report"], ReportPrompt: options.values["report-prompt"], ReportOutput: options.values["report-out"], Timeout: 15 * time.Minute}
 	if raw := options.values["device"]; raw != "" {
 		agent.Device = raw
 	}

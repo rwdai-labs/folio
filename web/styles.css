@@ -594,6 +594,11 @@ main.shell {
   color: var(--accent-ink);
 }
 
+.badge[data-state="reported"] {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
 .badge[data-state="no_changes"] {
   border-color: transparent;
   background: var(--blue-soft);
@@ -1228,6 +1233,28 @@ textarea {
   margin: 0;
   font-size: 0.9rem;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.run-report-heading {
+  margin: 0.6rem 0 0.2rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.run-report {
+  margin: 0;
+  max-height: 26rem;
+  overflow: auto;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

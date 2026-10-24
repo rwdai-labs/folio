@@ -107,18 +107,24 @@ never executes it, interpolates it into a shell, or writes it into the checkout.
 
 ## Task kind belongs to Folio
 
-A plugin cannot ask for `triage`; the hook's action decides the kind, and the
-owner picks it in Folio. This is deliberate: the dangerous part of an
-integration is not the trigger, it is the action. Today the only implemented
-action is `maintenance`, so every plugin schedules context maintenance. A new
-kind is a Folio capability, in this order:
+A plugin cannot ask for `triage` by writing it in the request body; the hook's
+action decides the kind, and the owner picks it in Folio from the configured
+kinds. This is deliberate: the dangerous part of an integration is not the
+trigger, it is the action.
 
-1. implement the kind in Folio (prompt, output class, guardrails);
-2. expose it as a hook action with its own priority default;
-3. point a plugin at it — one configuration change, no plugin release.
+Kinds are data now. `data/task-kinds.json` defines `maintenance` (pull, commit,
+push) and any `report` kind the owner adds (`triage`, `summarize`, ...). Wiring a
+plugin to a new kind is:
 
-External writes (`comment`, `label`, `create PR`) stay proposals until the owner
-approves them in Folio. A plugin never holds an approval gate.
+1. add the kind to `data/task-kinds.json` (prompt, priority, optional runner);
+2. create or update the hook and choose that kind in the Web UI;
+3. the plugin keeps sending the same signed event — no plugin release, no Folio
+   release, no Go change.
+
+A genuinely new capability (something that writes, comments, or opens a PR) is
+still code in Folio, in the same order: implement it, expose it as an action,
+then point a plugin at it. External writes stay proposals until the owner
+approves them in Folio; a plugin never holds an approval gate.
 
 ## Lifecycle
 
@@ -135,7 +141,7 @@ approves them in Folio. A plugin never holds an approval gate.
 | --- | --- | --- | --- |
 | `scripts/folio-watch-git.sh` | context remote HEAD changed | maintenance | shell |
 | `scripts/folio-hook.sh` | any external script or CI job | maintenance | shell |
-| `plugins/github-bridge` | GitHub issue opened or updated | maintenance | Go, own PAT |
+| `plugins/github-bridge` | GitHub issue opened or updated | any configured kind | Go, own PAT |
 | `plugins/github` | storage, sign-in, repository picker | n/a (capability) | Go + JS, built in |
 
 The GitHub bridge is the reference implementation of this contract: separate Go

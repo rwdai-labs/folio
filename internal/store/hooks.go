@@ -18,10 +18,6 @@ import (
 )
 
 const (
-	// hookActionMaintenance is the only action today. Actions are code, never
-	// free-form text: a hook names one, it cannot describe arbitrary work.
-	hookActionMaintenance = "maintenance"
-
 	maxHooks         = 16
 	maxHookNameRunes = 64
 	maxHookIDLen     = 48
@@ -91,13 +87,14 @@ func (s *Store) CreateHook(name, action, priority string) (map[string]any, error
 	}
 	action = strings.TrimSpace(action)
 	if action == "" {
-		action = hookActionMaintenance
+		action = taskKindMaintenance
 	}
-	if action != hookActionMaintenance {
+	kind, err := s.taskKindFor(action)
+	if err != nil {
 		return nil, errStore("invalid_hook_action")
 	}
 	if priority == "" {
-		priority = "P2"
+		priority = kindDefaultPriority(kind)
 	}
 	if !validPriority(priority) {
 		return nil, errStore("invalid_hook_priority")
@@ -394,9 +391,17 @@ func (s *Store) hooksPayload(file *hooksFile) map[string]any {
 	for _, record := range file.Hooks {
 		hooks = append(hooks, publicHook(record))
 	}
+	ids, err := s.kindIDs()
+	if err != nil {
+		ids = []string{taskKindMaintenance}
+	}
+	actions := make([]any, 0, len(ids))
+	for _, id := range ids {
+		actions = append(actions, id)
+	}
 	return map[string]any{
 		"hooks":     hooks,
-		"actions":   []any{hookActionMaintenance},
+		"actions":   actions,
 		"max_hooks": maxHooks,
 	}
 }

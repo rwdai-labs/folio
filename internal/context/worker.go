@@ -52,6 +52,12 @@ type AgentOptions struct {
 	Timeout    time.Duration
 	Auto       bool
 	AutoReport string
+
+	// ReportPrompt and ReportOutput switch the agent into the report mode used
+	// by data-defined task kinds: run one read-only model call framed by the
+	// prompt file, then write {text, usage} to the output path.
+	ReportPrompt string
+	ReportOutput string
 }
 
 // ReviewData is the bounded, model-facing packet. It contains no absolute
@@ -980,6 +986,9 @@ func (r *Router) RunAgent(options AgentOptions, out, errOut io.Writer) error {
 		return err
 	}
 	defer lock.Close()
+	if strings.TrimSpace(options.ReportPrompt) != "" {
+		return r.runReport(options, runtime)
+	}
 	data, err := r.ReviewInput()
 	if err != nil {
 		return err
@@ -1683,6 +1692,12 @@ func validateAgentOptions(options AgentOptions) error {
 			return errors.New("model provider is invalid")
 		}
 	}
+	if options.Auto && strings.TrimSpace(options.ReportPrompt) != "" {
+		return errors.New("report and automatic modes are exclusive")
+	}
+	if (strings.TrimSpace(options.ReportPrompt) == "") != (strings.TrimSpace(options.ReportOutput) == "") {
+		return errors.New("report prompt and output paths are required together")
+	}
 	if options.Auto && strings.TrimSpace(options.AutoReport) == "" {
 		return errors.New("automatic maintenance report path is required")
 	}
@@ -1706,8 +1721,11 @@ func workerCodexArgs(work, schemaPath, outputPath string, connectionArgs []strin
 		"--disable", "browser_use_external", "--disable", "computer_use", "--disable", "image_generation",
 		"--disable", "view_image",
 		"--json",
-		"--output-schema", schemaPath, "-o", outputPath,
 	}
+	if schemaPath != "" {
+		args = append(args, "--output-schema", schemaPath)
+	}
+	args = append(args, "-o", outputPath)
 	args = append(args, connectionArgs...)
 	if model != "" {
 		args = append(args, "--model", model)

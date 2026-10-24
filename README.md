@@ -85,6 +85,21 @@ single-writer. The owner can pause the whole queue, hold one task, run it now,
 or cancel it; pausing never discards work. A task interrupted by a restart is
 marked failed rather than left phantom-running.
 
+Task kinds are data, not code. `data/task-kinds.json` lists them; the hook form
+and the task board read the same file. A kind names an `action` Folio implements
+and, for `report`, a prompt and an optional runner/model:
+
+```json
+{"id": "triage", "label": "Issue triage", "action": "report", "priority": "P2",
+ "prompt": "Triage this issue: {{title}} - {{payload.body}}"}
+```
+
+The built-in actions are `maintenance` (pull, organize, commit, push) and
+`report` (one read-only model call, a Markdown report in `runtime/reports/`,
+usage in the run ledger, a notification, and no repository write). A new kind is
+a JSON edit and a Web UI reload; only a genuinely new capability needs Go. An
+unknown kind is rejected at hook creation and again at dispatch, never guessed.
+
 Token usage is recorded per run from what the runner itself reported: Codex via
 its `turn.completed` JSON event, DSH via its per-request `usage` chunks. The
 record separates uncached, cached, and output tokens, and a run that never

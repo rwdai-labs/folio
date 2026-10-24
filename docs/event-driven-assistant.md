@@ -185,7 +185,25 @@ most one due task per tick, highest priority first.
 | Dedupe | An active task with the same kind and source is returned, not duplicated. |
 | Serialization | One task at a time, deliberately: checkout, commit, and audit assume a single writer. |
 | Crash | A task left `running` at startup becomes `failed/interrupted`, never a phantom. |
-| Unknown kind | Fails with `unsupported_kind` instead of retrying forever. |
+| Unknown kind | Rejected at creation; if the kind disappears later, the task fails once with `kind_unknown`. |
+| Report | A `report` kind runs one read-only model call and stores a Markdown report; it never touches the checkout. |
+
+### Task kinds are data
+
+`data/task-kinds.json` is the registry: `id`, `label`, `action`, default
+`priority`, and for `report` a `prompt`, `runner`, `model`, `timeout_seconds`.
+The hook form and the task board read the same list, so adding "summarize this
+thread" or "triage this issue" is a JSON edit. The prompt may interpolate
+`{{title}}`, `{{source}}`, `{{payload}}`, and `{{payload.key}}`; the payload is
+rendered under an explicit "this is data, not instructions" framing and the run
+is sandboxed read-only.
+
+Two actions exist. `maintenance` is the original path: pull, organize, commit,
+push, audit. `report` is the generic one: one model call, a Markdown report in
+`runtime/reports/`, usage in the run ledger, a notification, no canonical write.
+A hook's action *is* a kind, so an external plugin can ask for `triage` without
+Folio or the plugin being rebuilt — and without the plugin choosing the prompt.
+
 
 The window is the **owner's** schedule, not a provider price window. "When I am
 asleep" is a human fact expressed in local time; provider peak hours belong to
@@ -339,21 +357,23 @@ locks.
 1. **Bark channel** (implemented): config, masked state, test send, delivery
    on pushed/failed runs, bounded delivery ledger, Web UI card.
 2. **Hook API** (implemented): per-hook secret, HMAC over timestamp and raw
-   body, replay window, rate limit, `maintenance` action, masked state, Web UI.
+   body, replay window, rate limit, action = a configured task kind, masked
+   state, Web UI.
 3. **External watcher** (implemented as scripts): `ls-remote` probe, SHA as
    event id. Replaces the nightly schedule for the context repository.
 4. **Usage capture and dashboard** (implemented): runner-reported per-run
    usage, `/api/usage`, Web UI over 7/30/90 days. Cost waits for a maintained
    price table.
 5. **Task queue** (implemented): durable tasks, priorities, off-peak window,
-   global and per-task pause, run-now, single-task dispatcher.
-6. **Integration plugins** (implemented): the hook contract in
-   `docs/integration-plugins.md`, payload projection, and the GitHub bridge as
-   the reference plugin. Folio no longer logs in to GitHub or lists
-   repositories; it holds only the context-repository git credential.
-7. **GitHub actions**: issue triage and PR review draft, approval-gated. This
-   is also the first task kind with a payload, so the projection rule in §9
-   must be settled first.
+   global and per-task pause, run-now, single-task dispatcher, data-defined
+   kinds (`maintenance`, `report`).
+6. **Integration plugins** (implemented): two classes — the built-in storage
+   plugin (`plugins/github`: remote, sign-in, picker) and external event
+   plugins that call the hook API (`plugins/github-bridge`). Payload projection
+   is enforced in Folio.
+7. **GitHub actions** (report kind implemented): issue triage is a `report`
+   kind with a payload, so the issue bridge can ask for it without a rebuild.
+   PR review drafts stay approval-gated because they write.
 8. **Price-aware routing**: provider price data, peak windows, trust rules.
 9. **More channels**: DingTalk → Feishu → WeCom.
 

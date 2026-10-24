@@ -46,6 +46,7 @@
     usage: null,
     usageWindow: 30,
     tasks: null,
+    kinds: null,
     tasksBusy: "",
     modelValues: { codex: "", dsh: "" },
     modelMenuOpen: false,
@@ -738,6 +739,7 @@
         setMessage("automation", errorKey(error, "error.generic"), { error: true });
       }
     }
+    await loadTaskKinds();
     await refreshAutomation({ silent: true });
     await refreshChannels();
     await refreshHooks();
@@ -933,6 +935,35 @@
     badge.textContent = `${active}/${items.length}`;
   }
 
+  // Task kinds are data. The hook form lists whatever data/task-kinds.json
+  // defines, so the owner adds a kind without touching this file.
+  function kindLabel(id) {
+    const kind = (state.kinds || []).find((item) => item && item.id === id);
+    return (kind && kind.label) || id || "";
+  }
+
+  async function loadTaskKinds() {
+    try {
+      const data = await api("/api/task-kinds");
+      state.kinds = Array.isArray(data.kinds) ? data.kinds : [];
+    } catch (error) {
+      state.kinds = state.kinds || [];
+      return;
+    }
+    const select = $("hook-action");
+    if (!select) return;
+    const current = select.value;
+    while (select.firstChild) select.removeChild(select.firstChild);
+    state.kinds.forEach((kind) => {
+      if (!kind || typeof kind.id !== "string") return;
+      const option = document.createElement("option");
+      option.value = kind.id;
+      option.textContent = kind.label || kind.id;
+      select.appendChild(option);
+    });
+    if (state.kinds.some((kind) => kind.id === current)) select.value = current;
+  }
+
   function hookButton(hook, action, labelKey) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1012,7 +1043,7 @@
 
       const meta = document.createElement("p");
       meta.className = "hook-meta";
-      const parts = [`/api/hooks/${hook.id}`, t("hooks.action.maintenance")];
+      const parts = [`/api/hooks/${hook.id}`, kindLabel(hook.action)];
       if (hook.calls > 0) parts.push(t("hooks.calls", { count: hook.calls }));
       parts.push(
         hook.last_called_at
@@ -1071,8 +1102,10 @@
     setMessage("hooks", null);
     const priorityInput = $("hook-priority");
     const priority = priorityInput ? priorityInput.value : "P2";
+    const actionInput = $("hook-action");
+    const action = actionInput && actionInput.value ? actionInput.value : "maintenance";
     try {
-      const result = await api("/api/hooks", { method: "POST", body: { name, priority } });
+      const result = await api("/api/hooks", { method: "POST", body: { name, action, priority } });
       if (input) input.value = "";
       if (Array.isArray(result.hooks)) renderHooks({ hooks: result.hooks });
       const hook = result.hook && typeof result.hook.id === "string" ? result.hook.id : "";
@@ -1371,7 +1404,7 @@
 
       const meta = document.createElement("p");
       meta.className = "task-meta";
-      const parts = [task.kind, task.source];
+      const parts = [kindLabel(task.kind), task.source];
       if (task.created_at) {
         parts.push(t("tasks.created", { time: formatTime(task.created_at) }));
       }
@@ -1584,6 +1617,16 @@
       summary.className = "run-summary";
       summary.textContent = run.summary;
       container.appendChild(summary);
+    }
+    if (typeof run.report_text === "string" && run.report_text.trim()) {
+      const heading = document.createElement("h3");
+      heading.className = "run-report-heading";
+      heading.textContent = t("automation.report_title");
+      const report = document.createElement("pre");
+      report.className = "run-report";
+      report.textContent = run.report_text;
+      container.appendChild(heading);
+      container.appendChild(report);
     }
     if ((run.status === "failed" || run.status === "skipped") && run.reason) {
       const reason = document.createElement("p");

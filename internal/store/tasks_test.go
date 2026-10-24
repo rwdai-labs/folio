@@ -10,6 +10,17 @@ import (
 
 func minutes(value int) *int { return &value }
 
+func writeTaskKinds(t *testing.T, store *Store, kinds ...taskKind) {
+	t.Helper()
+	raw, err := json.Marshal(taskKindsFile{Version: 1, Kinds: kinds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskKindsPathFor(store.dataDir), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeTaskPolicy(t *testing.T, store *Store, deferMap map[string]bool, start, end string, offset int) {
 	t.Helper()
 	policy := map[string]any{
@@ -180,22 +191,28 @@ func TestDispatchDuePicksHighestPriority(t *testing.T) {
 	}
 }
 
-func TestUnsupportedTaskKindFailsInsteadOfLooping(t *testing.T) {
+func TestUnknownTaskKindIsRejectedAndFailsWithoutLooping(t *testing.T) {
 	store := newTestStore(t)
 	writeTaskPolicy(t, store, map[string]bool{}, "00:00", "00:00", 0)
-	if _, err := store.CreateTask("issue-triage", "manual", "Triage", "P1", nil); err != nil {
+	if _, err := store.CreateTask("issue-triage", "manual", "Triage", "P1", nil); err == nil {
+		t.Fatal("a kind that is not configured was accepted")
+	}
+	if _, err := store.CreateTask("maintenance", "manual", "Clean up", "P1", nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	// The owner removes the kind between queueing and dispatch. The task must
+	// fail once with a clear reason instead of spinning or guessing an action.
+	writeTaskKinds(t, store, taskKind{ID: "triage", Label: "Issue triage", Action: kindActionReport, Prompt: "Summarize {{payload.title}}"})
 	result, err := store.DispatchDue()
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	if result["reason"] != "unsupported_kind" {
+	if result["reason"] != "kind_unknown" {
 		t.Fatalf("result=%v", result)
 	}
 	listing, _ := store.ListTasks()
 	task := listing["tasks"].([]any)[0].(map[string]any)
-	if task["status"] != "failed" || task["reason"] != "unsupported_kind" {
+	if task["status"] != "failed" || task["reason"] != "kind_unknown" {
 		t.Fatalf("task=%v", task)
 	}
 }

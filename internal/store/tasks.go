@@ -423,8 +423,12 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 	if !taskKindRE.MatchString(kind) {
 		return nil, errStore("invalid_task_kind")
 	}
+	definition, err := s.taskKindFor(kind)
+	if err != nil {
+		return nil, errStore("invalid_task_kind")
+	}
 	if priority == "" {
-		priority = "P2"
+		priority = kindDefaultPriority(definition)
 	}
 	if !validPriority(priority) {
 		return nil, errStore("invalid_task_priority")
@@ -709,16 +713,20 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 		return map[string]any{"dispatched": 0}, nil
 	}
 	task := &file.Tasks[index]
-	if task.Kind != taskKindMaintenance {
-		// A task whose kind has no implementation must not spin forever.
+	definition, kindErr := s.taskKindFor(task.Kind)
+	if kindErr != nil {
+		// A task whose kind is no longer configured must not spin forever, and
+		// must not silently fall back to a different action.
 		task.Status = taskStatusFailed
-		task.Reason = "unsupported_kind"
+		task.Reason = "kind_unknown"
 		task.FinishedAt = nowString()
 		task.UpdatedAt = nowString()
 		_ = s.saveTasksLocked(file)
 		s.taskMu.Unlock()
-		return map[string]any{"dispatched": 0, "reason": "unsupported_kind"}, nil
+		return map[string]any{"dispatched": 0, "reason": "kind_unknown"}, nil
 	}
+	snapshot := *task
+	snapshot.Payload = projectTaskPayload(task.Payload)
 	task.Status = taskStatusRunning
 	task.Attempts++
 	task.UpdatedAt = nowString()
@@ -729,7 +737,15 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 	taskID := task.ID
 	s.taskMu.Unlock()
 
-	run, runErr := s.RunAutomation("task", "", "codex")
+	var (
+		run    map[string]any
+		runErr error
+	)
+	if definition.Action == kindActionReport {
+		run, runErr = s.runReportTask(definition, snapshot)
+	} else {
+		run, runErr = s.RunAutomation("task", "", "codex")
+	}
 	result := map[string]any{"dispatched": 1, "task_id": taskID}
 
 	s.taskMu.Lock()
@@ -755,7 +771,7 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 		}
 		status := responseString(run, "status")
 		switch status {
-		case "pushed", "no_changes":
+		case "pushed", "no_changes", "reported":
 			item.Status = taskStatusDone
 		default:
 			item.Status = taskStatusFailed
@@ -765,6 +781,12 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 			}
 		}
 		result["run_status"] = status
+		if reason := responseString(run, "reason"); reason != "" {
+			result["reason"] = reason
+		}
+		if runID := responseString(run, "run_id"); runID != "" {
+			result["run_id"] = runID
+		}
 		break
 	}
 	if err := s.saveTasksLocked(file); err != nil {

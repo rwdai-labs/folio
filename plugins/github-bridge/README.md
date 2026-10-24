@@ -76,5 +76,7 @@ retrying in a tight loop.
 
 - It does not read Folio's tasks or runs; the hook response is the only feedback.
 - It does not triage or comment on issues. It reports an event; Folio decides
-  what work that means. Today that work is context maintenance.
+  what work that means. The owner attaches it to any configured task kind —
+  `maintenance`, or a `report` kind such as `triage` added to
+  `data/task-kinds.json`.
 - It does not share credentials with Folio.

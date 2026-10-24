@@ -112,6 +112,7 @@ type HookBackend interface {
 // TaskBackend is the optional work-queue contract. Tasks are durable intent;
 // runs are attempts. The board reads the former and links to the latter.
 type TaskBackend interface {
+	TaskKinds() (map[string]any, error)
 	ListTasks() (map[string]any, error)
 	CreateTask(kind, source, title, priority string, payload map[string]any) (map[string]any, error)
 	SetTasksPaused(paused bool) (map[string]any, error)
@@ -1068,15 +1069,15 @@ func (s *Server) hookEvent(w http.ResponseWriter, r *http.Request) {
 	action := stringField(event, "action")
 	name := stringField(event, "name")
 	priority := stringField(event, "priority")
-	if action != "maintenance" {
-		// A stored action outside the known set is a configuration error; refuse
-		// rather than guess what the caller meant.
-		s.writeError(w, http.StatusServiceUnavailable, "hook_action_unsupported")
-		return
-	}
 	title, payload := hookPayload(body, name)
 	created, err := tasks.CreateTask(action, "hook:"+id, title, priority, payload)
 	if err != nil {
+		if err.Error() == "invalid_task_kind" {
+			// The hook names a kind that is no longer configured. That is an
+			// owner configuration error, not a caller error.
+			s.writeError(w, http.StatusServiceUnavailable, "hook_action_unsupported")
+			return
+		}
 		s.writeError(w, http.StatusServiceUnavailable, "task_unavailable")
 		return
 	}
@@ -1623,6 +1624,18 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.writeJSON(w, http.StatusOK, clean, nil)
+	case "/api/task-kinds":
+		backend, ok := s.taskBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "task_unavailable")
+			return
+		}
+		value, err := backend.TaskKinds()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "task_kinds_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/tasks":
 		backend, ok := s.taskBackend()
 		if !ok {

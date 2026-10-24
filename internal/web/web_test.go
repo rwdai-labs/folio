@@ -162,6 +162,16 @@ func (b *testBackend) AcceptHook(id string, timestamp int64, eventID, signature 
 	return map[string]any{"name": "Watch context", "action": "maintenance", "priority": "P2"}, "ok"
 }
 
+func (b *testBackend) TaskKinds() (map[string]any, error) {
+	return map[string]any{
+		"actions": []string{"maintenance", "triage"},
+		"kinds": []any{
+			map[string]any{"id": "maintenance", "label": "Context maintenance", "action": "maintenance", "priority": "P2"},
+			map[string]any{"id": "triage", "label": "Issue triage", "action": "report", "priority": "P2"},
+		},
+	}, nil
+}
+
 func (b *testBackend) ListTasks() (map[string]any, error) {
 	return map[string]any{
 		"paused": false,
@@ -805,6 +815,30 @@ func TestSafeValueKeepsNumericCountsAndRedactsCredentials(t *testing.T) {
 	}
 	if nested, _ := safe["nested"].(map[string]any); nested["input_tokens"] != float64(10) {
 		t.Fatalf("nested count was redacted: %v", safe)
+	}
+}
+
+func TestTaskKindsAreSessionProtected(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/task-kinds", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", status)
+	}
+	client.login(t, password)
+	status, _, listing := client.request(t, http.MethodGet, "/api/task-kinds", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("status=%d", status)
+	}
+	kinds := listing["kinds"].([]any)
+	if len(kinds) != 2 || kinds[1].(map[string]any)["id"] != "triage" {
+		t.Fatalf("listing=%v", listing)
+	}
+	if kinds[1].(map[string]any)["label"] != "Issue triage" {
+		t.Fatalf("label=%v", kinds[1])
 	}
 }
 

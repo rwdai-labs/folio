@@ -76,6 +76,12 @@ type Store struct {
 
 	threadMu sync.Mutex
 
+	// modelMu serializes model calls inside this process. The agent's own
+	// maintainer.lock does the same across processes, but it fails instead of
+	// waiting; making a report task wait for an active maintenance run is
+	// friendlier than failing it with "another maintainer is running".
+	modelMu sync.Mutex
+
 	// Channel configuration and delivery records are read while a run holds
 	// the runtime lock and written by the Web adapter, so they use their own
 	// mutexes instead of the global one.

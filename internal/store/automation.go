@@ -472,7 +472,10 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 	for key, value := range dshRunnerEnv() {
 		env[key] = value
 	}
-	if _, err := s.runCommand(command, s.toolRoot, "", 20*time.Minute, true, env); err != nil {
+	s.modelMu.Lock()
+	_, runErr := s.runCommand(command, s.toolRoot, "", 20*time.Minute, true, env)
+	s.modelMu.Unlock()
+	if runErr != nil {
 		return autoReport{}, errStore("automation agent failed")
 	}
 	if info, statErr := os.Lstat(reportPath); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxAutoRunBytes {
