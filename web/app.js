@@ -39,6 +39,13 @@
     automation: null,
     automationRuns: [],
     automationError: false,
+    channels: null,
+    channelsSaving: false,
+    channelsTesting: false,
+    hooks: [],
+    hookSecret: "",
+    hookSecretFor: "",
+    hookBusy: "",
     modelValues: { codex: "", dsh: "" },
     modelMenuOpen: false,
     modelActive: -1,
@@ -58,6 +65,8 @@
     github: { element: "github-message", data: null },
     repository: { element: "repository-message", data: null },
     automation: { element: "automation-message", data: null },
+    channels: { element: "channels-message", data: null },
+    hooks: { element: "hooks-message", data: null },
   };
 
   let busyButtons = [];
@@ -129,6 +138,23 @@
         return "error.invalid";
       case "invalid_runner":
         return "runner.unavailable";
+      case "device_key_required":
+      case "channel_not_configured":
+        return "channels.device_key_required";
+      case "invalid_channel":
+      case "invalid_level":
+      case "invalid_language":
+        return "channels.invalid";
+      case "invalid_hook_name":
+        return "hooks.invalid_name";
+      case "hook_limit_reached":
+        return "hooks.limit";
+      case "hook_not_found":
+        return "hooks.not_found";
+      case "invalid_hook_id":
+      case "invalid_hook_action":
+      case "hook_invalid":
+        return "hooks.failed";
       case "job_unavailable":
         return "error.job_busy";
       case "session_unavailable":
@@ -258,6 +284,8 @@
     state.automationError = false;
     state.modelCatalogSignature = "";
     state.modelValues = { codex: "", dsh: "" };
+    state.hooks = [];
+    showHookSecret("", "");
     if ($("model-input")) $("model-input").value = "";
     closeModelMenu();
     showLogin();
@@ -319,6 +347,8 @@
       state.automationError = false;
       state.modelCatalogSignature = "";
       state.modelValues = { codex: "", dsh: "" };
+      state.hooks = [];
+      showHookSecret("", "");
       if ($("model-input")) $("model-input").value = "";
       closeModelMenu();
       stopAllTimers();
@@ -1247,6 +1277,373 @@
       }
     }
     await refreshAutomation({ silent: true });
+    await refreshChannels();
+    await refreshHooks();
+  }
+
+  /* -------------------------------------------------------------- channels */
+
+  const BARK_LEVELS = ["passive", "active", "timeSensitive"];
+
+  function barkBadge(bark) {
+    const badge = $("bark-badge");
+    if (!badge || !bark) return;
+    if (!bark.configured) {
+      badge.dataset.state = "disabled";
+      badge.textContent = t("channels.badge.unconfigured");
+      return;
+    }
+    badge.dataset.state = bark.enabled ? "enabled" : "disabled";
+    badge.textContent = t(bark.enabled ? "channels.badge.enabled" : "channels.badge.disabled");
+  }
+
+  function barkKeyHint(bark) {
+    const hint = $("bark-key-hint");
+    if (!hint || !bark) return;
+    hint.textContent = t(bark.configured ? "channels.device_key_stored" : "channels.device_key_missing");
+  }
+
+  // Channel texts follow the language, while the inputs keep whatever the
+  // owner has typed. Language changes therefore only re-render the texts.
+  function renderChannelTexts(data) {
+    if (!data) return;
+    barkBadge(data.bark);
+    barkKeyHint(data.bark);
+    renderDeliveries(data.deliveries);
+  }
+
+  function renderChannelValues(data) {
+    if (!data) return;
+    const bark = data.bark || {};
+    if ($("bark-enabled")) $("bark-enabled").checked = Boolean(bark.enabled);
+    if ($("bark-server")) $("bark-server").value = typeof bark.server === "string" ? bark.server : "";
+    if ($("bark-group")) $("bark-group").value = typeof bark.group === "string" ? bark.group : "";
+    if ($("bark-level")) $("bark-level").value = BARK_LEVELS.includes(bark.level) ? bark.level : "active";
+    if ($("bark-language")) $("bark-language").value = data.language === "zh" ? "zh" : "en";
+    if ($("bark-key")) $("bark-key").value = "";
+  }
+
+  function renderChannelState(data) {
+    state.channels = data;
+    renderChannelValues(data);
+    renderChannelTexts(data);
+  }
+
+  function deliveryKindKey(kind) {
+    switch (kind) {
+      case "test":
+        return "channels.kind.test";
+      case "run:pushed":
+        return "channels.kind.run.pushed";
+      case "run:failed":
+        return "channels.kind.run.failed";
+      default:
+        return "";
+    }
+  }
+
+  function renderDeliveries(deliveries) {
+    const list = $("deliveries-list");
+    if (!list) return;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    const items = Array.isArray(deliveries) ? deliveries : [];
+    if (!items.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = t("channels.none");
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach((item) => {
+      if (!item || typeof item !== "object") return;
+      const row = document.createElement("div");
+      row.className = "delivery-item";
+      const head = document.createElement("div");
+      head.className = "delivery-head";
+      const kind = document.createElement("span");
+      kind.className = "delivery-kind";
+      const kindKey = deliveryKindKey(item.kind);
+      kind.textContent = kindKey ? t(kindKey) : item.kind || "—";
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.dataset.state = item.status === "delivered" ? "enabled" : "failed";
+      badge.textContent = t(item.status === "delivered" ? "channels.status.delivered" : "channels.status.failed");
+      head.appendChild(kind);
+      head.appendChild(badge);
+      const meta = document.createElement("p");
+      meta.className = "delivery-meta";
+      const parts = [];
+      if (typeof item.title === "string" && item.title) parts.push(item.title);
+      if (typeof item.detail === "string" && item.detail) parts.push(item.detail);
+      const at = formatTime(item.at);
+      if (at) parts.push(at);
+      meta.textContent = parts.join(" · ");
+      row.appendChild(head);
+      row.appendChild(meta);
+      list.appendChild(row);
+    });
+  }
+
+  async function refreshChannels() {
+    try {
+      const data = await api("/api/channels");
+      renderChannelState(data);
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      setMessage("channels", errorKey(error, "error.generic"), { error: true });
+    }
+  }
+
+  function barkPayload() {
+    return {
+      enabled: Boolean($("bark-enabled") && $("bark-enabled").checked),
+      server: $("bark-server") ? $("bark-server").value.trim() : "",
+      device_key: $("bark-key") ? $("bark-key").value : "",
+      group: $("bark-group") ? $("bark-group").value.trim() : "",
+      level: $("bark-level") ? $("bark-level").value : "active",
+      language: $("bark-language") ? $("bark-language").value : "en",
+    };
+  }
+
+  async function saveBark(event) {
+    event.preventDefault();
+    if (state.channelsSaving) return;
+    state.channelsSaving = true;
+    const button = $("bark-save");
+    setBusy(button, "channels.saving");
+    setMessage("channels", null);
+    try {
+      const result = await api("/api/channels/bark", { method: "POST", body: barkPayload() });
+      renderChannelState(result);
+      setMessage("channels", "channels.saved");
+    } catch (error) {
+      setMessage("channels", errorKey(error, "channels.save_failed"), { error: true });
+    } finally {
+      state.channelsSaving = false;
+      clearBusy(button);
+    }
+  }
+
+  async function testBark() {
+    if (state.channelsTesting) return;
+    state.channelsTesting = true;
+    const button = $("bark-test");
+    setBusy(button, "channels.testing");
+    setMessage("channels", null);
+    try {
+      // Test the values on screen, so a key can be verified before it is
+      // persisted. The backend falls back to the stored key when blank.
+      const result = await api("/api/channels/bark/test", {
+        method: "POST",
+        body: {
+          server: $("bark-server") ? $("bark-server").value.trim() : "",
+          device_key: $("bark-key") ? $("bark-key").value : "",
+        },
+      });
+      if (result.state) renderChannelTexts(result.state);
+      const receipt = result.receipt || {};
+      if (receipt.status === "delivered") {
+        setMessage("channels", "channels.test_sent");
+      } else {
+        setMessage("channels", "channels.test_failed", {
+          vars: { detail: receipt.detail || "failed" },
+          error: true,
+        });
+      }
+    } catch (error) {
+      setMessage("channels", errorKey(error, "channels.save_failed"), { error: true });
+    } finally {
+      state.channelsTesting = false;
+      clearBusy(button);
+    }
+  }
+
+  /* ----------------------------------------------------------------- hooks */
+
+  function renderHookCount(hooks) {
+    const badge = $("hooks-count");
+    if (!badge) return;
+    const items = Array.isArray(hooks) ? hooks : [];
+    const active = items.filter((item) => item && item.enabled).length;
+    badge.dataset.state = active > 0 ? "enabled" : "disabled";
+    badge.textContent = `${active}/${items.length}`;
+  }
+
+  function hookButton(hook, action, labelKey) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = action === "delete" ? "btn ghost small danger" : "btn ghost small";
+    button.dataset.hookAction = action;
+    button.dataset.hookId = hook.id;
+    const label = document.createElement("span");
+    label.className = "btn-label";
+    label.textContent = t(labelKey);
+    button.appendChild(label);
+    return button;
+  }
+
+  function renderHooks(data) {
+    const list = $("hooks-list");
+    if (!list) return;
+    const hooks = Array.isArray(data && data.hooks) ? data.hooks : [];
+    state.hooks = hooks;
+    renderHookCount(hooks);
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!hooks.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = t("hooks.empty");
+      list.appendChild(empty);
+      return;
+    }
+    hooks.forEach((hook) => {
+      if (!hook || typeof hook.id !== "string") return;
+      const row = document.createElement("div");
+      row.className = "hook-item";
+      row.dataset.hookId = hook.id;
+
+      const head = document.createElement("div");
+      head.className = "hook-head";
+      const name = document.createElement("span");
+      name.className = "hook-name";
+      name.textContent = hook.name || hook.id;
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.dataset.state = hook.enabled ? "enabled" : "disabled";
+      badge.textContent = t(hook.enabled ? "hooks.enabled" : "hooks.disabled");
+      head.appendChild(name);
+      head.appendChild(badge);
+
+      const meta = document.createElement("p");
+      meta.className = "hook-meta";
+      const parts = [`/api/hooks/${hook.id}`, t("hooks.action.maintenance")];
+      if (hook.calls > 0) parts.push(t("hooks.calls", { count: hook.calls }));
+      parts.push(
+        hook.last_called_at
+          ? `${t("hooks.last_called")} ${formatTime(hook.last_called_at)}`
+          : t("hooks.never"),
+      );
+      meta.textContent = parts.join(" · ");
+
+      const actions = document.createElement("div");
+      actions.className = "hook-actions";
+      actions.appendChild(hookButton(hook, "toggle", hook.enabled ? "hooks.disable" : "hooks.enable"));
+      actions.appendChild(hookButton(hook, "rotate", "hooks.rotate"));
+      actions.appendChild(hookButton(hook, "delete", "hooks.delete"));
+
+      row.appendChild(head);
+      row.appendChild(meta);
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+  }
+
+  async function refreshHooks() {
+    try {
+      const data = await api("/api/hooks");
+      renderHooks(data);
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      setMessage("hooks", errorKey(error, "hooks.failed"), { error: true });
+    }
+  }
+
+  function showHookSecret(secret, hookID) {
+    state.hookSecret = typeof secret === "string" ? secret : "";
+    state.hookSecretFor = state.hookSecret ? hookID || "" : "";
+    const panel = $("hook-secret-panel");
+    const value = $("hook-secret-value");
+    if (!panel || !value) return;
+    value.textContent = state.hookSecret;
+    panel.hidden = !state.hookSecret;
+  }
+
+  async function createHook(event) {
+    event.preventDefault();
+    if (state.hookBusy) return;
+    const input = $("hook-name");
+    const name = input ? input.value.trim() : "";
+    if (!name) {
+      setMessage("hooks", "hooks.invalid_name", { error: true });
+      if (input) input.focus();
+      return;
+    }
+    state.hookBusy = "create";
+    const button = $("hook-create");
+    setBusy(button, "hooks.creating");
+    setMessage("hooks", null);
+    try {
+      const result = await api("/api/hooks", { method: "POST", body: { name } });
+      if (input) input.value = "";
+      if (Array.isArray(result.hooks)) renderHooks({ hooks: result.hooks });
+      const hook = result.hook && typeof result.hook.id === "string" ? result.hook.id : "";
+      showHookSecret(result.secret, hook);
+      setMessage("hooks", "hooks.created");
+    } catch (error) {
+      setMessage("hooks", errorKey(error, "hooks.failed"), { error: true });
+    } finally {
+      state.hookBusy = "";
+      clearBusy(button);
+    }
+  }
+
+  async function hookAction(button) {
+    const action = button.dataset.hookAction;
+    const id = button.dataset.hookId;
+    if (!action || !id || state.hookBusy) return;
+    const hook = (state.hooks || []).find((item) => item && item.id === id) || null;
+    if (action === "delete" && !window.confirm(t("hooks.confirm_delete"))) return;
+    state.hookBusy = `${action}:${id}`;
+    setBusy(button, action === "rotate" ? "hooks.rotating" : "common.running");
+    setMessage("hooks", null);
+    const path = `/api/hooks/${encodeURIComponent(id)}`;
+    try {
+      if (action === "toggle") {
+        const result = await api(`${path}/update`, {
+          method: "POST",
+          body: { enabled: !(hook && hook.enabled), name: hook ? hook.name : "" },
+        });
+        renderHooks(result);
+        setMessage("hooks", "hooks.updated");
+      } else if (action === "rotate") {
+        const result = await api(`${path}/rotate`, { method: "POST", body: {} });
+        if (Array.isArray(result.hooks)) renderHooks({ hooks: result.hooks });
+        showHookSecret(result.secret, id);
+        setMessage("hooks", "hooks.rotated");
+      } else if (action === "delete") {
+        const result = await api(`${path}/delete`, { method: "POST", body: {} });
+        renderHooks(result);
+        if (state.hookSecretFor === id) showHookSecret("", "");
+        setMessage("hooks", "hooks.deleted");
+      }
+    } catch (error) {
+      setMessage("hooks", errorKey(error, "hooks.failed"), { error: true });
+    } finally {
+      state.hookBusy = "";
+      clearBusy(button);
+    }
+  }
+
+  async function copyHookSecret() {
+    if (!state.hookSecret) return;
+    let copied = false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(state.hookSecret);
+        copied = true;
+      }
+    } catch (_) {
+      copied = false;
+    }
+    if (!copied) copied = fallbackCopy($("hook-secret-value"));
+    const button = $("hook-secret-copy");
+    const label = button ? button.querySelector(".btn-label") : null;
+    if (!label) return;
+    label.textContent = t(copied ? "common.copied" : "common.copy_failed");
+    clearTimer("copy");
+    state.timers.copy = window.setTimeout(() => {
+      label.textContent = t("common.copy");
+    }, 2000);
   }
 
   /* ----------------------------------------------------------- run display */
@@ -1269,7 +1666,9 @@
   }
 
   function triggerKey(trigger) {
-    return trigger === "scheduler" ? "automation.trigger.scheduler" : "automation.trigger.manual";
+    if (trigger === "scheduler") return "automation.trigger.scheduler";
+    if (trigger === "hook") return "automation.trigger.hook";
+    return "automation.trigger.manual";
   }
 
   function formatInterval(seconds) {
@@ -1699,6 +2098,17 @@
     if (combo && target && !combo.contains(target)) closeModelMenu();
   });
 
+  $("hook-form").addEventListener("submit", createHook);
+  $("hook-secret-copy").addEventListener("click", copyHookSecret);
+  $("hooks-list").addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target ? target.closest("button[data-hook-action]") : null;
+    if (button) hookAction(button);
+  });
+
+  $("bark-form").addEventListener("submit", saveBark);
+  $("bark-test").addEventListener("click", testBark);
+
   $("refresh-button").addEventListener("click", async () => {
     if (state.refreshing) return;
     state.refreshing = true;
@@ -1720,6 +2130,8 @@
     updateGithubButtons();
     if (state.device && !state.device.expired) updateExpiryText();
     if (state.modelMenuOpen) renderModelMenu();
+    renderChannelTexts(state.channels);
+    renderHooks({ hooks: state.hooks });
     rerenderBusyLabels();
   });
 

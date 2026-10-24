@@ -63,6 +63,8 @@
           <a href="#github-section" data-i18n="nav.github">GitHub</a>
           <a href="#repository-section" data-i18n="nav.repository">Repository</a>
           <a href="#automation-section" data-i18n="nav.automation">Automation</a>
+          <a href="#channels-section" data-i18n="nav.channels">Notifications</a>
+          <a href="#hooks-section" data-i18n="nav.hooks">Event hooks</a>
         </nav>
 
         <section class="side-card" aria-labelledby="state-heading">
@@ -265,6 +267,124 @@
             <summary data-i18n="common.details">Technical details</summary>
             <pre id="automation-output" class="output raw-output"></pre>
           </details>
+        </section>
+
+        <section id="channels-section" class="card" aria-labelledby="channels-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="channels.kicker">Delivery</p>
+              <h2 id="channels-heading" data-i18n="channels.title">Push notifications</h2>
+            </div>
+            <span id="bark-badge" class="badge" data-state="disabled" data-i18n="channels.badge.unconfigured">Not configured</span>
+          </header>
+          <p class="lede" data-i18n="channels.lead">
+            Folio only speaks outward: when maintenance finishes or fails, it pushes one
+            short message to the channel you configure here. Nothing is ever sent back.
+          </p>
+
+          <form id="bark-form" class="form" novalidate>
+            <div class="field">
+              <label class="checkbox" for="bark-enabled">
+                <input id="bark-enabled" type="checkbox">
+                <span data-i18n="channels.enabled">Send a push when a run finishes</span>
+              </label>
+            </div>
+            <div class="field">
+              <label for="bark-server" data-i18n="channels.server">Bark server</label>
+              <input id="bark-server" type="url" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://api.day.app">
+              <p class="hint" data-i18n="channels.server_hint">Leave blank for the public server. Plain HTTP is accepted only for a device on your own network.</p>
+            </div>
+            <div class="field">
+              <label for="bark-key" data-i18n="channels.device_key">Device key</label>
+              <input id="bark-key" type="password" maxlength="512" autocomplete="new-password" spellcheck="false">
+              <p id="bark-key-hint" class="hint" data-i18n="channels.device_key_hint">Stored in the private volume and never returned to the browser.</p>
+            </div>
+            <div class="field">
+              <label for="bark-group" data-i18n="channels.group">Group</label>
+              <input id="bark-group" type="text" maxlength="64" autocomplete="off" placeholder="Folio">
+            </div>
+            <div class="field">
+              <label for="bark-level" data-i18n="channels.level">Urgency</label>
+              <select id="bark-level">
+                <option value="passive" data-i18n="channels.level.passive">Passive</option>
+                <option value="active" data-i18n="channels.level.active">Active</option>
+                <option value="timeSensitive" data-i18n="channels.level.time_sensitive">Time sensitive</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="bark-language" data-i18n="channels.language">Message language</label>
+              <select id="bark-language">
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+            <div class="actions">
+              <button id="bark-save" class="btn primary" type="submit">
+                <span class="btn-label" data-i18n="channels.save">Save channel</span>
+              </button>
+              <button id="bark-test" class="btn ghost" type="button">
+                <span class="btn-label" data-i18n="channels.test">Send test</span>
+              </button>
+            </div>
+          </form>
+          <p id="channels-message" class="form-message" role="status" aria-live="polite"></p>
+
+          <section class="automation-panel" aria-labelledby="deliveries-heading">
+            <div class="section-subhead">
+              <h3 id="deliveries-heading" data-i18n="channels.deliveries">Recent deliveries</h3>
+              <span class="hint" data-i18n="channels.deliveries_hint">Newest first. Only the status is kept, never the message body.</span>
+            </div>
+            <div id="deliveries-list" class="run-list" aria-live="polite"></div>
+          </section>
+        </section>
+
+        <section id="hooks-section" class="card" aria-labelledby="hooks-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="hooks.kicker">Triggers</p>
+              <h2 id="hooks-heading" data-i18n="hooks.title">Event hooks</h2>
+            </div>
+            <span id="hooks-count" class="badge" data-state="disabled">0</span>
+          </header>
+          <p class="lede" data-i18n="hooks.lead">
+            Folio does not poll. Any external watcher — a script, a CI job, another
+            server — posts a signed event here and Folio starts one maintenance run.
+            Each hook has its own secret; unsigned, stale, or replayed requests are refused.
+          </p>
+
+          <form id="hook-form" class="form-inline" novalidate>
+            <div class="field grow">
+              <label for="hook-name" data-i18n="hooks.name">Hook name</label>
+              <input id="hook-name" type="text" maxlength="64" autocomplete="off"
+                     data-i18n-placeholder="hooks.name_placeholder" placeholder="Context repository updated">
+            </div>
+            <div class="actions">
+              <button id="hook-create" class="btn primary" type="submit">
+                <span class="btn-label" data-i18n="hooks.create">Create hook</span>
+              </button>
+            </div>
+          </form>
+          <p id="hooks-message" class="form-message" role="status" aria-live="polite"></p>
+
+          <section id="hook-secret-panel" class="hook-secret" aria-labelledby="hook-secret-heading" hidden>
+            <h3 id="hook-secret-heading" data-i18n="hooks.secret_title">Signing secret</h3>
+            <p class="hint" data-i18n="hooks.secret_once">Copy it now: it is shown once and never returned again.</p>
+            <div class="hook-secret-row">
+              <pre id="hook-secret-value" class="hook-secret-value"></pre>
+              <button id="hook-secret-copy" class="btn ghost small" type="button">
+                <span class="btn-label" data-i18n="common.copy">Copy</span>
+              </button>
+            </div>
+            <p class="hint" data-i18n="hooks.secret_hint">Sign the timestamp, a dot, and the exact raw body with HMAC-SHA256 and this secret; send the hex digest as X-Folio-Signature.</p>
+          </section>
+
+          <section class="automation-panel" aria-labelledby="hooks-list-heading">
+            <div class="section-subhead">
+              <h3 id="hooks-list-heading" data-i18n="hooks.list">Configured hooks</h3>
+              <span class="hint" data-i18n="hooks.list_hint">Disable a hook to refuse its calls without deleting it.</span>
+            </div>
+            <div id="hooks-list" class="run-list" aria-live="polite"></div>
+          </section>
         </section>
       </div>
     </div>

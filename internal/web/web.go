@@ -31,9 +31,17 @@ import (
 
 const (
 	maxBodyBytes     = 256 * 1024
-	maxResponseBytes = 512 * 1024
-	maxPathBytes     = 2048
-	maxStringBytes   = 256 * 1024
+	maxHookBodyBytes = 16 * 1024
+
+	// Inbound hook headers. The signature covers the timestamp and the exact
+	// raw body, so a captured request cannot be replayed after the skew window
+	// and a modified body cannot be re-signed without the secret.
+	hookTimestampHeader = "X-Folio-Timestamp"
+	hookEventIDHeader   = "X-Folio-Event-Id"
+	hookSignatureHeader = "X-Folio-Signature"
+	maxResponseBytes    = 512 * 1024
+	maxPathBytes        = 2048
+	maxStringBytes      = 256 * 1024
 
 	sessionTTL       = 30 * time.Minute
 	jobTTL           = 24 * time.Hour
@@ -55,10 +63,11 @@ var (
 	safeJobID          = regexp.MustCompile(`^[0-9a-f-]{36}$`)
 	safePreviewID      = regexp.MustCompile(`^[A-Za-z0-9_-]{20,100}$`)
 	safeReportID       = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
-	sensitiveKey       = regexp.MustCompile(`(?i)(pass(?:word)?|token|secret|credential|authorization|private[_ -]?key|device[_ -]?code|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret)`)
+	sensitiveKey       = regexp.MustCompile(`(?i)(pass(?:word)?|token|secret|credential|authorization|private[_ -]?key|device[_ -]?(?:code|key)|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret)`)
 	credentialURL      = regexp.MustCompile(`(?i)(https?://)([^/\s@]+)@`)
 	bearerValue        = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`)
-	keyValueSecret     = regexp.MustCompile(`(?i)((?:access[_ -]?token|refresh[_ -]?token|device[_ -]?code|client[_ -]?secret|token|secret|credential|private[_ -]?key|password|authorization)\s*[:=]\s*)[^\s,;]+`)
+	inboundHookRE      = regexp.MustCompile(`^/api/hooks/[a-z0-9][a-z0-9-]{0,47}$`)
+	keyValueSecret     = regexp.MustCompile(`(?i)((?:access[_ -]?token|refresh[_ -]?token|device[_ -]?(?:code|key)|api[_ -]?key|client[_ -]?secret|token|secret|credential|private[_ -]?key|password|authorization)\s*[:=]\s*)[^\s,;]+`)
 )
 
 // Backend is the store contract consumed by the HTTP adapter.
@@ -76,6 +85,26 @@ type Backend interface {
 	AutomationRun(runID string) (map[string]any, error)
 	ModelCatalog() map[string]any
 	SchedulerTick() (map[string]any, error)
+}
+
+// ChannelBackend is the optional outbound-notification contract. It is
+// separate from Backend so a backend that has no channels still satisfies the
+// core adapter; the handlers answer 503 instead of failing to compile.
+type ChannelBackend interface {
+	ChannelState() (map[string]any, error)
+	SaveBarkChannel(payload map[string]any) (map[string]any, error)
+	TestBarkChannel(override map[string]any) (map[string]any, error)
+}
+
+// HookBackend is the optional inbound-trigger contract. Like ChannelBackend it
+// is separate from Backend so the core adapter stays small.
+type HookBackend interface {
+	ListHooks() (map[string]any, error)
+	CreateHook(name, action string) (map[string]any, error)
+	UpdateHook(id string, enabled bool, name string) (map[string]any, error)
+	RotateHookSecret(id string) (map[string]any, error)
+	DeleteHook(id string) (map[string]any, error)
+	AcceptHook(id string, timestamp int64, eventID, signature string, body []byte) (string, string)
 }
 
 // Options configures the local web boundary.
@@ -849,8 +878,19 @@ func minInt(a, b int) int {
 	return b
 }
 
+// reveal marks a response whose fields are intentionally exempt from field-name
+// redaction. Only one-time credentials generated in this process use it: a
+// signing secret has to reach the browser once, and it is never read back from
+// the store afterwards.
+type reveal struct{ value any }
+
 func jsonBytes(value any) ([]byte, error) {
-	encoded, err := json.Marshal(safeValue(value, "", 0))
+	if item, ok := value.(reveal); ok {
+		value = item.value
+	} else {
+		value = safeValue(value, "", 0)
+	}
+	encoded, err := json.Marshal(value)
 	if err != nil || len(encoded) > maxResponseBytes {
 		return nil, errors.New("response too large")
 	}
@@ -859,6 +899,165 @@ func jsonBytes(value any) ([]byte, error) {
 
 func (s *Server) startJob(name string, callback func() (map[string]any, error)) (string, bool) {
 	return s.jobs.start(name, callback)
+}
+
+// channelBackend reports whether the configured store exposes channels.
+func (s *Server) channelBackend() (ChannelBackend, bool) {
+	backend, ok := s.store.(ChannelBackend)
+	return backend, ok
+}
+
+// channelErrorCode maps a backend channel error to a stable client code.
+// Anything unrecognized becomes a generic failure so a new backend error
+// cannot leak internal wording into the UI.
+func channelErrorCode(err error) string {
+	if err == nil {
+		return "operation_failed"
+	}
+	message := err.Error()
+	switch message {
+	case "device_key_required", "channel_not_configured", "invalid_channel", "invalid_level", "invalid_language":
+		return message
+	default:
+		return "operation_failed"
+	}
+}
+
+// hookBackend reports whether the configured store exposes inbound hooks.
+func (s *Server) hookBackend() (HookBackend, bool) {
+	backend, ok := s.store.(HookBackend)
+	return backend, ok
+}
+
+// inboundHookPath matches exactly one hook id: management verbs live one
+// segment deeper and still require a browser session.
+func inboundHookPath(path string) bool { return inboundHookRE.MatchString(path) }
+
+// hookErrorCode maps store hook errors to stable client codes.
+func hookErrorCode(err error) string {
+	if err == nil {
+		return "hook_invalid"
+	}
+	switch err.Error() {
+	case "invalid_hook_id", "invalid_hook_name", "invalid_hook_action", "hook_not_found", "hook_limit_reached",
+		"hook_secret_unavailable":
+		return err.Error()
+	default:
+		return "hook_invalid"
+	}
+}
+
+// hookEvent accepts one signed inbound event. The body is read raw because the
+// signature covers the exact bytes, not a re-encoding of a parsed object.
+func (s *Server) hookEvent(w http.ResponseWriter, r *http.Request) {
+	backend, ok := s.hookBackend()
+	if !ok {
+		s.writeError(w, http.StatusServiceUnavailable, "hook_unavailable")
+		return
+	}
+	if r.ContentLength > maxHookBodyBytes {
+		s.writeError(w, http.StatusRequestEntityTooLarge, "hook_body_too_large")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxHookBodyBytes+1))
+	if err != nil || len(body) > maxHookBodyBytes {
+		s.writeError(w, http.StatusRequestEntityTooLarge, "hook_body_too_large")
+		return
+	}
+	timestamp, err := strconv.ParseInt(strings.TrimSpace(r.Header.Get(hookTimestampHeader)), 10, 64)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "hook_stale_timestamp")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/hooks/")
+	action, code := backend.AcceptHook(id, timestamp, strings.TrimSpace(r.Header.Get(hookEventIDHeader)), r.Header.Get(hookSignatureHeader), body)
+	switch code {
+	case "ok":
+	case "duplicate_event":
+		s.writeJSON(w, http.StatusOK, map[string]any{"accepted": true, "duplicate": true, "hook": id}, nil)
+		return
+	case "unknown_hook":
+		s.writeError(w, http.StatusNotFound, "hook_unknown")
+		return
+	case "hook_disabled":
+		s.writeError(w, http.StatusForbidden, "hook_disabled")
+		return
+	case "stale_timestamp":
+		s.writeError(w, http.StatusUnauthorized, "hook_stale_timestamp")
+		return
+	case "invalid_signature":
+		s.writeError(w, http.StatusUnauthorized, "hook_invalid_signature")
+		return
+	case "invalid_event_id":
+		s.writeError(w, http.StatusBadRequest, "hook_invalid_event")
+		return
+	case "rate_limited":
+		s.writeError(w, http.StatusTooManyRequests, "hook_rate_limited")
+		return
+	default:
+		s.writeError(w, http.StatusServiceUnavailable, "hook_unavailable")
+		return
+	}
+	if action != "maintenance" {
+		// A stored action outside the known set is a configuration error; refuse
+		// rather than guess what the caller meant.
+		s.writeError(w, http.StatusServiceUnavailable, "hook_action_unsupported")
+		return
+	}
+	jobID, started := s.startJob("automation:codex", func() (map[string]any, error) {
+		return s.store.RunAutomation("hook", "", "codex")
+	})
+	if jobID == "" {
+		s.writeError(w, http.StatusServiceUnavailable, "job_unavailable")
+		return
+	}
+	s.writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true, "hook": id, "action": action,
+		"job_id": jobID, "started": started, "status": jobStatus(started),
+	}, nil)
+}
+
+// hookAdmin handles the session-authenticated management verbs under
+// /api/hooks/{id}/. It reports whether it handled the path.
+func (s *Server) hookAdmin(w http.ResponseWriter, r *http.Request, payload map[string]any) bool {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/hooks/"), "/")
+	if len(parts) != 2 {
+		return false
+	}
+	id, verb := parts[0], parts[1]
+	backend, ok := s.hookBackend()
+	if !ok {
+		s.writeError(w, http.StatusServiceUnavailable, "hook_unavailable")
+		return true
+	}
+	var (
+		value map[string]any
+		err   error
+	)
+	switch verb {
+	case "update":
+		enabled, _ := payload["enabled"].(bool)
+		name, _ := payload["name"].(string)
+		value, err = backend.UpdateHook(id, enabled, name)
+	case "rotate":
+		value, err = backend.RotateHookSecret(id)
+	case "delete":
+		value, err = backend.DeleteHook(id)
+	default:
+		return false
+	}
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "hook_not_found" {
+			status = http.StatusNotFound
+		}
+		s.writeError(w, status, hookErrorCode(err))
+		return true
+	}
+	// The rotate response carries the new secret exactly once, so it bypasses
+	// the field redaction that would otherwise strip it.
+	s.writeJSON(w, http.StatusOK, reveal{value}, nil)
+	return true
 }
 
 func (s *Server) originAllowed(r *http.Request) bool {
@@ -1212,6 +1411,30 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.writeJSON(w, http.StatusOK, clean, nil)
+	case "/api/hooks":
+		backend, ok := s.hookBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "hook_unavailable")
+			return
+		}
+		value, err := backend.ListHooks()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "operation_failed")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	case "/api/channels":
+		backend, ok := s.channelBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "operation_failed")
+			return
+		}
+		value, err := backend.ChannelState()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "operation_failed")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/report":
 		id, started := s.startJob(maintenanceJobName("codex", "report"), func() (map[string]any, error) { return s.store.RunMaintenance("report", "", "codex") })
 		if id == "" {
@@ -1232,6 +1455,12 @@ func jobStatus(started bool) string {
 }
 
 func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
+	// Inbound hook events are authenticated by their signature, not a session,
+	// so they are dispatched before the browser payload/session handling.
+	if inboundHookPath(r.URL.Path) {
+		s.hookEvent(w, r)
+		return
+	}
 	payload, err := requestBody(w, r)
 	if err != nil {
 		status := http.StatusBadRequest
@@ -1247,6 +1476,9 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	token, _, ok := s.requireSession(w, r)
 	if !ok {
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/hooks/") && s.hookAdmin(w, r, payload) {
 		return
 	}
 	switch r.URL.Path {
@@ -1326,6 +1558,45 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "started": started, "mode": mode, "runner": runner, "status": jobStatus(started)}, nil)
+	case "/api/hooks":
+		backend, ok := s.hookBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "hook_unavailable")
+			return
+		}
+		name, _ := payload["name"].(string)
+		action, _ := payload["action"].(string)
+		value, callErr := backend.CreateHook(name, action)
+		if callErr != nil {
+			s.writeError(w, http.StatusBadRequest, hookErrorCode(callErr))
+			return
+		}
+		// The response carries the signing secret exactly once.
+		s.writeJSON(w, http.StatusOK, reveal{value}, nil)
+	case "/api/channels/bark":
+		backend, ok := s.channelBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "operation_failed")
+			return
+		}
+		value, callErr := backend.SaveBarkChannel(payload)
+		if callErr != nil {
+			s.writeError(w, http.StatusBadRequest, channelErrorCode(callErr))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	case "/api/channels/bark/test":
+		backend, ok := s.channelBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "operation_failed")
+			return
+		}
+		value, callErr := backend.TestBarkChannel(payload)
+		if callErr != nil {
+			s.writeError(w, http.StatusBadRequest, channelErrorCode(callErr))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	default:
 		s.writeError(w, http.StatusNotFound, "not_found")
 	}
@@ -1350,7 +1621,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusForbidden, "origin_forbidden")
 		return
 	}
-	if r.Method == http.MethodPost && !s.originAllowed(r) {
+	// Inbound hook callers are scripts, not browsers: they carry no Origin
+	// header. They authenticate with an HMAC over the raw body, which a
+	// browser cannot produce cross-site, so the origin check does not apply.
+	if r.Method == http.MethodPost && !inboundHookPath(r.URL.Path) && !s.originAllowed(r) {
 		s.writeError(w, http.StatusForbidden, "origin_forbidden")
 		return
 	}

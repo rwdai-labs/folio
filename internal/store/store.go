@@ -69,6 +69,7 @@ type Store struct {
 	reportsDir      string
 	codexDir        string
 	dshDir          string
+	secretsDir      string
 	ghConfigDir     string
 	githubAPIBase   string
 	homeDir         string
@@ -78,6 +79,25 @@ type Store struct {
 	lockPath        string
 
 	threadMu sync.Mutex
+
+	// Channel configuration and delivery records are read while a run holds
+	// the runtime lock and written by the Web adapter, so they use their own
+	// mutexes instead of the global one.
+	notifyMu        sync.Mutex
+	channelSettings *channelSettings
+	notifyLast      map[string]time.Time
+	deliveryMu      sync.Mutex
+	channelsPath    string
+	deliveriesPath  string
+
+	// Inbound hook state is deliberately separate from the runtime lock too:
+	// a hook may arrive while a run holds that lock.
+	hookMu     sync.Mutex
+	hooksCache *hooksFile
+	hookReplay *hookReplayFile
+	hookCalls  map[string][]time.Time
+	hooksPath  string
+	replayPath string
 
 	modelCatalogMu   sync.Mutex
 	modelCatalogAt   time.Time
@@ -120,6 +140,7 @@ func New(dataDir, toolRoot string) (*Store, error) {
 		reportsDir:         filepath.Join(data, "runtime", "reports"),
 		codexDir:           filepath.Join(data, "codex"),
 		dshDir:             filepath.Join(data, "dsh"),
+		secretsDir:         filepath.Join(data, "secrets"),
 		ghConfigDir:        filepath.Join(data, "secrets", "gh"),
 		githubAPIBase:      githubAPIURL,
 		homeDir:            filepath.Join(data, "home"),
@@ -127,6 +148,12 @@ func New(dataDir, toolRoot string) (*Store, error) {
 		authPendingPath:    filepath.Join(data, "runtime", "github-device.json"),
 		statePath:          filepath.Join(data, "state.json"),
 		lockPath:           filepath.Join(data, "store.lock"),
+		channelsPath:       filepath.Join(data, "secrets", "channels.json"),
+		deliveriesPath:     filepath.Join(data, "runtime", "notifications.jsonl"),
+		hooksPath:          filepath.Join(data, "secrets", "hooks.json"),
+		replayPath:         filepath.Join(data, "runtime", "hook-replay.json"),
+		notifyLast:         map[string]time.Time{},
+		hookCalls:          map[string][]time.Time{},
 		authDeviceInfo:     map[string]string{},
 		authDeviceInterval: 5,
 	}
@@ -258,7 +285,7 @@ func isWithin(candidate, root string) bool {
 func (s *Store) ensureDirs() error {
 	paths := []string{
 		s.dataDir, s.runtimeDir, s.runsDir, s.reviewsDir, s.pendingDir, s.reportsDir,
-		s.codexDir, s.dshDir, s.ghConfigDir, s.homeDir, s.hooksDir,
+		s.codexDir, s.dshDir, s.secretsDir, s.ghConfigDir, s.homeDir, s.hooksDir,
 	}
 	for _, dir := range paths {
 		if err := ensurePrivateDir(dir); err != nil {

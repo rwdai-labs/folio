@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,10 +24,11 @@ type testBackend struct {
 		target   string
 		content  string
 	}
-	applied    []struct{ reviewID, message string }
-	automation []struct{ trigger, runner, model string }
-	syncRun    chan struct{}
-	syncDone   chan struct{}
+	applied      []struct{ reviewID, message string }
+	automation   []struct{ trigger, runner, model string }
+	syncRun      chan struct{}
+	syncDone     chan struct{}
+	channelSaves []map[string]any
 }
 
 func (b *testBackend) State() (map[string]any, error) {
@@ -96,6 +98,70 @@ func (b *testBackend) ModelCatalog() map[string]any {
 		"dsh":   []any{map[string]any{"id": "example-large", "label": "Example Large", "provider": "example-route"}},
 	}
 }
+func (b *testBackend) ChannelState() (map[string]any, error) {
+	return map[string]any{
+		"language": "en",
+		"bark": map[string]any{
+			"enabled": false, "configured": false,
+			"server": "https://api.day.app", "level": "active",
+		},
+		"deliveries": []any{},
+	}, nil
+}
+
+func (b *testBackend) SaveBarkChannel(payload map[string]any) (map[string]any, error) {
+	if key, _ := payload["device_key"].(string); key == "" {
+		return nil, errors.New("device_key_required")
+	}
+	b.mu.Lock()
+	b.channelSaves = append(b.channelSaves, payload)
+	b.mu.Unlock()
+	return map[string]any{
+		"language": "en",
+		"bark": map[string]any{
+			"enabled": true, "configured": true,
+			"server": "https://api.day.app", "level": "active",
+		},
+		"deliveries": []any{map[string]any{"kind": "test", "channel": "bark", "status": "delivered"}},
+	}, nil
+}
+
+func (b *testBackend) TestBarkChannel(override map[string]any) (map[string]any, error) {
+	return map[string]any{
+		"receipt": map[string]any{"channel": "bark", "status": "delivered", "at": "2026-10-23T00:00:00Z"},
+	}, nil
+}
+
+func (b *testBackend) ListHooks() (map[string]any, error) {
+	return map[string]any{"hooks": []any{}, "actions": []any{"maintenance"}, "max_hooks": 16}, nil
+}
+
+func (b *testBackend) CreateHook(name, action string) (map[string]any, error) {
+	return map[string]any{
+		"hook":   map[string]any{"id": "watch", "name": name, "action": "maintenance", "enabled": true},
+		"secret": "test-secret",
+	}, nil
+}
+
+func (b *testBackend) UpdateHook(id string, enabled bool, name string) (map[string]any, error) {
+	return map[string]any{"hooks": []any{}}, nil
+}
+
+func (b *testBackend) RotateHookSecret(id string) (map[string]any, error) {
+	return map[string]any{"secret": "rotated-secret"}, nil
+}
+
+func (b *testBackend) DeleteHook(id string) (map[string]any, error) {
+	return map[string]any{"hooks": []any{}}, nil
+}
+
+func (b *testBackend) AcceptHook(id string, timestamp int64, eventID, signature string, body []byte) (string, string) {
+	if signature != "good" {
+		return "", "invalid_signature"
+	}
+	return "maintenance", "ok"
+}
+
 func (b *testBackend) SchedulerTick() (map[string]any, error) {
 	return map[string]any{"status": "skipped"}, nil
 }
@@ -568,5 +634,124 @@ func TestAutomationEndpointsExposeAuditAndAcceptRun(t *testing.T) {
 	status, _, result := client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "other"}, origin)
 	if status != http.StatusBadRequest || result["error"] != "invalid_runner" {
 		t.Fatalf("bad runner status=%d result=%v", status, result)
+	}
+}
+
+func TestChannelEndpointsMaskDeviceKeyAndRequireSession(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/channels", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated channels status=%d", status)
+	}
+	client.login(t, password)
+
+	status, _, state := client.request(t, http.MethodGet, "/api/channels", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("channels status=%d result=%v", status, state)
+	}
+	bark, ok := state["bark"].(map[string]any)
+	if !ok || bark["configured"] != false {
+		t.Fatalf("channel state=%v", state)
+	}
+	if _, ok := bark["device_key"]; ok {
+		t.Fatalf("channel state exposes a device key: %v", bark)
+	}
+
+	status, _, result := client.request(t, http.MethodPost, "/api/channels/bark", map[string]any{"enabled": true}, server.URL)
+	if status != http.StatusBadRequest || result["error"] != "device_key_required" {
+		t.Fatalf("missing key status=%d result=%v", status, result)
+	}
+
+	status, _, saved := client.request(t, http.MethodPost, "/api/channels/bark", map[string]any{
+		"enabled": true, "server": "https://api.day.app", "device_key": "device-key-alpha", "level": "active",
+	}, server.URL)
+	if status != http.StatusOK {
+		t.Fatalf("save status=%d result=%v", status, saved)
+	}
+	raw, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "device-key-alpha") {
+		t.Fatalf("saved response leaked the device key: %s", raw)
+	}
+	if len(backend.channelSaves) != 1 {
+		t.Fatalf("channel saves=%v", backend.channelSaves)
+	}
+
+	status, _, tested := client.request(t, http.MethodPost, "/api/channels/bark/test", map[string]any{}, server.URL)
+	if status != http.StatusOK {
+		t.Fatalf("test status=%d result=%v", status, tested)
+	}
+	receipt, ok := tested["receipt"].(map[string]any)
+	if !ok || receipt["status"] != "delivered" {
+		t.Fatalf("receipt=%v", tested["receipt"])
+	}
+}
+
+func TestHookEndpointsAcceptSignedEventsWithoutOrigin(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/hooks", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated hooks status=%d", status)
+	}
+	client.login(t, password)
+
+	status, _, listing := client.request(t, http.MethodGet, "/api/hooks", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("hooks status=%d result=%v", status, listing)
+	}
+	status, _, created := client.request(t, http.MethodPost, "/api/hooks", map[string]any{"name": "Watch context"}, server.URL)
+	if status != http.StatusOK || created["secret"] != "test-secret" {
+		t.Fatalf("create hook status=%d result=%v", status, created)
+	}
+
+	// Inbound callers are scripts: no cookie, no CSRF token, no Origin header.
+	post := func(signature string) (int, map[string]any) {
+		request, err := http.NewRequest(http.MethodPost, server.URL+"/api/hooks/watch", strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = strings.TrimPrefix(server.URL, "http://")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Folio-Timestamp", "1761000000")
+		request.Header.Set("X-Folio-Event-Id", "event-1")
+		request.Header.Set("X-Folio-Signature", signature)
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var result map[string]any
+		_ = json.NewDecoder(response.Body).Decode(&result)
+		return response.StatusCode, result
+	}
+
+	status, result := post("bad")
+	if status != http.StatusUnauthorized || result["error"] != "hook_invalid_signature" {
+		t.Fatalf("bad signature status=%d result=%v", status, result)
+	}
+
+	status, accepted := post("good")
+	if status != http.StatusAccepted {
+		t.Fatalf("accepted status=%d result=%v", status, accepted)
+	}
+	if accepted["action"] != "maintenance" || accepted["job_id"] == nil {
+		t.Fatalf("accepted result=%v", accepted)
+	}
+	job := waitJobForTest(t, client, accepted["job_id"].(string))
+	if job["name"] != "automation:codex" {
+		t.Fatalf("job name=%v", job["name"])
+	}
+	if len(backend.automation) != 1 || backend.automation[0].trigger != "hook" {
+		t.Fatalf("automation calls=%v", backend.automation)
 	}
 }

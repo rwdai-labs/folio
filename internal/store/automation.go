@@ -66,8 +66,10 @@ type plannedAutoEdit struct {
 // commit/push maintenance run. Every outcome, including skips and failures,
 // is recorded in the private runtime for later inspection.
 func (s *Store) RunAutomation(trigger, runner, model string) (map[string]any, error) {
-	if trigger != "manual" && trigger != "scheduler" {
-		return nil, errStore("automation trigger must be manual or scheduler")
+	switch trigger {
+	case "manual", "scheduler", "hook":
+	default:
+		return nil, errStore("automation trigger must be manual, scheduler, or hook")
 	}
 	normalized, err := normalizeRunner(runner)
 	if err != nil {
@@ -126,6 +128,8 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 		if err := s.recordSchedulerRun(run); err != nil {
 			return nil, err
 		}
+		// Best effort and asynchronous: a push never changes the run outcome.
+		s.notifyRun(run)
 		return run, nil
 	}
 
