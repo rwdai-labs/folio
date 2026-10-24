@@ -22,7 +22,7 @@ func signHook(secret string, timestamp int64, body []byte) string {
 
 func createTestHook(t *testing.T, store *Store, name string) (string, string) {
 	t.Helper()
-	result, err := store.CreateHook(name, "")
+	result, err := store.CreateHook(name, "", "")
 	if err != nil {
 		t.Fatalf("create hook: %v", err)
 	}
@@ -85,13 +85,13 @@ func TestCreateHookGeneratesUniqueIDs(t *testing.T) {
 
 func TestCreateHookValidatesNameAndAction(t *testing.T) {
 	store := newTestStore(t)
-	if _, err := store.CreateHook("   ", ""); err == nil {
+	if _, err := store.CreateHook("   ", "", ""); err == nil {
 		t.Fatal("blank name should fail")
 	}
-	if _, err := store.CreateHook("x", "delete_everything"); err == nil || err.Error() != "invalid_hook_action" {
+	if _, err := store.CreateHook("x", "delete_everything", ""); err == nil || err.Error() != "invalid_hook_action" {
 		t.Fatalf("err=%v want invalid_hook_action", err)
 	}
-	if _, err := store.CreateHook(strings.Repeat("n", 200), ""); err == nil {
+	if _, err := store.CreateHook(strings.Repeat("n", 200), "", ""); err == nil {
 		t.Fatal("overlong name should fail")
 	}
 }
@@ -102,9 +102,9 @@ func TestAcceptHookVerifiesSignatureAndReplay(t *testing.T) {
 	body := []byte(`{}`)
 	now := time.Now().Unix()
 
-	action, code := store.AcceptHook(id, now, "event-1", signHook(secret, now, body), body)
-	if code != "ok" || action != "maintenance" {
-		t.Fatalf("code=%q action=%q", code, action)
+	event, code := store.AcceptHook(id, now, "event-1", signHook(secret, now, body), body)
+	if code != "ok" || event["action"] != "maintenance" || event["priority"] != "P2" {
+		t.Fatalf("code=%q event=%v", code, event)
 	}
 	// The same event id must not start a second run.
 	if _, code := store.AcceptHook(id, now, "event-1", signHook(secret, now, body), body); code != "duplicate_event" {
@@ -139,7 +139,7 @@ func TestAcceptHookRejectsStaleTimestamp(t *testing.T) {
 func TestAcceptHookHonorsEnabledState(t *testing.T) {
 	store := newTestStore(t)
 	id, secret := createTestHook(t, store, "watch")
-	if _, err := store.UpdateHook(id, false, ""); err != nil {
+	if _, err := store.UpdateHook(id, false, "", ""); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	now := time.Now().Unix()

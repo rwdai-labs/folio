@@ -143,6 +143,31 @@ Three independent axes that people conflate:
 | P2 normal | daily value (maintenance, digest) | until deadline | cheapest trusted, prefer off-peak |
 | P3 batch | no deadline (consolidation, replay) | yes | cheapest acceptable, **off-peak only** |
 
+### Task queue (implemented)
+
+`internal/store/tasks.go` separates **intent** from **attempt**:
+
+- `task` — durable intent: kind, priority, source, status, deferral time.
+- `run` — one attempt: the immutable record `RunAutomation` already produces.
+
+Events no longer start runs. A hook creates a task; the dispatcher starts at
+most one due task per tick, highest priority first.
+
+| Concern | Rule |
+| --- | --- |
+| Priority | P0/P1 start immediately; P2/P3 defer to the off-peak window. |
+| Window | `00:30–07:30` local by default, from `policies.json`; may cross midnight. |
+| Pause | Global switch and per-task hold. Pausing keeps the queue; it never drops work. |
+| Run now | Owner override clears the deferral and re-arms a finished task. |
+| Dedupe | An active task with the same kind and source is returned, not duplicated. |
+| Serialization | One task at a time, deliberately: checkout, commit, and audit assume a single writer. |
+| Crash | A task left `running` at startup becomes `failed/interrupted`, never a phantom. |
+| Unknown kind | Fails with `unsupported_kind` instead of retrying forever. |
+
+The window is the **owner's** schedule, not a provider price window. "When I am
+asleep" is a human fact expressed in local time; provider peak hours belong to
+the price table and will be a second, independent gate once that exists.
+
 ### Provider profile
 
 ```yaml
@@ -297,9 +322,13 @@ locks.
 4. **Usage capture and dashboard** (implemented): runner-reported per-run
    usage, `/api/usage`, Web UI over 7/30/90 days. Cost waits for a maintained
    price table.
-5. **GitHub actions**: issue triage and PR review draft, approval-gated.
-6. **Priority routing + deferral**: policy data, P0–P3, peak windows.
-7. **More channels**: DingTalk → Feishu → WeCom.
+5. **Task queue** (implemented): durable tasks, priorities, off-peak window,
+   global and per-task pause, run-now, single-task dispatcher.
+6. **GitHub actions**: issue triage and PR review draft, approval-gated. This
+   is also the first task kind with a payload, so the projection rule in §9
+   must be settled first.
+7. **Price-aware routing**: provider price data, peak windows, trust rules.
+8. **More channels**: DingTalk → Feishu → WeCom.
 
 Each slice is independently useful and testable; none requires the next.
 

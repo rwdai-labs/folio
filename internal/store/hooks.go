@@ -53,6 +53,7 @@ type hookRecord struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Action       string `json:"action"`
+	Priority     string `json:"priority"`
 	Enabled      bool   `json:"enabled"`
 	Secret       string `json:"secret"`
 	CreatedAt    string `json:"created_at"`
@@ -83,7 +84,7 @@ func (s *Store) ListHooks() (map[string]any, error) {
 }
 
 // CreateHook adds an enabled hook and returns its secret exactly once.
-func (s *Store) CreateHook(name, action string) (map[string]any, error) {
+func (s *Store) CreateHook(name, action, priority string) (map[string]any, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || len([]rune(name)) > maxHookNameRunes || strings.ContainsAny(name, "\r\n\t") {
 		return nil, errStore("invalid_hook_name")
@@ -94,6 +95,12 @@ func (s *Store) CreateHook(name, action string) (map[string]any, error) {
 	}
 	if action != hookActionMaintenance {
 		return nil, errStore("invalid_hook_action")
+	}
+	if priority == "" {
+		priority = "P2"
+	}
+	if !validPriority(priority) {
+		return nil, errStore("invalid_hook_priority")
 	}
 
 	s.hookMu.Lock()
@@ -114,6 +121,7 @@ func (s *Store) CreateHook(name, action string) (map[string]any, error) {
 		ID:        s.uniqueHookIDLocked(file, name),
 		Name:      name,
 		Action:    action,
+		Priority:  priority,
 		Enabled:   true,
 		Secret:    secret,
 		CreatedAt: now,
@@ -130,7 +138,7 @@ func (s *Store) CreateHook(name, action string) (map[string]any, error) {
 }
 
 // UpdateHook enables, disables, or renames one hook.
-func (s *Store) UpdateHook(id string, enabled bool, name string) (map[string]any, error) {
+func (s *Store) UpdateHook(id string, enabled bool, name, priority string) (map[string]any, error) {
 	if !hookIDRE.MatchString(id) {
 		return nil, errStore("invalid_hook_id")
 	}
@@ -149,6 +157,12 @@ func (s *Store) UpdateHook(id string, enabled bool, name string) (map[string]any
 			return nil, errStore("invalid_hook_name")
 		}
 		file.Hooks[index].Name = trimmed
+	}
+	if priority != "" {
+		if !validPriority(priority) {
+			return nil, errStore("invalid_hook_priority")
+		}
+		file.Hooks[index].Priority = priority
 	}
 	file.Hooks[index].Enabled = enabled
 	file.Hooks[index].UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -215,61 +229,61 @@ func (s *Store) DeleteHook(id string) (map[string]any, error) {
 // code is stable and maps directly to an HTTP status. Verification happens
 // before any state changes so an unauthenticated caller cannot consume replay
 // entries or rate budget.
-func (s *Store) AcceptHook(id string, timestamp int64, eventID, signature string, body []byte) (string, string) {
+func (s *Store) AcceptHook(id string, timestamp int64, eventID, signature string, body []byte) (map[string]any, string) {
 	if !hookIDRE.MatchString(id) {
-		return "", "unknown_hook"
+		return nil, "unknown_hook"
 	}
 	s.hookMu.Lock()
 	defer s.hookMu.Unlock()
 	file, err := s.loadHooksLocked()
 	if err != nil {
-		return "", "unavailable"
+		return nil, "unavailable"
 	}
 	index := hookIndex(file, id)
 	if index < 0 {
-		return "", "unknown_hook"
+		return nil, "unknown_hook"
 	}
 	record := file.Hooks[index]
 	if !record.Enabled {
-		return "", "hook_disabled"
+		return nil, "hook_disabled"
 	}
 	now := time.Now()
 	requested := time.Unix(timestamp, 0)
 	if timestamp <= 0 || now.Sub(requested) > hookTimestampSkew || requested.Sub(now) > hookTimestampSkew {
-		return "", "stale_timestamp"
+		return nil, "stale_timestamp"
 	}
 	if !hookEventRE.MatchString(eventID) {
-		return "", "invalid_event_id"
+		return nil, "invalid_event_id"
 	}
 	signature = strings.TrimPrefix(strings.TrimSpace(signature), "sha256=")
 	if !hookHexRE.MatchString(strings.ToLower(signature)) {
-		return "", "invalid_signature"
+		return nil, "invalid_signature"
 	}
 	provided, err := hex.DecodeString(strings.ToLower(signature))
 	if err != nil {
-		return "", "invalid_signature"
+		return nil, "invalid_signature"
 	}
 	if !hmac.Equal(provided, hookSignature(record.Secret, timestamp, body)) {
-		return "", "invalid_signature"
+		return nil, "invalid_signature"
 	}
 	replay, err := s.loadReplayLocked()
 	if err != nil {
-		return "", "unavailable"
+		return nil, "unavailable"
 	}
 	key := id + ":" + eventID
 	if _, seen := replay.Seen[key]; seen {
 		s.recordHookStatusLocked(file, index, "duplicate", now, false)
-		return "", "duplicate_event"
+		return nil, "duplicate_event"
 	}
 	if !s.allowHookCall(id, now) {
 		s.recordHookStatusLocked(file, index, "rate_limited", now, false)
-		return "", "rate_limited"
+		return nil, "rate_limited"
 	}
 	replay.Seen[key] = now.UTC().Format(time.RFC3339Nano)
 	s.pruneReplayLocked(replay, now)
 	_ = s.saveReplayLocked(replay)
 	s.recordHookStatusLocked(file, index, "accepted", now, true)
-	return record.Action, "ok"
+	return map[string]any{"name": record.Name, "action": record.Action, "priority": record.Priority}, "ok"
 }
 
 func (s *Store) recordHookStatusLocked(file *hooksFile, index int, status string, now time.Time, count bool) {
@@ -364,6 +378,7 @@ func publicHook(record hookRecord) map[string]any {
 		"id":             record.ID,
 		"name":           record.Name,
 		"action":         record.Action,
+		"priority":       record.Priority,
 		"enabled":        record.Enabled,
 		"created_at":     record.CreatedAt,
 		"updated_at":     record.UpdatedAt,
@@ -409,9 +424,17 @@ func (s *Store) loadHooksLocked() (*hooksFile, error) {
 	if err := json.Unmarshal(raw, file); err != nil {
 		return nil, errStore("hook settings are invalid")
 	}
-	for _, record := range file.Hooks {
+	for index := range file.Hooks {
+		record := &file.Hooks[index]
 		if !hookIDRE.MatchString(record.ID) || record.Secret == "" {
 			return nil, errStore("hook settings are invalid")
+		}
+		// Hooks created before priorities existed default to deferred work.
+		if record.Priority == "" {
+			record.Priority = "P2"
+		}
+		if !validPriority(record.Priority) {
+			record.Priority = "P2"
 		}
 	}
 	s.hooksCache = file

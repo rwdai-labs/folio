@@ -75,6 +75,14 @@ hook are recorded with `trigger: hook`. Hook callers pass the same host
 allowlist as the browser UI, so `TRUSTED_HOSTS` must include the address the
 watcher connects to (for example `127.0.0.1` when it runs on the same host).
 
+Events create tasks, not runs. A task is durable intent with a priority and a
+status; a run is one attempt at it. P0 and P1 start immediately, P2 and P3 wait
+for the off-peak window from `policies.json` (default `00:30–07:30` local), and
+the dispatcher starts one task at a time so the checkout and commit stay
+single-writer. The owner can pause the whole queue, hold one task, run it now,
+or cancel it; pausing never discards work. A task interrupted by a restart is
+marked failed rather than left phantom-running.
+
 Token usage is recorded per run from what the runner itself reported: Codex via
 its `turn.completed` JSON event, DSH via its per-request `usage` chunks. The
 record separates uncached, cached, and output tokens, and a run that never

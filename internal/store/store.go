@@ -99,6 +99,15 @@ type Store struct {
 	hooksPath  string
 	replayPath string
 
+	// Task queue state. taskMu guards the cached file; dispatchMu serializes
+	// the dispatcher so a manual tick and the background ticker cannot both
+	// claim the same task.
+	taskMu     sync.Mutex
+	dispatchMu sync.Mutex
+	tasksCache *tasksFile
+	tasksPath  string
+	policyPath string
+
 	modelCatalogMu   sync.Mutex
 	modelCatalogAt   time.Time
 	modelCatalogData map[string]any
@@ -151,6 +160,8 @@ func New(dataDir, toolRoot string) (*Store, error) {
 		channelsPath:       filepath.Join(data, "secrets", "channels.json"),
 		deliveriesPath:     filepath.Join(data, "runtime", "notifications.jsonl"),
 		hooksPath:          filepath.Join(data, "secrets", "hooks.json"),
+		tasksPath:          filepath.Join(data, "runtime", "tasks.json"),
+		policyPath:         policyPathFor(data),
 		replayPath:         filepath.Join(data, "runtime", "hook-replay.json"),
 		notifyLast:         map[string]time.Time{},
 		hookCalls:          map[string][]time.Time{},
@@ -160,6 +171,9 @@ func New(dataDir, toolRoot string) (*Store, error) {
 	if err := s.ensureDirs(); err != nil {
 		return nil, err
 	}
+	// A task left running by a previous process never finished; say so instead
+	// of showing a phantom job forever.
+	s.recoverInterruptedTasks()
 	return s, nil
 }
 

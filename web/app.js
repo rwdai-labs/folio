@@ -48,6 +48,8 @@
     hookBusy: "",
     usage: null,
     usageWindow: 30,
+    tasks: null,
+    tasksBusy: "",
     modelValues: { codex: "", dsh: "" },
     modelMenuOpen: false,
     modelActive: -1,
@@ -70,6 +72,7 @@
     channels: { element: "channels-message", data: null },
     hooks: { element: "hooks-message", data: null },
     usage: { element: "usage-message", data: null },
+    tasks: { element: "tasks-message", data: null },
   };
 
   let busyButtons = [];
@@ -160,6 +163,12 @@
         return "hooks.failed";
       case "usage_unavailable":
         return "usage.failed";
+      case "task_not_found":
+        return "tasks.not_found";
+      case "task_busy":
+        return "tasks.busy";
+      case "task_canceled":
+        return "tasks.canceled_error";
       case "job_unavailable":
         return "error.job_busy";
       case "session_unavailable":
@@ -1285,6 +1294,7 @@
     await refreshChannels();
     await refreshHooks();
     await refreshUsage();
+    await refreshTasks();
   }
 
   /* -------------------------------------------------------------- channels */
@@ -1488,6 +1498,38 @@
     return button;
   }
 
+  function hookPrioritySelect(hook) {
+    const select = document.createElement("select");
+    select.className = "hook-priority";
+    select.setAttribute("aria-label", t("hooks.priority"));
+    ["P0", "P1", "P2", "P3"].forEach((priority) => {
+      const option = document.createElement("option");
+      option.value = priority;
+      option.textContent = priority;
+      select.appendChild(option);
+    });
+    select.value = hook.priority || "P2";
+    select.addEventListener("change", () => updateHookPriority(hook, select.value));
+    return select;
+  }
+
+  async function updateHookPriority(hook, priority) {
+    if (state.hookBusy) return;
+    state.hookBusy = `priority:${hook.id}`;
+    try {
+      const result = await api(`/api/hooks/${encodeURIComponent(hook.id)}/update`, {
+        method: "POST",
+        body: { enabled: !!hook.enabled, name: hook.name || "", priority },
+      });
+      if (Array.isArray(result.hooks)) renderHooks({ hooks: result.hooks });
+      setMessage("hooks", "hooks.updated");
+    } catch (error) {
+      setMessage("hooks", errorKey(error, "hooks.failed"), { error: true });
+    } finally {
+      state.hookBusy = "";
+    }
+  }
+
   function renderHooks(data) {
     const list = $("hooks-list");
     if (!list) return;
@@ -1533,6 +1575,7 @@
 
       const actions = document.createElement("div");
       actions.className = "hook-actions";
+      actions.appendChild(hookPrioritySelect(hook));
       actions.appendChild(hookButton(hook, "toggle", hook.enabled ? "hooks.disable" : "hooks.enable"));
       actions.appendChild(hookButton(hook, "rotate", "hooks.rotate"));
       actions.appendChild(hookButton(hook, "delete", "hooks.delete"));
@@ -1578,8 +1621,10 @@
     const button = $("hook-create");
     setBusy(button, "hooks.creating");
     setMessage("hooks", null);
+    const priorityInput = $("hook-priority");
+    const priority = priorityInput ? priorityInput.value : "P2";
     try {
-      const result = await api("/api/hooks", { method: "POST", body: { name } });
+      const result = await api("/api/hooks", { method: "POST", body: { name, priority } });
       if (input) input.value = "";
       if (Array.isArray(result.hooks)) renderHooks({ hooks: result.hooks });
       const hook = result.hook && typeof result.hook.id === "string" ? result.hook.id : "";
@@ -1784,6 +1829,183 @@
     } catch (error) {
       if (error.code === "authentication_required") return;
       setMessage("usage", errorKey(error, "usage.failed"), { error: true });
+    }
+  }
+
+  /* ----------------------------------------------------------------- tasks */
+
+  function taskStatusKey(status) {
+    switch (status) {
+      case "running":
+        return "tasks.status.running";
+      case "done":
+        return "tasks.status.done";
+      case "failed":
+        return "tasks.status.failed";
+      case "canceled":
+        return "tasks.status.canceled";
+      default:
+        return "tasks.status.queued";
+    }
+  }
+
+  function taskButton(task, action, labelKey) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = action === "cancel" ? "btn ghost small danger" : "btn ghost small";
+    button.dataset.taskAction = action;
+    button.dataset.taskId = task.id;
+    const label = document.createElement("span");
+    label.className = "btn-label";
+    label.textContent = t(labelKey);
+    button.appendChild(label);
+    return button;
+  }
+
+  function renderTasks(data) {
+    state.tasks = data || null;
+    const list = $("tasks-list");
+    if (!list) return;
+    const tasks = Array.isArray(data && data.tasks) ? data.tasks : [];
+    const counts = (data && data.counts) || {};
+    const pending = (counts.queued || 0) + (counts.running || 0);
+    const badge = $("tasks-count");
+    if (badge) {
+      badge.dataset.state = pending > 0 ? "enabled" : "disabled";
+      badge.textContent = String(pending);
+    }
+    const pauseButton = $("tasks-pause");
+    if (pauseButton) {
+      const label = pauseButton.querySelector(".btn-label");
+      if (label) label.textContent = t(data && data.paused ? "tasks.resume" : "tasks.pause");
+      pauseButton.dataset.paused = data && data.paused ? "true" : "false";
+    }
+    const policy = (data && data.policy) || {};
+    const policyLine = $("tasks-policy");
+    if (policyLine) {
+      policyLine.textContent = data
+        ? t(policy.in_window ? "tasks.policy_inside" : "tasks.policy_outside", {
+            start: policy.window_start || "",
+            end: policy.window_end || "",
+          })
+        : "";
+    }
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!tasks.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = t("tasks.empty");
+      list.appendChild(empty);
+      return;
+    }
+    tasks.forEach((task) => {
+      if (!task || typeof task.id !== "string") return;
+      const row = document.createElement("div");
+      row.className = "task-item";
+
+      const head = document.createElement("div");
+      head.className = "task-head";
+      const chip = document.createElement("span");
+      chip.className = "task-priority";
+      chip.dataset.priority = task.priority || "P2";
+      chip.textContent = task.priority || "P2";
+      const title = document.createElement("span");
+      title.className = "task-title";
+      title.textContent = task.title || task.kind || task.id;
+      const status = document.createElement("span");
+      status.className = "badge";
+      status.dataset.state =
+        task.status === "running" ? "enabled" : task.status === "failed" ? "disabled" : "neutral";
+      status.textContent = t(taskStatusKey(task.status));
+      head.appendChild(chip);
+      head.appendChild(title);
+      head.appendChild(status);
+
+      const meta = document.createElement("p");
+      meta.className = "task-meta";
+      const parts = [task.kind, task.source];
+      if (task.created_at) {
+        parts.push(t("tasks.created", { time: formatTime(task.created_at) }));
+      }
+      if (task.not_before && !task.due && task.status === "queued") {
+        parts.push(t("tasks.not_before", { time: formatTime(task.not_before) }));
+      }
+      if (task.attempts > 0) {
+        parts.push(t("tasks.attempts", { count: task.attempts }));
+      }
+      if (task.reason) {
+        parts.push(task.reason);
+      }
+      meta.textContent = parts.filter(Boolean).join(" · ");
+
+      const actions = document.createElement("div");
+      actions.className = "task-actions";
+      if (task.status === "queued") {
+        actions.appendChild(taskButton(task, "toggle", task.enabled ? "tasks.action.pause" : "tasks.action.resume"));
+        actions.appendChild(taskButton(task, "run", "tasks.action.run"));
+        actions.appendChild(taskButton(task, "cancel", "tasks.action.cancel"));
+      } else if (task.status !== "running") {
+        actions.appendChild(taskButton(task, "run", "tasks.action.run"));
+      }
+
+      row.appendChild(head);
+      row.appendChild(meta);
+      if (actions.childNodes.length) row.appendChild(actions);
+      list.appendChild(row);
+    });
+  }
+
+  async function refreshTasks() {
+    try {
+      const data = await api("/api/tasks");
+      renderTasks(data);
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      setMessage("tasks", errorKey(error, "tasks.failed"), { error: true });
+    }
+  }
+
+  async function toggleTasksPaused() {
+    if (state.tasksBusy) return;
+    const paused = !!((state.tasks && state.tasks.paused) || false);
+    state.tasksBusy = "pause";
+    try {
+      const data = await api("/api/tasks/pause", { method: "POST", body: { paused: !paused } });
+      renderTasks(data);
+      setMessage("tasks", null);
+    } catch (error) {
+      setMessage("tasks", errorKey(error, "tasks.failed"), { error: true });
+    } finally {
+      state.tasksBusy = "";
+    }
+  }
+
+  async function taskAction(button) {
+    const action = button.dataset.taskAction;
+    const id = button.dataset.taskId;
+    if (!action || !id || state.tasksBusy) return;
+    const task = (state.tasks && state.tasks.tasks ? state.tasks.tasks : []).find(
+      (item) => item && item.id === id,
+    ) || null;
+    if (action === "cancel" && !window.confirm(t("tasks.confirm_cancel"))) return;
+    state.tasksBusy = `${action}:${id}`;
+    setBusy(button, action === "run" ? "tasks.action.run" : "common.running");
+    setMessage("tasks", null);
+    try {
+      let body = {};
+      if (action === "toggle") {
+        body = { enabled: !(task && task.enabled) };
+      }
+      const data = await api(`/api/tasks/${encodeURIComponent(id)}/${action === "toggle" ? "update" : action}`, {
+        method: "POST",
+        body,
+      });
+      renderTasks(data);
+    } catch (error) {
+      setMessage("tasks", errorKey(error, "tasks.failed"), { error: true });
+    } finally {
+      state.tasksBusy = "";
+      clearBusy(button);
     }
   }
 
@@ -2239,6 +2461,13 @@
     if (combo && target && !combo.contains(target)) closeModelMenu();
   });
 
+  $("tasks-pause").addEventListener("click", toggleTasksPaused);
+  $("tasks-list").addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target ? target.closest("button[data-task-action]") : null;
+    if (button) taskAction(button);
+  });
+
   $("usage-window").addEventListener("change", (event) => {
     const next = Number.parseInt(event.target.value, 10);
     state.usageWindow = Number.isFinite(next) && next > 0 ? next : 30;
@@ -2280,6 +2509,7 @@
     renderChannelTexts(state.channels);
     renderHooks({ hooks: state.hooks });
     renderUsage(state.usage);
+    renderTasks(state.tasks);
     rerenderBusyLabels();
   });
 

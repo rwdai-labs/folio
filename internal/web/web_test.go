@@ -16,6 +16,8 @@ import (
 )
 
 type testBackend struct {
+	taskCreates []string
+	dispatches  int
 	mu          sync.Mutex
 	maintenance []struct{ mode, model, runner string }
 	preview     []struct {
@@ -148,14 +150,14 @@ func (b *testBackend) ListHooks() (map[string]any, error) {
 	return map[string]any{"hooks": []any{}, "actions": []any{"maintenance"}, "max_hooks": 16}, nil
 }
 
-func (b *testBackend) CreateHook(name, action string) (map[string]any, error) {
+func (b *testBackend) CreateHook(name, action, priority string) (map[string]any, error) {
 	return map[string]any{
 		"hook":   map[string]any{"id": "watch", "name": name, "action": "maintenance", "enabled": true},
 		"secret": "test-secret",
 	}, nil
 }
 
-func (b *testBackend) UpdateHook(id string, enabled bool, name string) (map[string]any, error) {
+func (b *testBackend) UpdateHook(id string, enabled bool, name, priority string) (map[string]any, error) {
 	return map[string]any{"hooks": []any{}}, nil
 }
 
@@ -167,11 +169,56 @@ func (b *testBackend) DeleteHook(id string) (map[string]any, error) {
 	return map[string]any{"hooks": []any{}}, nil
 }
 
-func (b *testBackend) AcceptHook(id string, timestamp int64, eventID, signature string, body []byte) (string, string) {
+func (b *testBackend) AcceptHook(id string, timestamp int64, eventID, signature string, body []byte) (map[string]any, string) {
 	if signature != "good" {
-		return "", "invalid_signature"
+		return nil, "invalid_signature"
 	}
-	return "maintenance", "ok"
+	return map[string]any{"name": "Watch context", "action": "maintenance", "priority": "P2"}, "ok"
+}
+
+func (b *testBackend) ListTasks() (map[string]any, error) {
+	return map[string]any{
+		"paused": false,
+		"policy": map[string]any{"defer": map[string]bool{"P0": false, "P2": true}, "window_start": "00:30", "window_end": "07:30"},
+		"counts": map[string]int{"queued": 1},
+		"tasks": []any{map[string]any{
+			"id": "t-000000000001", "kind": "maintenance", "title": "Watch context",
+			"priority": "P2", "status": "queued", "enabled": true, "due": false,
+		}},
+	}, nil
+}
+
+func (b *testBackend) CreateTask(kind, source, title, priority string) (map[string]any, error) {
+	b.taskCreates = append(b.taskCreates, kind+"|"+source+"|"+priority)
+	return map[string]any{
+		"task": map[string]any{
+			"id": "t-000000000001", "kind": kind, "title": title, "source": source,
+			"priority": priority, "status": "queued", "enabled": true,
+			"not_before": "2999-01-01T00:00:00Z",
+		},
+		"created": true,
+	}, nil
+}
+
+func (b *testBackend) SetTasksPaused(paused bool) (map[string]any, error) {
+	return map[string]any{"paused": paused}, nil
+}
+
+func (b *testBackend) UpdateTask(id string, enabled bool) (map[string]any, error) {
+	return map[string]any{"tasks": []any{}}, nil
+}
+
+func (b *testBackend) RunTaskNow(id string) (map[string]any, error) {
+	return map[string]any{"tasks": []any{}}, nil
+}
+
+func (b *testBackend) CancelTask(id string) (map[string]any, error) {
+	return map[string]any{"tasks": []any{}}, nil
+}
+
+func (b *testBackend) DispatchDue() (map[string]any, error) {
+	b.dispatches++
+	return map[string]any{"dispatched": 1, "task_id": "t-000000000001"}, nil
 }
 
 func (b *testBackend) SchedulerTick() (map[string]any, error) {
@@ -756,15 +803,18 @@ func TestHookEndpointsAcceptSignedEventsWithoutOrigin(t *testing.T) {
 	if status != http.StatusAccepted {
 		t.Fatalf("accepted status=%d result=%v", status, accepted)
 	}
-	if accepted["action"] != "maintenance" || accepted["job_id"] == nil {
+	// The deferred task is durable but not due, so no run is started here.
+	if accepted["task_id"] != "t-000000000001" || accepted["dispatched"] != false {
 		t.Fatalf("accepted result=%v", accepted)
 	}
-	job := waitJobForTest(t, client, accepted["job_id"].(string))
-	if job["name"] != "automation:codex" {
-		t.Fatalf("job name=%v", job["name"])
+	if accepted["priority"] != "P2" || accepted["created"] != true {
+		t.Fatalf("accepted result=%v", accepted)
 	}
-	if len(backend.automation) != 1 || backend.automation[0].trigger != "hook" {
-		t.Fatalf("automation calls=%v", backend.automation)
+	if len(backend.taskCreates) != 1 || backend.taskCreates[0] != "maintenance|hook:watch|P2" {
+		t.Fatalf("task creates=%v", backend.taskCreates)
+	}
+	if backend.dispatches != 0 {
+		t.Fatalf("dispatches=%d", backend.dispatches)
 	}
 }
 
@@ -787,5 +837,40 @@ func TestSafeValueKeepsNumericCountsAndRedactsCredentials(t *testing.T) {
 	}
 	if nested, _ := safe["nested"].(map[string]any); nested["input_tokens"] != float64(10) {
 		t.Fatalf("nested count was redacted: %v", safe)
+	}
+}
+
+func TestTaskEndpointsRequireSessionAndControlTheQueue(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/tasks", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", status)
+	}
+	client.login(t, password)
+
+	status, _, listing := client.request(t, http.MethodGet, "/api/tasks", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("list status=%d", status)
+	}
+	tasks := listing["tasks"].([]any)
+	if len(tasks) != 1 || tasks[0].(map[string]any)["priority"] != "P2" {
+		t.Fatalf("listing=%v", listing)
+	}
+
+	status, _, paused := client.request(t, http.MethodPost, "/api/tasks/pause", map[string]any{"paused": true}, server.URL)
+	if status != http.StatusOK || paused["paused"] != true {
+		t.Fatalf("pause status=%d result=%v", status, paused)
+	}
+	status, _, _ = client.request(t, http.MethodPost, "/api/tasks/t-000000000001/run", map[string]any{}, server.URL)
+	if status != http.StatusOK {
+		t.Fatalf("run now status=%d", status)
+	}
+	status, _, _ = client.request(t, http.MethodPost, "/api/tasks/t-000000000001/dispatch", map[string]any{}, server.URL)
+	if status != http.StatusNotFound {
+		t.Fatalf("unknown verb status=%d", status)
 	}
 }

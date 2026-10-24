@@ -101,11 +101,23 @@ type ChannelBackend interface {
 // is separate from Backend so the core adapter stays small.
 type HookBackend interface {
 	ListHooks() (map[string]any, error)
-	CreateHook(name, action string) (map[string]any, error)
-	UpdateHook(id string, enabled bool, name string) (map[string]any, error)
+	CreateHook(name, action, priority string) (map[string]any, error)
+	UpdateHook(id string, enabled bool, name, priority string) (map[string]any, error)
 	RotateHookSecret(id string) (map[string]any, error)
 	DeleteHook(id string) (map[string]any, error)
-	AcceptHook(id string, timestamp int64, eventID, signature string, body []byte) (string, string)
+	AcceptHook(id string, timestamp int64, eventID, signature string, body []byte) (map[string]any, string)
+}
+
+// TaskBackend is the optional work-queue contract. Tasks are durable intent;
+// runs are attempts. The board reads the former and links to the latter.
+type TaskBackend interface {
+	ListTasks() (map[string]any, error)
+	CreateTask(kind, source, title, priority string) (map[string]any, error)
+	SetTasksPaused(paused bool) (map[string]any, error)
+	UpdateTask(id string, enabled bool) (map[string]any, error)
+	RunTaskNow(id string) (map[string]any, error)
+	CancelTask(id string) (map[string]any, error)
+	DispatchDue() (map[string]any, error)
 }
 
 // Options configures the local web boundary.
@@ -118,6 +130,10 @@ type Options struct {
 	CookieSecure      bool
 	SchedulerEnabled  bool
 	SchedulerInterval time.Duration
+	// DispatcherInterval is how often the task queue is checked. It is
+	// independent of the scheduler: deferred work must start even when
+	// interval maintenance is disabled.
+	DispatcherInterval time.Duration
 
 	// PasswordNotice, when set, receives the administrator password and its
 	// file path exactly once, on the start that creates the password. Starts
@@ -231,6 +247,12 @@ func New(store Backend, opts Options) (*Server, error) {
 	if opts.SchedulerInterval < time.Minute {
 		opts.SchedulerInterval = time.Minute
 	}
+	if opts.DispatcherInterval <= 0 {
+		opts.DispatcherInterval = time.Minute
+	}
+	if opts.DispatcherInterval < 10*time.Second {
+		opts.DispatcherInterval = 10 * time.Second
+	}
 	if opts.AssetsDir == "" {
 		opts.AssetsDir = "web"
 	}
@@ -294,6 +316,30 @@ func (s *Server) StartScheduler(ctx context.Context) {
 				s.startJob("scheduler:automation", func() (map[string]any, error) {
 					return s.store.SchedulerTick()
 				})
+				timer.Reset(interval)
+			}
+		}
+	}()
+}
+
+// StartDispatcher drains the task queue. It runs regardless of
+// SchedulerEnabled: a deferred task must still start when interval maintenance
+// is off.
+func (s *Server) StartDispatcher(ctx context.Context) {
+	backend, ok := s.taskBackend()
+	if !ok {
+		return
+	}
+	interval := s.opts.DispatcherInterval
+	go func() {
+		timer := time.NewTimer(interval)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				_, _ = backend.DispatchDue()
 				timer.Reset(interval)
 			}
 		}
@@ -930,6 +976,12 @@ func channelErrorCode(err error) string {
 	}
 }
 
+// taskBackend reports whether the configured store exposes the task queue.
+func (s *Server) taskBackend() (TaskBackend, bool) {
+	backend, ok := s.store.(TaskBackend)
+	return backend, ok
+}
+
 // hookBackend reports whether the configured store exposes inbound hooks.
 func (s *Server) hookBackend() (HookBackend, bool) {
 	backend, ok := s.store.(HookBackend)
@@ -962,6 +1014,11 @@ func (s *Server) hookEvent(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusServiceUnavailable, "hook_unavailable")
 		return
 	}
+	tasks, ok := s.taskBackend()
+	if !ok {
+		s.writeError(w, http.StatusServiceUnavailable, "task_unavailable")
+		return
+	}
 	if r.ContentLength > maxHookBodyBytes {
 		s.writeError(w, http.StatusRequestEntityTooLarge, "hook_body_too_large")
 		return
@@ -977,7 +1034,7 @@ func (s *Server) hookEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/hooks/")
-	action, code := backend.AcceptHook(id, timestamp, strings.TrimSpace(r.Header.Get(hookEventIDHeader)), r.Header.Get(hookSignatureHeader), body)
+	event, code := backend.AcceptHook(id, timestamp, strings.TrimSpace(r.Header.Get(hookEventIDHeader)), r.Header.Get(hookSignatureHeader), body)
 	switch code {
 	case "ok":
 	case "duplicate_event":
@@ -1005,23 +1062,131 @@ func (s *Server) hookEvent(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusServiceUnavailable, "hook_unavailable")
 		return
 	}
+	action := stringField(event, "action")
+	name := stringField(event, "name")
+	priority := stringField(event, "priority")
 	if action != "maintenance" {
 		// A stored action outside the known set is a configuration error; refuse
 		// rather than guess what the caller meant.
 		s.writeError(w, http.StatusServiceUnavailable, "hook_action_unsupported")
 		return
 	}
-	jobID, started := s.startJob("automation:codex", func() (map[string]any, error) {
-		return s.store.RunAutomation("hook", "", "codex")
-	})
-	if jobID == "" {
-		s.writeError(w, http.StatusServiceUnavailable, "job_unavailable")
+	created, err := tasks.CreateTask(action, "hook:"+id, name, priority)
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "task_unavailable")
 		return
 	}
+	task, _ := created["task"].(map[string]any)
+	taskID := stringField(task, "id")
+	// The hook reports success once the work is durable. A task that is not due
+	// yet (deferred to the off-peak window) starts when the dispatcher reaches
+	// it, so no job is started here.
+	jobID := ""
+	if taskDueNow(task) {
+		jobID, _ = s.startJob("tasks:dispatch", func() (map[string]any, error) {
+			return tasks.DispatchDue()
+		})
+	}
 	s.writeJSON(w, http.StatusAccepted, map[string]any{
-		"accepted": true, "hook": id, "action": action,
-		"job_id": jobID, "started": started, "status": jobStatus(started),
+		"accepted": true, "hook": id, "action": action, "priority": priority,
+		"task_id": taskID, "created": created["created"],
+		"dispatched": jobID != "", "job_id": jobID,
 	}, nil)
+}
+
+// taskAdmin handles the session-authenticated task verbs. The queue is owned by
+// the store; this layer only maps HTTP to it.
+func (s *Server) taskAdmin(w http.ResponseWriter, r *http.Request, payload map[string]any) bool {
+	backend, ok := s.taskBackend()
+	if !ok {
+		s.writeError(w, http.StatusServiceUnavailable, "task_unavailable")
+		return true
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/tasks/"), "/")
+	if len(parts) == 1 {
+		var (
+			value map[string]any
+			err   error
+		)
+		switch parts[0] {
+		case "pause":
+			paused, _ := payload["paused"].(bool)
+			value, err = backend.SetTasksPaused(paused)
+		case "dispatch":
+			value, err = backend.DispatchDue()
+		default:
+			return false
+		}
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, taskErrorCode(err))
+			return true
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+		return true
+	}
+	if len(parts) != 2 {
+		return false
+	}
+	id, verb := parts[0], parts[1]
+	var (
+		value map[string]any
+		err   error
+	)
+	switch verb {
+	case "update":
+		enabled, _ := payload["enabled"].(bool)
+		value, err = backend.UpdateTask(id, enabled)
+	case "run":
+		value, err = backend.RunTaskNow(id)
+	case "cancel":
+		value, err = backend.CancelTask(id)
+	default:
+		return false
+	}
+	if err != nil {
+		status := http.StatusBadRequest
+		switch err.Error() {
+		case "task_not_found":
+			status = http.StatusNotFound
+		case "task_busy", "task_canceled":
+			status = http.StatusConflict
+		}
+		s.writeError(w, status, taskErrorCode(err))
+		return true
+	}
+	s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	return true
+}
+
+func taskErrorCode(err error) string {
+	if err == nil {
+		return "task_invalid"
+	}
+	switch err.Error() {
+	case "task_not_found", "task_busy", "task_canceled":
+		return err.Error()
+	default:
+		return "task_invalid"
+	}
+}
+
+// stringField reads a trimmed string without asserting on the concrete type.
+func stringField(values map[string]any, key string) string {
+	text, _ := values[key].(string)
+	return strings.TrimSpace(text)
+}
+
+// taskDueNow reports whether the queue may start the task immediately.
+func taskDueNow(task map[string]any) bool {
+	if task == nil {
+		return false
+	}
+	raw := stringField(task, "not_before")
+	if raw == "" {
+		return true
+	}
+	at, err := time.Parse(time.RFC3339Nano, raw)
+	return err != nil || !time.Now().Before(at)
 }
 
 // hookAdmin handles the session-authenticated management verbs under
@@ -1045,7 +1210,8 @@ func (s *Server) hookAdmin(w http.ResponseWriter, r *http.Request, payload map[s
 	case "update":
 		enabled, _ := payload["enabled"].(bool)
 		name, _ := payload["name"].(string)
-		value, err = backend.UpdateHook(id, enabled, name)
+		priority, _ := payload["priority"].(string)
+		value, err = backend.UpdateHook(id, enabled, name, priority)
 	case "rotate":
 		value, err = backend.RotateHookSecret(id)
 	case "delete":
@@ -1395,7 +1561,7 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		state = safeMap(state)
-		state["service"] = map[string]any{"scheduler_enabled": s.opts.SchedulerEnabled, "scheduler_interval_seconds": int(s.opts.SchedulerInterval / time.Second), "scheduler_next_at": s.schedulerNextAt(), "jobs": s.jobs.summary()}
+		state["service"] = map[string]any{"scheduler_enabled": s.opts.SchedulerEnabled, "scheduler_interval_seconds": int(s.opts.SchedulerInterval / time.Second), "scheduler_next_at": s.schedulerNextAt(), "dispatcher_interval_seconds": int(s.opts.DispatcherInterval / time.Second), "jobs": s.jobs.summary()}
 		s.writeJSON(w, http.StatusOK, state, nil)
 	case "/api/github/repositories":
 		value, err := s.store.GitHubRepositories()
@@ -1431,6 +1597,18 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.writeJSON(w, http.StatusOK, clean, nil)
+	case "/api/tasks":
+		backend, ok := s.taskBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "task_unavailable")
+			return
+		}
+		value, err := backend.ListTasks()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "task_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/hooks":
 		backend, ok := s.hookBackend()
 		if !ok {
@@ -1496,6 +1674,9 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	token, _, ok := s.requireSession(w, r)
 	if !ok {
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/tasks/") && s.taskAdmin(w, r, payload) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/hooks/") && s.hookAdmin(w, r, payload) {
@@ -1586,7 +1767,8 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		}
 		name, _ := payload["name"].(string)
 		action, _ := payload["action"].(string)
-		value, callErr := backend.CreateHook(name, action)
+		priority, _ := payload["priority"].(string)
+		value, callErr := backend.CreateHook(name, action, priority)
 		if callErr != nil {
 			s.writeError(w, http.StatusBadRequest, hookErrorCode(callErr))
 			return

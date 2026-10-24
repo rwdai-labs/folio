@@ -2,6 +2,8 @@
 package main
 
 import (
+	// Embed the timezone database: the off-peak window is evaluated in
+	// container local time, and a slim image may not ship zoneinfo.
 	"context"
 	"errors"
 	"flag"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	contextrepo "folio/internal/context"
 	"folio/internal/store"
@@ -87,6 +90,7 @@ func serve(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	application.StartScheduler(ctx)
+	application.StartDispatcher(ctx)
 	server := &http.Server{
 		Addr: *host + ":" + strconv.Itoa(*port), Handler: application.Handler(),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,

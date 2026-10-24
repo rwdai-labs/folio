@@ -101,9 +101,9 @@ type plannedAutoEdit struct {
 // is recorded in the private runtime for later inspection.
 func (s *Store) RunAutomation(trigger, runner, model string) (map[string]any, error) {
 	switch trigger {
-	case "manual", "scheduler", "hook":
+	case "manual", "scheduler", "hook", "task":
 	default:
-		return nil, errStore("automation trigger must be manual, scheduler, or hook")
+		return nil, errStore("automation trigger must be manual, scheduler, hook, or task")
 	}
 	normalized, err := normalizeRunner(runner)
 	if err != nil {
