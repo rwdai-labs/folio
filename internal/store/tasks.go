@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,28 +31,36 @@ const (
 	maxTaskReasonRunes = 200
 	maxTasksFileBytes  = 256 * 1024
 	maxPoliciesBytes   = 64 * 1024
+
+	// A plugin body is untrusted data. Folio keeps only a flat, bounded
+	// projection that it can display and audit, never nested structures.
+	maxTaskPayloadBytes = 4096
+	maxTaskPayloadKeys  = 16
+	maxTaskPayloadRunes = 512
 )
 
 var (
-	taskIDRE   = regexp.MustCompile(`^t-[0-9a-f]{12}$`)
-	taskKindRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	taskIDRE         = regexp.MustCompile(`^t-[0-9a-f]{12}$`)
+	taskKindRE       = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	taskPayloadKeyRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 )
 
 type taskRecord struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Title      string `json:"title"`
-	Priority   string `json:"priority"`
-	Source     string `json:"source"`
-	Status     string `json:"status"`
-	Enabled    bool   `json:"enabled"`
-	Attempts   int    `json:"attempts"`
-	RunID      string `json:"run_id,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	NotBefore  string `json:"not_before,omitempty"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
-	FinishedAt string `json:"finished_at,omitempty"`
+	ID         string         `json:"id"`
+	Kind       string         `json:"kind"`
+	Title      string         `json:"title"`
+	Priority   string         `json:"priority"`
+	Source     string         `json:"source"`
+	Status     string         `json:"status"`
+	Payload    map[string]any `json:"payload,omitempty"`
+	Enabled    bool           `json:"enabled"`
+	Attempts   int            `json:"attempts"`
+	RunID      string         `json:"run_id,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	NotBefore  string         `json:"not_before,omitempty"`
+	CreatedAt  string         `json:"created_at"`
+	UpdatedAt  string         `json:"updated_at"`
+	FinishedAt string         `json:"finished_at,omitempty"`
 }
 
 type tasksFile struct {
@@ -207,6 +216,66 @@ func (w taskWindow) nextStart(now time.Time) time.Time {
 	return start
 }
 
+// projectTaskPayload keeps a flat, bounded view of a plugin body. Nested
+// objects, arrays, and oversized values are dropped instead of rejected: a
+// noisy integration should not be able to fill the queue file or smuggle a
+// structure into a later prompt.
+func projectTaskPayload(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	projected := make(map[string]any, maxTaskPayloadKeys)
+	size := 0
+	for key, value := range values {
+		if !taskPayloadKeyRE.MatchString(key) || sensitivePayloadKey(key) || !validPayloadValue(value) {
+			continue
+		}
+		projected[key] = value
+		size += len(key) + 8 + payloadSize(value)
+		if len(projected) >= maxTaskPayloadKeys || size > maxTaskPayloadBytes {
+			break
+		}
+	}
+	if len(projected) == 0 {
+		return nil
+	}
+	return projected
+}
+
+// sensitivePayloadKey keeps credential-shaped fields out of the queue file.
+// A plugin that needs to pass a credential must pass a reference, not a secret.
+func sensitivePayloadKey(key string) bool {
+	for _, marker := range []string{"token", "secret", "password", "credential", "apikey", "api_key", "private_key"} {
+		if strings.Contains(key, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func payloadSize(value any) int {
+	switch typed := value.(type) {
+	case string:
+		return len(typed)
+	default:
+		return 16
+	}
+}
+
+func validPayloadValue(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return len([]rune(typed)) <= maxTaskPayloadRunes
+	case bool:
+		return true
+	case float64:
+		return !math.IsNaN(typed) && !math.IsInf(typed, 0)
+	case json.Number:
+		return true
+	}
+	return false
+}
+
 func newTaskID() (string, error) {
 	buffer := make([]byte, 6)
 	if _, err := rand.Read(buffer); err != nil {
@@ -259,6 +328,14 @@ func validTaskRecord(task taskRecord) bool {
 	}
 	if len([]rune(task.Title)) > maxTaskTitleRunes || len([]rune(task.Source)) > maxTaskSourceRunes || len([]rune(task.Reason)) > maxTaskReasonRunes {
 		return false
+	}
+	if len(task.Payload) > maxTaskPayloadKeys {
+		return false
+	}
+	for key, value := range task.Payload {
+		if !taskPayloadKeyRE.MatchString(key) || !validPayloadValue(value) {
+			return false
+		}
 	}
 	if task.Attempts < 0 || task.Attempts > 100 {
 		return false
@@ -338,10 +415,11 @@ func (s *Store) recoverInterruptedTasks() {
 // CreateTask records work to do. Priority decides whether it may start now or
 // waits for the off-peak window. An identical active task is returned instead of
 // creating a duplicate, so a noisy event source cannot flood the queue.
-func (s *Store) CreateTask(kind, source, title, priority string) (map[string]any, error) {
+func (s *Store) CreateTask(kind, source, title, priority string, payload map[string]any) (map[string]any, error) {
 	kind = strings.TrimSpace(kind)
 	source = strings.TrimSpace(source)
 	title = strings.TrimSpace(title)
+	payload = projectTaskPayload(payload)
 	if !taskKindRE.MatchString(kind) {
 		return nil, errStore("invalid_task_kind")
 	}
@@ -373,7 +451,7 @@ func (s *Store) CreateTask(kind, source, title, priority string) (map[string]any
 	policy := s.loadTaskPolicy()
 	task := taskRecord{
 		ID: id, Kind: kind, Title: title, Priority: priority, Source: source,
-		Status: taskStatusQueued, Enabled: true,
+		Status: taskStatusQueued, Enabled: true, Payload: payload,
 		CreatedAt: now.UTC().Format(time.RFC3339Nano),
 		UpdatedAt: now.UTC().Format(time.RFC3339Nano),
 	}
@@ -398,6 +476,9 @@ func publicTask(task taskRecord) map[string]any {
 	}
 	if task.Reason != "" {
 		result["reason"] = task.Reason
+	}
+	if len(task.Payload) > 0 {
+		result["payload"] = task.Payload
 	}
 	if task.NotBefore != "" {
 		result["not_before"] = task.NotBefore

@@ -27,9 +27,6 @@ func TestStateUsesLegacyPathsAndRedactsUnknownState(t *testing.T) {
 	if strings.Contains(string(encoded), "must-not-return") {
 		t.Fatal("State returned an unknown credential-bearing field")
 	}
-	if got := filepath.Base(store.authPendingPath); got != "github-device.json" {
-		t.Fatalf("legacy device path changed: %s", got)
-	}
 	if got := filepath.Base(store.reviewsDir); got != "reviews" {
 		t.Fatalf("legacy review path changed: %s", got)
 	}

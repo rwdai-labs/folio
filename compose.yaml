@@ -9,6 +9,9 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       TZ: Asia/Shanghai
+      # HTTPS git credential for the context repository. Preferred over a gh
+      # session; set it in .env next to this file.
+      GIT_AUTH_TOKEN: "${GIT_AUTH_TOKEN:-}"
       TRUSTED_HOSTS: localhost,127.0.0.1
       MAINTENANCE_SCHEDULER_ENABLED: "true"
       MAINTENANCE_INTERVAL_SECONDS: "86400"

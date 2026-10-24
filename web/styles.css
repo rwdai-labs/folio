@@ -982,22 +982,6 @@ textarea {
 
 /* ------------------------------------------------------- device login card */
 
-.device-card {
-  margin: 18px 0 6px;
-  padding: 18px;
-  border: 1px solid var(--accent-border);
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--accent-soft), var(--surface) 78%);
-}
-
-.device-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  flex-wrap: wrap;
-}
-
 .device-label {
   margin-bottom: 6px;
   color: var(--muted);
@@ -1005,46 +989,6 @@ textarea {
   font-weight: 720;
   letter-spacing: 0.11em;
   text-transform: uppercase;
-}
-
-.device-code {
-  display: inline-block;
-  padding: 7px 13px;
-  border: 1px dashed var(--accent-border);
-  border-radius: 9px;
-  background: var(--surface);
-  color: var(--accent-ink);
-  font-family: var(--mono);
-  font-size: 1.55rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  line-height: 1.25;
-}
-
-.device-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 7px;
-}
-
-.device-expiry {
-  min-height: 1.2em;
-  color: var(--amber);
-  font-size: 0.78rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-.device-actions {
-  margin-top: 16px;
-}
-
-.device-hint {
-  margin-top: 12px;
-  color: var(--muted);
-  font-size: 0.8rem;
-  line-height: 1.55;
 }
 
 /* --------------------------------------------------------------- repository */

@@ -44,6 +44,12 @@ jobs:
           go vet ./...
           go build -trimpath -o "$RUNNER_TEMP/folio" ./cmd/folio
 
+      - name: Test the integration plugin
+        working-directory: plugins/github-bridge
+        run: |
+          go test ./...
+          go vet ./...
+
   runtime-smoke:
     needs: test
     runs-on: ubuntu-latest

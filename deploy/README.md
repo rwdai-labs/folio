@@ -45,11 +45,22 @@ keep the credential out of the log entirely, provide the password yourself
 before the first start, for example with a secret manager file mounted and
 `ADMIN_PASSWORD_FILE` set; the service then reuses that file and prints nothing.
 
-Sign in to the local Web page and connect the private repository. After GitHub
-is connected, the repository field is a selector populated from the account's
-accessible repositories; there is still a manual `owner/name` fallback for a
-repository the token cannot list. Without the host-config override below, use
-the GitHub device sign-in first. The service runs installed image tools, never
+The service needs one credential for the private repository: a GitHub HTTPS git
+token. Put it in `.env` next to `compose.yaml`:
+
+```bash
+GIT_AUTH_TOKEN=github_pat_...
+```
+
+Use a fine-grained token limited to the context repository with contents
+read/write. The service writes it to a private credential file (mode `0600`) and
+never prints it. An existing `gh` session inside the data volume still works as
+a compatibility fallback, so an upgraded deployment keeps pushing without a
+change, but a fresh deployment should use the token.
+
+Sign in to the local Web page and connect the private repository by typing
+`owner/name`. Folio no longer lists repositories or signs in to GitHub: that is
+an integration plugin's job. The service runs installed image tools, never
 scripts from the cloned repo.
 
 GitHub login and model login are separate. To configure Codex through its

@@ -181,8 +181,9 @@ func (s *Store) gitCommand(args []string, config []string) ([]string, error) {
 		"-c", "core.sshCommand=",
 		"-c", "core.fsmonitor=false",
 		"-c", "commit.gpgSign=false",
-		"-c", "credential.helper=",
-		"-c", "credential.helper=!gh auth git-credential",
+	}
+	command = append(command, s.gitCredentialArgs()...)
+	command = append(command,
 		"-c", "http.extraHeader=",
 		"-c", "diff.external=",
 		"-c", "filter.lfs.clean=",
@@ -191,7 +192,7 @@ func (s *Store) gitCommand(args []string, config []string) ([]string, error) {
 		"-c", "filter.lfs.required=false",
 		"-c", "protocol.ext.allow=never",
 		"-c", "protocol.file.allow=never",
-	}
+	)
 	if s.allowFileRemoteForTests {
 		command = append(command, "-c", "protocol.file.allow=always")
 	}

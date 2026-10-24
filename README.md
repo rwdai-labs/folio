@@ -1,8 +1,8 @@
 # Folio Service
 
 A self-hosted maintenance service for a private Markdown context repository.
-It provides a small Web UI for GitHub device authorization, repository cloning,
-and automatic scheduled maintenance: pull the latest checkout, ask a model
+It provides a small Web UI for repository setup and automatic maintenance: pull
+the latest checkout, ask a model
 runner for bounded Markdown edits, validate them, commit, and push. Every run is
 recorded with its changes, reasons, and diffs for later inspection.
 
@@ -34,6 +34,7 @@ cmd/folio/      service entrypoint and CLI
 internal/       context router, maintenance worker, Git/GitHub store, Web server
 internal/notify outbound push channels (Bark today); no inbound traffic
 scripts/        external watcher and hook client; not part of the service
+plugins/        separate integration modules that call the hook API
 web/            static Web UI served by the Go binary
 deploy/         Dockerfile, entrypoint and deployment notes
 docs/           design and research notes; no runtime behaviour
@@ -111,6 +112,27 @@ starts reuse the file and print nothing. Container logs therefore hold a
 credential from the first start onward: keep them private, and provide the
 password file yourself (or mount it via `ADMIN_PASSWORD_FILE`) when logs leave
 the host.
+
+## Credentials and integrations
+
+Folio is not a GitHub client. It needs one thing from the code host: an HTTPS git
+credential for the context repository. Supply it as a deployment secret:
+
+```yaml
+environment:
+  GIT_AUTH_TOKEN: "${GIT_AUTH_TOKEN}"
+```
+
+The token is written once to `data/secrets/git-credentials` (0600) and used by
+`git-credential-store`; it never appears in a command line or in the environment
+of a model run. Without it, Folio falls back to an existing `gh` session
+(`gh auth token`), which keeps upgraded deployments working. The image still
+ships `gh` for that fallback only.
+
+Everything else that treats GitHub as a service — repository discovery, issues,
+pull requests, checks — belongs to an integration plugin. See
+[docs/integration-plugins.md](docs/integration-plugins.md) and
+[plugins/github-bridge](plugins/github-bridge/README.md).
 
 ## Related repository
 

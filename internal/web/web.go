@@ -73,10 +73,6 @@ var (
 // Backend is the store contract consumed by the HTTP adapter.
 type Backend interface {
 	State() (map[string]any, error)
-	GitHubStart() (map[string]any, error)
-	Poll() (map[string]any, error)
-	Logout() (map[string]any, error)
-	GitHubRepositories() (map[string]any, error)
 	ConnectRepository(fullName string) (map[string]any, error)
 	SyncRepository() (map[string]any, error)
 	RunMaintenance(mode, model, runner string) (map[string]any, error)
@@ -112,7 +108,7 @@ type HookBackend interface {
 // runs are attempts. The board reads the former and links to the latter.
 type TaskBackend interface {
 	ListTasks() (map[string]any, error)
-	CreateTask(kind, source, title, priority string) (map[string]any, error)
+	CreateTask(kind, source, title, priority string, payload map[string]any) (map[string]any, error)
 	SetTasksPaused(paused bool) (map[string]any, error)
 	UpdateTask(id string, enabled bool) (map[string]any, error)
 	RunTaskNow(id string) (map[string]any, error)
@@ -1071,7 +1067,8 @@ func (s *Server) hookEvent(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusServiceUnavailable, "hook_action_unsupported")
 		return
 	}
-	created, err := tasks.CreateTask(action, "hook:"+id, name, priority)
+	title, payload := hookPayload(body, name)
+	created, err := tasks.CreateTask(action, "hook:"+id, title, priority, payload)
 	if err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "task_unavailable")
 		return
@@ -1168,6 +1165,23 @@ func taskErrorCode(err error) string {
 	default:
 		return "task_invalid"
 	}
+}
+
+// hookPayload reads an optional title and the data a plugin attached. The body
+// is untrusted: it is stored as a bounded flat projection, never executed,
+// interpolated into a command, or written to the checkout.
+func hookPayload(body []byte, fallback string) (string, map[string]any) {
+	var values map[string]any
+	if len(body) == 0 || json.Unmarshal(body, &values) != nil {
+		return fallback, nil
+	}
+	title := fallback
+	if text, ok := values["title"].(string); ok {
+		if trimmed := strings.TrimSpace(text); trimmed != "" && len([]rune(trimmed)) <= 120 {
+			title = trimmed
+		}
+	}
+	return title, values
 }
 
 // stringField reads a trimmed string without asserting on the concrete type.
@@ -1563,13 +1577,6 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 		state = safeMap(state)
 		state["service"] = map[string]any{"scheduler_enabled": s.opts.SchedulerEnabled, "scheduler_interval_seconds": int(s.opts.SchedulerInterval / time.Second), "scheduler_next_at": s.schedulerNextAt(), "dispatcher_interval_seconds": int(s.opts.DispatcherInterval / time.Second), "jobs": s.jobs.summary()}
 		s.writeJSON(w, http.StatusOK, state, nil)
-	case "/api/github/repositories":
-		value, err := s.store.GitHubRepositories()
-		if err != nil {
-			s.writeError(w, http.StatusBadGateway, "github_repositories_unavailable")
-			return
-		}
-		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/usage":
 		days := 30
 		if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
@@ -1690,15 +1697,6 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			secure = "; Secure"
 		}
 		s.writeJSON(w, http.StatusOK, map[string]any{"authenticated": false}, http.Header{"Set-Cookie": []string{fmt.Sprintf("%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict%s", cookieName, secure)}})
-	case "/api/github/start":
-		value, callErr := s.store.GitHubStart()
-		s.writeBackendResult(w, callErr, value)
-	case "/api/github/poll":
-		value, callErr := s.store.Poll()
-		s.writeBackendResult(w, callErr, value)
-	case "/api/github/logout":
-		value, callErr := s.store.Logout()
-		s.writeBackendResult(w, callErr, value)
 	case "/api/repository/connect", "/api/connect":
 		owner, ownerOK := payload["owner"].(string)
 		name, nameOK := payload["name"].(string)

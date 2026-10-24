@@ -56,17 +56,10 @@
     modelCatalogSignature: "",
     selectedRunId: "",
     lastState: null,
-    githubStatus: "unknown",
-    githubEpoch: 0,
-    repositories: [],
-    repositoryListStatus: "idle",
-    repositoryManual: false,
-    repositoryTruncated: false,
   };
 
   const messageRegions = {
     login: { element: "login-message", data: null },
-    github: { element: "github-message", data: null },
     repository: { element: "repository-message", data: null },
     automation: { element: "automation-message", data: null },
     channels: { element: "channels-message", data: null },
@@ -290,9 +283,7 @@
     if (!state.authenticated && !state.csrf) return;
     state.authenticated = false;
     state.csrf = "";
-    state.githubEpoch += 1;
     stopAllTimers();
-    state.device = null;
     state.automation = null;
     state.automationRuns = [];
     state.automationError = false;
@@ -355,7 +346,6 @@
     } finally {
       state.authenticated = false;
       state.csrf = "";
-      state.githubEpoch += 1;
       state.automation = null;
       state.automationRuns = [];
       state.automationError = false;
@@ -366,7 +356,6 @@
       if ($("model-input")) $("model-input").value = "";
       closeModelMenu();
       stopAllTimers();
-      state.device = null;
       showLogin();
       setMessage("login", null);
       state.loggingOut = false;
@@ -374,534 +363,17 @@
     }
   }
 
-  /* ---------------------------------------------------------- github flow */
-
-  function githubKey(status) {
-    switch (status) {
-      case "authenticated":
-        return "github.connected";
-      case "pending":
-        return "github.pending";
-      case "signed_out":
-        return "github.signed_out";
-      case "error":
-        return "github.error";
-      default:
-        return "github.unknown";
-    }
-  }
-
-  function renderGithubBadge(status) {
-    const badge = $("github-badge");
-    if (!badge) return;
-    badge.dataset.state = status || "unknown";
-    badge.textContent = t(githubKey(status));
-  }
-
-  function syncGithubSnapshot(status) {
-    if (state.lastState) {
-      const previous = state.lastState.github || {};
-      state.lastState.github = { ...previous, status, authenticated: status === "authenticated" };
-    }
-    const fact = $("fact-github");
-    if (fact) fact.textContent = t(githubKey(status));
-  }
-
-  function updateGithubButtons() {
-    const authenticated = state.githubStatus === "authenticated";
-    $("github-start").hidden = authenticated;
-    $("github-poll").hidden = authenticated;
-    $("github-logout").hidden = !authenticated;
-
-    if (!authenticated) {
-      const label = $("github-start").querySelector(".btn-label");
-      if (label) label.textContent = t(state.githubStatus === "pending" ? "github.restart" : "github.start");
-      $("github-poll").disabled = !state.device || state.device.expired || state.pollingGithub;
-    }
-  }
-
-  function formatRemaining(seconds) {
-    const safe = Math.max(0, Math.ceil(seconds));
-    const minutes = Math.floor(safe / 60);
-    const rest = safe % 60;
-    return `${minutes}:${rest < 10 ? "0" : ""}${rest}`;
-  }
-
-  function updateExpiryText() {
-    if (!state.device) return;
-    const expiry = $("github-expiry");
-    if (!expiry) return;
-    if (state.device.expired) {
-      expiry.textContent = t("github.expired");
-      return;
-    }
-    const remaining = (state.device.deadline - Date.now()) / 1000;
-    expiry.textContent = t("github.expires", { time: formatRemaining(remaining) });
-  }
-
-  function startCountdown() {
-    clearTimer("countdown");
-    if (!state.device) return;
-    const tick = () => {
-      if (!state.device) return;
-      const remaining = (state.device.deadline - Date.now()) / 1000;
-      if (remaining <= 0) {
-        state.device.expired = true;
-        clearTimer("poll");
-        updateExpiryText();
-        updateGithubButtons();
-        setMessage("github", "github.expired", { error: true });
-        return;
-      }
-      updateExpiryText();
-    };
-    tick();
-    state.timers.countdown = window.setInterval(tick, 1000);
-  }
-
-  function schedulePoll(seconds) {
-    clearTimer("poll");
-    if (!state.device || state.device.expired) return;
-    const delay = Math.max(5, Number(seconds) || 5) * 1000;
-    state.timers.poll = window.setTimeout(() => pollGithub({ auto: true }), delay);
-  }
-
-  function showDevice(result) {
-    const code = typeof result.user_code === "string" ? result.user_code.trim() : "";
-    if (!code) return;
-    $("github-device").hidden = false;
-    $("github-user-code").textContent = code;
-
-    const open = $("github-open");
-    if (open) {
-      const uri = result.verification_uri;
-      open.href = uri === "https://github.com/login/device" ? uri : "https://github.com/login/device";
-    }
-
-    const expires = Number(result.expires_in);
-    const deadline = Number.isFinite(expires) && expires > 0 ? Date.now() + expires * 1000 : Date.now() + 15 * 60 * 1000;
-    const interval = Math.max(5, Number(result.interval) || 5);
-    if (state.device && state.device.code === code) {
-      state.device.deadline = deadline;
-      state.device.interval = interval;
-      state.device.expired = false;
-    } else {
-      state.device = { code, deadline, interval, expired: false };
-    }
-    startCountdown();
-    schedulePoll(interval);
-    updateGithubButtons();
-  }
-
-  function hideDevice() {
-    $("github-device").hidden = true;
-    clearTimer("poll");
-    clearTimer("countdown");
-    state.device = null;
-    state.pollingGithub = false;
-    updateGithubButtons();
-  }
-
-  function applyGithub(result, action) {
-    renderRaw("github-output", result);
-    if (!result || typeof result.status !== "string") {
-      setMessage("github", "error.generic", { error: true });
-      return;
-    }
-    state.githubStatus = result.status;
-    syncGithubSnapshot(result.status);
-    switch (result.status) {
-      case "authenticated":
-        state.githubStatus = "authenticated";
-        renderGithubBadge("authenticated");
-        hideDevice();
-        setMessage("github", "github.authorized");
-        refreshAll();
-        return;
-      case "pending":
-        state.githubStatus = "pending";
-        renderGithubBadge("pending");
-        if (result.user_code) {
-          showDevice(result);
-        } else if (state.device) {
-          const remaining = Number(result.expires_in);
-          if (Number.isFinite(remaining) && remaining > 0) {
-            state.device.deadline = Date.now() + remaining * 1000;
-            state.device.expired = false;
-            startCountdown();
-          }
-          const interval = Number(result.interval);
-          if (Number.isFinite(interval) && interval >= 5) state.device.interval = interval;
-        }
-        setMessage("github", "github.waiting");
-        updateGithubButtons();
-        if (state.device && !state.device.expired) schedulePoll(state.device.interval);
-        return;
-      case "signed_out":
-        state.githubStatus = "signed_out";
-        renderGithubBadge("signed_out");
-        hideDevice();
-        setMessage("github", action === "logout" ? "github.disconnected" : "github.signed_out");
-        return;
-      case "error":
-        state.githubStatus = "error";
-        renderGithubBadge("error");
-        clearTimer("poll");
-        clearTimer("countdown");
-        if (state.device) state.device.expired = true;
-        updateGithubButtons();
-        setMessage(
-          "github",
-          action === "poll" ? "github.denied" : action === "start" ? "github.start_failed" : "github.error",
-          { error: true },
-        );
-        return;
-      default:
-        setMessage("github", "github.unknown");
-    }
-  }
-
-  async function startGithub() {
-    if (state.startingGithub) return;
-    const epoch = state.githubEpoch + 1;
-    state.githubEpoch = epoch;
-    state.startingGithub = true;
-    clearTimer("poll");
-    const button = $("github-start");
-    setBusy(button, "github.starting");
-    setMessage("github", null);
-    try {
-      const result = await api("/api/github/start", { method: "POST", body: {} });
-      if (epoch !== state.githubEpoch) return;
-      applyGithub(result, "start");
-    } catch (error) {
-      if (epoch !== state.githubEpoch) return;
-      if (error.code !== "authentication_required") {
-        setMessage("github", error.network ? "error.network" : "github.start_failed", { error: true });
-        renderErrorRaw("github-output", error);
-        if (state.device && !state.device.expired) schedulePoll(state.device.interval);
-      }
-    } finally {
-      state.startingGithub = false;
-      clearBusy(button);
-      updateGithubButtons();
-    }
-  }
-
-  async function pollGithub(options = {}) {
-    const manual = Boolean(options.manual);
-    if (!state.device || state.device.expired) return;
-    if (state.pollingGithub || state.startingGithub) {
-      if (!manual) schedulePoll(2);
-      return;
-    }
-    state.pollingGithub = true;
-    const epoch = state.githubEpoch;
-    clearTimer("poll");
-    const button = $("github-poll");
-    if (manual) setBusy(button, "github.polling");
-    try {
-      const result = await api("/api/github/poll", { method: "POST", body: {} });
-      if (epoch !== state.githubEpoch) return;
-      applyGithub(result, manual ? "poll" : "auto");
-    } catch (error) {
-      if (epoch !== state.githubEpoch) return;
-      if (error.code !== "authentication_required") {
-        setMessage("github", error.network ? "error.network" : "github.poll_failed", { error: true });
-        renderErrorRaw("github-output", error);
-        if (state.device && !state.device.expired) schedulePoll(state.device.interval);
-      }
-    } finally {
-      state.pollingGithub = false;
-      if (manual) clearBusy(button);
-      updateGithubButtons();
-    }
-  }
-
-  async function recoverGithubFlow() {
-    if (state.recovering || state.device || state.startingGithub) return;
-    if (!state.lastState || !state.lastState.github || state.lastState.github.status !== "pending") return;
-    state.recovering = true;
-    const epoch = state.githubEpoch;
-    try {
-      const result = await api("/api/github/poll", { method: "POST", body: {} });
-      if (epoch !== state.githubEpoch) return;
-      applyGithub(result, "recover");
-    } catch (error) {
-      if (epoch !== state.githubEpoch) return;
-      if (error.code !== "authentication_required") renderErrorRaw("github-output", error);
-    } finally {
-      state.recovering = false;
-    }
-  }
-
-  async function logoutGithub() {
-    if (state.loggingOutGithub) return;
-    const epoch = state.githubEpoch + 1;
-    state.githubEpoch = epoch;
-    state.loggingOutGithub = true;
-    const button = $("github-logout");
-    setBusy(button, "common.running");
-    try {
-      const result = await api("/api/github/logout", { method: "POST", body: {} });
-      if (epoch !== state.githubEpoch) return;
-      applyGithub(result, "logout");
-      await refreshAll();
-    } catch (error) {
-      if (epoch !== state.githubEpoch) return;
-      if (error.code !== "authentication_required") {
-        setMessage("github", errorKey(error, "error.generic"), { error: true });
-        renderErrorRaw("github-output", error);
-      }
-    } finally {
-      state.loggingOutGithub = false;
-      clearBusy(button);
-    }
-  }
-
-  function fallbackCopy(node) {
-    try {
-      const range = document.createRange();
-      range.selectNodeContents(node);
-      const selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-      const copied = document.execCommand("copy");
-      selection.removeAllRanges();
-      return copied;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  async function copyDeviceCode() {
-    const code = $("github-user-code").textContent.trim();
-    if (!code) return;
-    let copied = false;
-    try {
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-        await navigator.clipboard.writeText(code);
-        copied = true;
-      }
-    } catch (_) {
-      copied = false;
-    }
-    if (!copied) copied = fallbackCopy($("github-user-code"));
-
-    const button = $("github-copy");
-    const label = button.querySelector(".btn-label");
-    if (!label) return;
-    label.textContent = t(copied ? "common.copied" : "common.copy_failed");
-    clearTimer("copy");
-    state.timers.copy = window.setTimeout(() => {
-      if (hasI18n()) window.FolioI18n.apply(button);
-      else label.textContent = t("github.copy_code");
-    }, 1600);
-  }
-
   /* ------------------------------------------------------------- repository */
 
   const repositoryPart = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 
-  function repositoryOptions() {
-    const raw = Array.isArray(state.repositories) ? state.repositories : [];
-    const seen = new Set();
-    const options = [];
-    raw.forEach((item) => {
-      if (!item || typeof item.full_name !== "string") return;
-      const parts = item.full_name.trim().split("/");
-      if (parts.length !== 2 || !repositoryPart.test(parts[0]) || !repositoryPart.test(parts[1])) return;
-      const fullName = `${parts[0]}/${parts[1]}`;
-      if (seen.has(fullName)) return;
-      seen.add(fullName);
-      options.push({
-        full_name: fullName,
-        private: item.private === true,
-        archived: item.archived === true,
-      });
-    });
-    return options;
-  }
-
-  function repositoryLabel(repository) {
-    const flags = [];
-    if (repository.private) flags.push(t("repo.private"));
-    if (repository.archived) flags.push(t("repo.archived"));
-    return flags.length ? `${repository.full_name} (${flags.join(", ")})` : repository.full_name;
-  }
-
-  function addRepositoryOption(select, value, label, disabled = false) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    option.disabled = disabled;
-    select.appendChild(option);
-  }
-
-  function currentRepositoryName() {
-    const repository = state.lastState && state.lastState.repository;
-    return repository && repository.connected && typeof repository.full_name === "string"
-      ? repository.full_name
-      : "";
-  }
-
-  function fillRepositoryManualFromCurrent() {
-    const fullName = currentRepositoryName();
-    if (!fullName) return;
-    if ($("repo-owner").value.trim() || $("repo-name").value.trim()) return;
-    const separator = fullName.indexOf("/");
-    if (separator <= 0) return;
-    $("repo-owner").value = fullName.slice(0, separator);
-    $("repo-name").value = fullName.slice(separator + 1);
-  }
-
-  function repositoryBaseHintKey() {
-    if (state.githubStatus === "unknown") return "repo.checking_hint";
-    if (state.githubStatus !== "authenticated") return "repo.github_required";
-    switch (state.repositoryListStatus) {
-      case "loading":
-      case "idle":
-        return "repo.loading_hint";
-      case "error":
-        return "repo.list_failed";
-      case "loaded":
-        if (state.repositoryTruncated) return "repo.truncated_hint";
-        if (!repositoryOptions().length && !currentRepositoryName()) return "repo.empty_hint";
-        return "repo.select_hint";
-      default:
-        return "repo.loading_hint";
-    }
-  }
-
-  function updateRepositoryManualVisibility() {
-    const select = $("repo-select");
-    const manual = Boolean(select && select.value === "__manual__");
-    const wasHidden = $("repo-manual").hidden;
-    $("repo-manual").hidden = !manual;
-    if (manual && wasHidden) fillRepositoryManualFromCurrent();
-    const hint = $("repo-select-hint");
-    if (hint) hint.textContent = t(manual ? "repo.manual_hint" : repositoryBaseHintKey());
-    const connect = $("repo-connect");
-    if (connect) connect.disabled = !select || !select.value;
-    const refresh = $("repo-refresh");
-    if (refresh) refresh.disabled = state.githubStatus !== "authenticated" || state.repositoryListStatus === "loading";
-  }
-
-  function renderRepositoryOptions() {
-    const select = $("repo-select");
-    if (!select) return;
-    const previous = select.value;
-    while (select.firstChild) select.removeChild(select.firstChild);
-
-    const status = state.repositoryListStatus;
-    if (state.githubStatus === "unknown") {
-      addRepositoryOption(select, "", t("repo.checking_option"), true);
-    } else if (state.githubStatus !== "authenticated") {
-      addRepositoryOption(select, "", t("repo.github_required_option"), true);
-    } else if (status === "loading" || status === "idle") {
-      addRepositoryOption(select, "", t("repo.loading_option"), true);
-    } else if (status === "error") {
-      addRepositoryOption(select, "", t("repo.list_failed_option"), true);
-    } else {
-      addRepositoryOption(select, "", t("repo.select_placeholder"), true);
-      const repositories = repositoryOptions();
-      const names = new Set(repositories.map((repository) => repository.full_name));
-      repositories.forEach((repository) => {
-        addRepositoryOption(select, repository.full_name, repositoryLabel(repository));
-      });
-      const current = currentRepositoryName();
-      if (current && !names.has(current)) {
-        addRepositoryOption(select, current, `${current} (${t("repo.current_tag")})`);
-      }
-      if (!repositories.length && !current) {
-        addRepositoryOption(select, "", t("repo.empty_option"), true);
-      }
-    }
-    addRepositoryOption(select, "__manual__", t("repo.manual_option"));
-
-    const values = new Set(Array.from(select.options).map((option) => option.value));
-    let desired = previous;
-    if (desired === "__manual__" && !state.repositoryManual) desired = "";
-    if (desired && !values.has(desired)) desired = "";
-    const current = currentRepositoryName();
-    if (!desired && current && values.has(current) && !state.repositoryManual) desired = current;
-    if (!desired && state.repositoryManual && values.has("__manual__")) desired = "__manual__";
-    if (!desired && (state.githubStatus !== "authenticated" || status === "error")) desired = "__manual__";
-    select.value = desired;
-    updateRepositoryManualVisibility();
-  }
-
-  async function loadRepositories(force = false) {
-    if (state.githubStatus !== "authenticated") {
-      state.repositories = [];
-      state.repositoryListStatus = "signed_out";
-      state.repositoryTruncated = false;
-      renderRepositoryOptions();
-      return;
-    }
-    if (state.repositoryListStatus === "loading") return;
-    if (!force && state.repositoryListStatus === "loaded") return;
-    const previousStatus = state.repositoryListStatus;
-    state.repositoryListStatus = "loading";
-    const select = $("repo-select");
-    if (!select || select.options.length <= 2 || previousStatus === "signed_out" || previousStatus === "idle") {
-      renderRepositoryOptions();
-    } else {
-      updateRepositoryManualVisibility();
-    }
-    try {
-      const result = await api("/api/github/repositories");
-      if (state.githubStatus !== "authenticated") return;
-      state.repositories = Array.isArray(result.repositories) ? result.repositories : [];
-      state.repositoryTruncated = result.truncated === true;
-      state.repositoryListStatus = "loaded";
-      setMessage("repository", null);
-    } catch (error) {
-      if (error.code === "authentication_required") return;
-      state.repositories = [];
-      state.repositoryTruncated = false;
-      state.repositoryListStatus = "error";
-      setMessage("repository", errorKey(error, "repo.list_failed"), { error: true });
-    }
-    renderRepositoryOptions();
-  }
-
-  async function refreshRepositoryList() {
-    if (state.repositoryListStatus === "loading") return;
-    if (state.githubStatus !== "authenticated") {
-      setMessage("repository", "repo.github_required", { error: true });
-      return;
-    }
-    const button = $("repo-refresh");
-    setBusy(button, "repo.refreshing_list");
-    try {
-      await loadRepositories(true);
-    } finally {
-      clearBusy(button);
-      updateRepositoryManualVisibility();
-    }
-  }
-
   async function connectRepository(event) {
     event.preventDefault();
     if (state.connecting) return;
-    const select = $("repo-select");
-    let owner = "";
-    let name = "";
-    if (select && select.value === "__manual__") {
-      state.repositoryManual = true;
-      owner = $("repo-owner").value.trim();
-      name = $("repo-name").value.trim();
-    } else if (select && select.value) {
-      const separator = select.value.indexOf("/");
-      if (separator > 0) {
-        owner = select.value.slice(0, separator);
-        name = select.value.slice(separator + 1);
-      }
-    }
+    const owner = $("repo-owner").value.trim();
+    const name = $("repo-name").value.trim();
     if (!repositoryPart.test(owner) || !repositoryPart.test(name)) {
       setMessage("repository", "repo.invalid", { error: true });
-      updateRepositoryManualVisibility();
       return;
     }
     state.connecting = true;
@@ -914,7 +386,7 @@
         body: { owner, name },
       });
       renderRaw("repository-output", result);
-      state.repositoryManual = false;
+      $("repo-name").value = "";
       setMessage("repository", "repo.connected_message");
       await refreshAll();
     } catch (error) {
@@ -925,7 +397,6 @@
     } finally {
       state.connecting = false;
       clearBusy(button);
-      updateRepositoryManualVisibility();
     }
   }
 
@@ -1223,12 +694,8 @@
 
   function renderState(data) {
     if (!data) return;
-    const github = data.github || {};
-    const status = typeof github.status === "string" ? github.status : "unknown";
-    state.githubStatus = status;
-    renderGithubBadge(status);
-    updateGithubButtons();
-    if (status === "authenticated" || status === "signed_out" || status === "error") hideDevice();
+    const git = data.git || {};
+    const credential = typeof git.mode === "string" ? git.mode : "missing";
 
     const repository = data.repository || {};
     const connected = Boolean(repository.connected);
@@ -1240,7 +707,7 @@
     $("repo-current-branch").textContent = connected ? repository.branch || "—" : "—";
     $("repo-current-head").textContent = connected && repository.head ? String(repository.head).slice(0, 8) : "—";
 
-    $("fact-github").textContent = t(githubKey(status));
+    $("fact-git").textContent = t(`state.credential_${credential}`);
     $("fact-repository").textContent = connected ? repository.full_name || "—" : t("repo.none");
     $("fact-branch").textContent = repository.branch || "—";
     $("fact-head").textContent = repository.head ? String(repository.head).slice(0, 8) : "—";
@@ -1254,21 +721,6 @@
     const latest = state.automation && state.automation.latest && state.automation.latest.run_id ? state.automation.latest : null;
     const lastRun = latest ? latest.finished_at || latest.started_at : scheduler.finished_at;
     $("fact-last-run").textContent = lastRun ? formatTime(lastRun) || lastRun : t("automation.never");
-
-    if (status === "authenticated") {
-      if (state.repositoryListStatus === "idle" || state.repositoryListStatus === "signed_out") {
-        state.repositoryListStatus = "idle";
-        void loadRepositories();
-      } else {
-        renderRepositoryOptions();
-      }
-    } else {
-      state.repositories = [];
-      state.repositoryTruncated = false;
-      state.repositoryManual = false;
-      state.repositoryListStatus = status === "unknown" ? "idle" : "signed_out";
-      renderRepositoryOptions();
-    }
 
     updateRunnerUi(data);
     renderAutomationView();
@@ -1284,7 +736,6 @@
   async function refreshAll() {
     try {
       await refreshState();
-      await recoverGithubFlow();
     } catch (error) {
       if (error.code !== "authentication_required") {
         setMessage("automation", errorKey(error, "error.generic"), { error: true });
@@ -1933,6 +1384,15 @@
       if (task.attempts > 0) {
         parts.push(t("tasks.attempts", { count: task.attempts }));
       }
+      if (task.payload && typeof task.payload === "object") {
+        Object.entries(task.payload)
+          .filter(([key, value]) => key !== "title" && ["string", "number", "boolean"].includes(typeof value))
+          .slice(0, 3)
+          .forEach(([key, value]) => {
+            const text = String(value);
+            parts.push(`${key}=${text.length > 40 ? `${text.slice(0, 40)}…` : text}`);
+          });
+      }
       if (task.reason) {
         parts.push(task.reason);
       }
@@ -2361,22 +1821,7 @@
 
   $("login-form").addEventListener("submit", login);
   $("logout-button").addEventListener("click", logout);
-  $("github-start").addEventListener("click", startGithub);
-  $("github-poll").addEventListener("click", () => pollGithub({ manual: true }));
-  $("github-logout").addEventListener("click", logoutGithub);
-  $("github-copy").addEventListener("click", copyDeviceCode);
   $("repository-form").addEventListener("submit", connectRepository);
-  $("repo-select").addEventListener("change", () => {
-    const select = $("repo-select");
-    state.repositoryManual = Boolean(select && select.value === "__manual__");
-    updateRepositoryManualVisibility();
-  });
-  $("repo-refresh").addEventListener("click", refreshRepositoryList);
-  ["repo-owner", "repo-name"].forEach((id) => {
-    $(id).addEventListener("input", () => {
-      if ($("repo-select").value === "__manual__") state.repositoryManual = true;
-    });
-  });
   $("sync-button").addEventListener("click", syncRepository);
   $("automation-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2502,9 +1947,6 @@
     renderMessages();
     setConnection(state.authenticated);
     if (state.lastState) renderState(state.lastState);
-    renderGithubBadge(state.githubStatus);
-    updateGithubButtons();
-    if (state.device && !state.device.expired) updateExpiryText();
     if (state.modelMenuOpen) renderModelMenu();
     renderChannelTexts(state.channels);
     renderHooks({ hooks: state.hooks });

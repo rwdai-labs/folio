@@ -68,6 +68,25 @@ The same shape covers GitHub without webhooks: `GET /repos/{r}/issues?state=open
 with `If-None-Match` and the stored ETag. A 304 costs one rate-limit unit and no
 response body. At personal scale this is effectively free.
 
+### A watcher is a plugin, and GitHub is one of them
+
+Everything outside the service that notices an event and calls the hook API is
+an **integration plugin**. The dependency runs one way: a plugin depends on
+Folio, never the reverse. A plugin owns its credentials, its state, and its
+schedule; Folio owns the task, the run, and the audit trail. See
+[integration-plugins.md](integration-plugins.md).
+
+This is why GitHub does not belong inside Folio. Folio needs exactly one thing
+from a code host — an HTTPS git credential for the context repository
+(`GIT_AUTH_TOKEN`, with an existing `gh` session as the compatibility fallback).
+Everything that treats GitHub as a *service* — login, repository discovery,
+issues, pull requests, checks — is the plugin's job, with the plugin's own PAT.
+`plugins/github-bridge` is the reference implementation.
+
+The plugin cannot choose what Folio does. The hook's action decides the task
+kind, and the owner sets it in Folio. That keeps the dangerous half of an
+integration — the action, not the trigger — behind the owner's configuration.
+
 ### The hook API is the only inbound trigger
 
 `POST /api/hooks/{hook_id}` is how work starts. This is the "开放 API"
@@ -324,11 +343,15 @@ locks.
    price table.
 5. **Task queue** (implemented): durable tasks, priorities, off-peak window,
    global and per-task pause, run-now, single-task dispatcher.
-6. **GitHub actions**: issue triage and PR review draft, approval-gated. This
+6. **Integration plugins** (implemented): the hook contract in
+   `docs/integration-plugins.md`, payload projection, and the GitHub bridge as
+   the reference plugin. Folio no longer logs in to GitHub or lists
+   repositories; it holds only the context-repository git credential.
+7. **GitHub actions**: issue triage and PR review draft, approval-gated. This
    is also the first task kind with a payload, so the projection rule in §9
    must be settled first.
-7. **Price-aware routing**: provider price data, peak windows, trust rules.
-8. **More channels**: DingTalk → Feishu → WeCom.
+8. **Price-aware routing**: provider price data, peak windows, trust rules.
+9. **More channels**: DingTalk → Feishu → WeCom.
 
 Each slice is independently useful and testable; none requires the next.
 

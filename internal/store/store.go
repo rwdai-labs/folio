@@ -16,20 +16,15 @@ import (
 )
 
 const (
-	maxReportBytes   = 2 * 1024 * 1024
-	maxReports       = 40
-	maxProposals     = 100
-	maxTextRunes     = 16 * 1024
-	maxContentBytes  = 1024 * 1024
-	maxDiffBytes     = 512 * 1024
-	reviewTTL        = 30 * time.Minute
-	maxGitOutput     = 8 * 1024 * 1024
-	maxJSONState     = 256 * 1024
-	maxDevicePayload = 128 * 1024
-	githubClientID   = "Iv1.e7b89e013f801f03"
-	githubDeviceURL  = "https://github.com/login/device/code"
-	githubTokenURL   = "https://github.com/login/oauth/access_token"
-	githubAPIURL     = "https://api.github.com"
+	maxReportBytes  = 2 * 1024 * 1024
+	maxReports      = 40
+	maxProposals    = 100
+	maxTextRunes    = 16 * 1024
+	maxContentBytes = 1024 * 1024
+	maxDiffBytes    = 512 * 1024
+	reviewTTL       = 30 * time.Minute
+	maxGitOutput    = 8 * 1024 * 1024
+	maxJSONState    = 256 * 1024
 )
 
 var (
@@ -39,8 +34,6 @@ var (
 	branchRE         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
 	modelRE          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$`)
 	reportIDRE       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
-	deviceCodeRE     = regexp.MustCompile(`^[A-Za-z0-9._~:/_+\-]+$`)
-	userCodeRE       = regexp.MustCompile(`(?i)^[A-Z0-9]{4}-[A-Z0-9]{4}$`)
 	githubTokenRE    = regexp.MustCompile(`^[A-Za-z0-9_.-]{20,512}$`)
 	githubRemoteRE   = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\.git$`)
 )
@@ -59,24 +52,27 @@ var (
 // Store owns only the external runtime state of the maintainer. The cloned
 // repository is treated as untrusted input and is never used as a tool root.
 type Store struct {
-	dataDir         string
-	toolRoot        string
-	repositoryDir   string
-	runtimeDir      string
-	runsDir         string
-	reviewsDir      string
-	pendingDir      string
-	reportsDir      string
-	codexDir        string
-	dshDir          string
-	secretsDir      string
-	ghConfigDir     string
-	githubAPIBase   string
-	homeDir         string
-	hooksDir        string
-	authPendingPath string
-	statePath       string
-	lockPath        string
+	dataDir       string
+	toolRoot      string
+	repositoryDir string
+	runtimeDir    string
+	runsDir       string
+	reviewsDir    string
+	pendingDir    string
+	reportsDir    string
+	codexDir      string
+	dshDir        string
+	secretsDir    string
+	ghConfigDir   string
+	homeDir       string
+	hooksDir      string
+	statePath     string
+	lockPath      string
+
+	// gitCredentialPath is a private git-credential-store file written from
+	// GIT_AUTH_TOKEN. gitCredentialSource is "token", "gh", or "" (missing).
+	gitCredentialPath   string
+	gitCredentialSource string
 
 	threadMu sync.Mutex
 
@@ -112,12 +108,6 @@ type Store struct {
 	modelCatalogAt   time.Time
 	modelCatalogData map[string]any
 
-	authDeviceCode      string
-	authDeviceExpiresAt time.Time
-	authDeviceInterval  int
-	authDeviceLastPoll  time.Time
-	authDeviceInfo      map[string]string
-
 	// Tests may use a temporary local bare Git repository. Production callers
 	// never set this flag, so normal GitHub remote validation stays strict.
 	allowFileRemoteForTests bool
@@ -151,10 +141,9 @@ func New(dataDir, toolRoot string) (*Store, error) {
 		dshDir:             filepath.Join(data, "dsh"),
 		secretsDir:         filepath.Join(data, "secrets"),
 		ghConfigDir:        filepath.Join(data, "secrets", "gh"),
-		githubAPIBase:      githubAPIURL,
+		gitCredentialPath:  filepath.Join(data, "secrets", "git-credentials"),
 		homeDir:            filepath.Join(data, "home"),
 		hooksDir:           filepath.Join(data, "git-hooks"),
-		authPendingPath:    filepath.Join(data, "runtime", "github-device.json"),
 		statePath:          filepath.Join(data, "state.json"),
 		lockPath:           filepath.Join(data, "store.lock"),
 		channelsPath:       filepath.Join(data, "secrets", "channels.json"),
@@ -165,10 +154,11 @@ func New(dataDir, toolRoot string) (*Store, error) {
 		replayPath:         filepath.Join(data, "runtime", "hook-replay.json"),
 		notifyLast:         map[string]time.Time{},
 		hookCalls:          map[string][]time.Time{},
-		authDeviceInfo:     map[string]string{},
-		authDeviceInterval: 5,
 	}
 	if err := s.ensureDirs(); err != nil {
+		return nil, err
+	}
+	if err := s.prepareGitCredential(); err != nil {
 		return nil, err
 	}
 	// A task left running by a previous process never finished; say so instead
@@ -182,27 +172,14 @@ func (s *Store) State() (map[string]any, error) {
 	return s.withLock(func() (map[string]any, error) {
 		saved := s.loadState()
 		repository := mapValue(saved, "repository")
-		auth := mapValue(saved, "github")
 		maintenance := mapValue(saved, "maintenance")
 		scheduler := mapValue(saved, "scheduler")
-		authStatus := publicText(auth["status"], 64)
-		if authStatus == "" {
-			authStatus = "unknown"
-		}
-		// A host gh configuration imported at startup, or a login completed
-		// outside the UI, is authoritative. Refresh a stale signed-out state
-		// once so the repository selector can use the existing credentials.
-		if authStatus != "authenticated" && s.ghAuthenticated() {
-			authStatus = "authenticated"
-			if err := s.setGitHubStatus(authStatus); err != nil {
-				return nil, err
-			}
-		}
 		return map[string]any{
 			"version": 1,
-			"github": map[string]any{
-				"status":        authStatus,
-				"authenticated": authStatus == "authenticated",
+			"git": map[string]any{
+				// "mode", not "credential": the response redactor treats any
+				// credential-shaped key as secret, and this is a status string.
+				"mode": s.gitCredentialMode(),
 			},
 			"repository": map[string]any{
 				"connected": s.repositoryConnected(repository),

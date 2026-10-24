@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,14 +68,14 @@ func TestCreateTaskDefersByPriority(t *testing.T) {
 		map[string]bool{"P0": false, "P1": false, "P2": true, "P3": true},
 		start.Format("15:04"), start.Add(time.Hour).Format("15:04"), 0)
 
-	immediate, err := store.CreateTask("maintenance", "manual", "Now", "P1")
+	immediate, err := store.CreateTask("maintenance", "manual", "Now", "P1", nil)
 	if err != nil {
 		t.Fatalf("create P1: %v", err)
 	}
 	if task := immediate["task"].(map[string]any); task["not_before"] != nil {
 		t.Fatalf("P1 should not be deferred: %v", task)
 	}
-	deferred, err := store.CreateTask("maintenance", "hook:x", "Later", "P2")
+	deferred, err := store.CreateTask("maintenance", "hook:x", "Later", "P2", nil)
 	if err != nil {
 		t.Fatalf("create P2: %v", err)
 	}
@@ -91,11 +92,11 @@ func TestCreateTaskDefersByPriority(t *testing.T) {
 
 func TestCreateTaskDeduplicatesActiveWork(t *testing.T) {
 	store := newTestStore(t)
-	first, err := store.CreateTask("maintenance", "hook:ctx", "Maintenance", "P0")
+	first, err := store.CreateTask("maintenance", "hook:ctx", "Maintenance", "P0", nil)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	second, err := store.CreateTask("maintenance", "hook:ctx", "Maintenance", "P0")
+	second, err := store.CreateTask("maintenance", "hook:ctx", "Maintenance", "P0", nil)
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestTaskPauseAndRunNow(t *testing.T) {
 	store := newTestStore(t)
 	// Always inside the window, so the only gate is the pause switch.
 	writeTaskPolicy(t, store, map[string]bool{"P2": true}, "00:00", "00:00", 0)
-	created, err := store.CreateTask("maintenance", "hook:ctx", "Maintenance", "P2")
+	created, err := store.CreateTask("maintenance", "hook:ctx", "Maintenance", "P2", nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -154,10 +155,10 @@ func TestTaskPauseAndRunNow(t *testing.T) {
 func TestDispatchDuePicksHighestPriority(t *testing.T) {
 	store := newTestStore(t)
 	writeTaskPolicy(t, store, map[string]bool{"P0": false, "P3": true}, "00:00", "00:00", 0)
-	if _, err := store.CreateTask("maintenance", "hook:batch", "Batch", "P3"); err != nil {
+	if _, err := store.CreateTask("maintenance", "hook:batch", "Batch", "P3", nil); err != nil {
 		t.Fatalf("create P3: %v", err)
 	}
-	if _, err := store.CreateTask("maintenance", "hook:urgent", "Urgent", "P0"); err != nil {
+	if _, err := store.CreateTask("maintenance", "hook:urgent", "Urgent", "P0", nil); err != nil {
 		t.Fatalf("create P0: %v", err)
 	}
 	result, err := store.DispatchDue()
@@ -182,7 +183,7 @@ func TestDispatchDuePicksHighestPriority(t *testing.T) {
 func TestUnsupportedTaskKindFailsInsteadOfLooping(t *testing.T) {
 	store := newTestStore(t)
 	writeTaskPolicy(t, store, map[string]bool{}, "00:00", "00:00", 0)
-	if _, err := store.CreateTask("issue-triage", "manual", "Triage", "P1"); err != nil {
+	if _, err := store.CreateTask("issue-triage", "manual", "Triage", "P1", nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	result, err := store.DispatchDue()
@@ -220,5 +221,33 @@ func TestTasksArePrunedAndInterruptedWorkIsRecovered(t *testing.T) {
 	task := listing["tasks"].([]any)[0].(map[string]any)
 	if task["status"] != "failed" || task["reason"] != "interrupted" {
 		t.Fatalf("recovered task=%v", task)
+	}
+}
+
+func TestCreateTaskProjectsPluginPayload(t *testing.T) {
+	store := newTestStore(t)
+	created, err := store.CreateTask("maintenance", "hook:issues", "Issue 12", "P0", map[string]any{
+		"repo":   "owner/name",
+		"issue":  float64(12),
+		"nested": map[string]any{"inside": "drop me"},
+		"list":   []any{"drop", "me"},
+		"big":    strings.Repeat("x", 600),
+		"token":  "must-not-be-stored",
+		"Title":  "upper keys are dropped",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	payload, ok := created["task"].(map[string]any)["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload missing: %v", created["task"])
+	}
+	if payload["repo"] != "owner/name" || payload["issue"] != float64(12) {
+		t.Fatalf("payload=%v", payload)
+	}
+	for _, key := range []string{"nested", "list", "big", "token", "Title"} {
+		if _, present := payload[key]; present {
+			t.Fatalf("payload kept %q: %v", key, payload)
+		}
 	}
 }
