@@ -143,13 +143,19 @@ Two ways to authenticate, both first class:
 2. Set `GIT_AUTH_TOKEN` for a non-interactive deployment. The token is written
    once to `data/secrets/git-credentials` (0600) and used through
    `git-credential-store`; it never enters a model environment or a command
-   line.
+   line. A fine-grained token only exposes the repositories it was granted, so
+   the picker can list fewer private repositories than the account owns; use
+   the `gh` sign-in or import an existing `gh` login when the full list is
+   required.
 
 The GitHub card and the repository picker are the plugin's own frontend,
 mounted at `/plugins/github/` and `/api/plugins/github/`. The repository card
-has one way in: sign in to GitHub once, pick a repository from the list, and
-connect. There is no owner/name form of its own; the shell keeps the connect
-transaction (`/api/repository/connect`) and the plugin drives it.
+has one way in: sign in to GitHub once, search the repository list (contiguous
+or fuzzy fragments, keyboard selection), and connect. Private repositories are
+marked and listed from every page the credential can read, and the picker
+reports how many were loaded; a truncated list says so instead of silently
+hiding entries. There is no owner/name form of its own; the shell keeps the
+connect transaction (`/api/repository/connect`) and the plugin drives it.
 
 External triggers (a context watcher, a CI job, the GitHub issue bridge) are a
 different class of plugin: they are separate programs that call the signed hook

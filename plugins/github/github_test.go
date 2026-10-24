@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -177,12 +178,84 @@ func TestDeviceFlowStoresTokenAndListsRepositories(t *testing.T) {
 		t.Fatal("token was not stored through gh")
 	}
 	list, err := item.repositories(context.Background(), plugin.Request{Exec: exec})
-	if err != nil || list["count"] != 1 {
+	if err != nil || list["count"] != 1 || list["private"] != 1 {
 		t.Fatalf("repositories=%v err=%v", list, err)
 	}
 	items, _ := list["repositories"].([]map[string]any)
-	if len(items) != 1 || items[0]["full_name"] != "owner/context" {
+	if len(items) != 1 || items[0]["full_name"] != "owner/context" || items[0]["private"] != true {
 		t.Fatalf("items=%v", list["repositories"])
+	}
+}
+
+// A large account must still see private and older repositories: the picker
+// searches the whole list locally, so the endpoint has to return every page it
+// is allowed to read and must not report archived entries.
+func TestRepositoriesIncludePrivateAndEveryPage(t *testing.T) {
+	t.Setenv("GIT_AUTH_TOKEN", strings.Repeat("c", 40))
+	var pages []string
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		pages = append(pages, query.Get("page"))
+		if got := query.Get("visibility"); got != "all" {
+			t.Errorf("visibility=%q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch query.Get("page") {
+		case "1":
+			items := make([]map[string]any, 0, repositoriesPerPage)
+			for i := 1; i <= repositoriesPerPage; i++ {
+				items = append(items, map[string]any{
+					"full_name":      fmt.Sprintf("owner/repo-%03d", i),
+					"private":        i%10 == 0,
+					"archived":       i == 3,
+					"default_branch": "main",
+				})
+			}
+			if err := json.NewEncoder(w).Encode(items); err != nil {
+				t.Errorf("encode page: %v", err)
+			}
+		case "2":
+			_, _ = io.WriteString(w, `[
+				{"full_name":"owner/older-private","private":true,"archived":false,"default_branch":"main"},
+				{"full_name":"owner/older-public","private":false,"archived":false,"default_branch":"main"}
+			]`)
+		default:
+			_, _ = io.WriteString(w, `[]`)
+		}
+	}))
+	defer apiServer.Close()
+	original := apiURL
+	t.Cleanup(func() { apiURL = original })
+	apiURL = apiServer.URL
+
+	item, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := item.repositories(context.Background(), plugin.Request{Exec: testExecutor{}})
+	if err != nil {
+		t.Fatalf("repositories: %v", err)
+	}
+	// 100 from page one minus one archived, plus the two on page two.
+	if result["count"] != 101 || result["private"] != 11 || result["truncated"] != false {
+		t.Fatalf("result=%v", result)
+	}
+	if len(pages) != 2 || pages[0] != "1" || pages[1] != "2" {
+		t.Fatalf("pages=%v", pages)
+	}
+	found := map[string]map[string]any{}
+	for _, entry := range result["repositories"].([]map[string]any) {
+		found[entry["full_name"].(string)] = entry
+	}
+	if _, ok := found["owner/repo-003"]; ok {
+		t.Fatal("archived repository was returned")
+	}
+	older, ok := found["owner/older-private"]
+	if !ok {
+		t.Fatalf("older private repository missing from %d entries", len(found))
+	}
+	if older["private"] != true {
+		t.Fatalf("older private entry=%v", older)
 	}
 }
 

@@ -24,9 +24,12 @@ var (
 
 const (
 	repositoriesPerPage = 100
-	maxRepositories     = 200
-	maxRepositoryPages  = 2
-	maxAPIPayload       = 2 * 1024 * 1024
+	// maxRepositories is a safety bound, not a page size: the picker searches
+	// the whole loaded list, so an owner with many repositories still finds an
+	// older one without paging through GitHub by hand.
+	maxRepositories    = 1000
+	maxRepositoryPages = maxRepositories / repositoriesPerPage
+	maxAPIPayload      = 2 * 1024 * 1024
 )
 
 // deviceFlow is the private state of one sign-in attempt.
@@ -150,7 +153,18 @@ func (p *Plugin) repositories(ctx context.Context, request plugin.Request) (map[
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"repositories": list, "count": len(list), "truncated": truncated}, nil
+	private := 0
+	for _, item := range list {
+		if value, ok := item["private"].(bool); ok && value {
+			private++
+		}
+	}
+	return map[string]any{
+		"repositories": list,
+		"count":        len(list),
+		"private":      private,
+		"truncated":    truncated,
+	}, nil
 }
 
 // authMode reports where the credential comes from without exposing it. The
@@ -264,46 +278,28 @@ func (p *Plugin) post(ctx context.Context, endpoint string, form url.Values) (ma
 	return result, nil
 }
 
+// repository is the bounded subset of GitHub's repository payload the picker
+// needs. Nothing else from the API response is kept.
+type repository struct {
+	FullName      string `json:"full_name"`
+	Private       bool   `json:"private"`
+	Archived      bool   `json:"archived"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+// fetchRepositories walks every page GitHub offers up to maxRepositories. The
+// picker filters this list locally, so private and older repositories must be
+// present: a truncated list is reported, never silently shortened.
 func (p *Plugin) fetchRepositories(ctx context.Context, token string) ([]map[string]any, bool, error) {
+	client := authClient()
 	seen := map[string]struct{}{}
-	list := make([]map[string]any, 0, 32)
+	list := make([]map[string]any, 0, 64)
 	for page := 1; page <= maxRepositoryPages; page++ {
-		endpoint, err := url.Parse(apiURL + "/user/repos")
+		items, err := p.repositoryPage(ctx, client, token, page)
 		if err != nil {
-			return nil, false, errors.New("GitHub repository list is unavailable")
+			return nil, false, err
 		}
-		query := endpoint.Query()
-		query.Set("per_page", "100")
-		query.Set("page", strconv.Itoa(page))
-		query.Set("sort", "updated")
-		query.Set("affiliation", "owner,collaborator,organization_member")
-		endpoint.RawQuery = query.Encode()
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-		if err != nil {
-			return nil, false, errors.New("GitHub repository list is unavailable")
-		}
-		request.Header.Set("Accept", "application/vnd.github+json")
-		request.Header.Set("Authorization", "Bearer "+token)
-		request.Header.Set("User-Agent", "folio-service/1")
-		response, err := authClient().Do(request)
-		if err != nil {
-			return nil, false, errors.New("GitHub repository list is unavailable")
-		}
-		raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxAPIPayload+1))
-		response.Body.Close()
-		if readErr != nil || len(raw) > maxAPIPayload || response.StatusCode != http.StatusOK {
-			return nil, false, errors.New("GitHub repository list is unavailable")
-		}
-		var pageItems []struct {
-			FullName      string `json:"full_name"`
-			Private       bool   `json:"private"`
-			Archived      bool   `json:"archived"`
-			DefaultBranch string `json:"default_branch"`
-		}
-		if json.Unmarshal(raw, &pageItems) != nil {
-			return nil, false, errors.New("GitHub repository list is unavailable")
-		}
-		for _, item := range pageItems {
+		for _, item := range items {
 			if item.Archived || !validFullName(item.FullName) {
 				continue
 			}
@@ -320,11 +316,46 @@ func (p *Plugin) fetchRepositories(ctx context.Context, token string) ([]map[str
 				return list, true, nil
 			}
 		}
-		if len(pageItems) < repositoriesPerPage {
+		if len(items) < repositoriesPerPage {
 			break
 		}
 	}
 	return list, len(list) >= maxRepositories, nil
+}
+
+func (p *Plugin) repositoryPage(ctx context.Context, client *http.Client, token string, page int) ([]repository, error) {
+	endpoint, err := url.Parse(apiURL + "/user/repos")
+	if err != nil {
+		return nil, errors.New("GitHub repository list is unavailable")
+	}
+	query := endpoint.Query()
+	query.Set("per_page", strconv.Itoa(repositoriesPerPage))
+	query.Set("page", strconv.Itoa(page))
+	query.Set("sort", "updated")
+	query.Set("affiliation", "owner,collaborator,organization_member")
+	query.Set("visibility", "all")
+	endpoint.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, errors.New("GitHub repository list is unavailable")
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("User-Agent", "folio-service/1")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, errors.New("GitHub repository list is unavailable")
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxAPIPayload+1))
+	response.Body.Close()
+	if readErr != nil || len(raw) > maxAPIPayload || response.StatusCode != http.StatusOK {
+		return nil, errors.New("GitHub repository list is unavailable")
+	}
+	var pageItems []repository
+	if json.Unmarshal(raw, &pageItems) != nil {
+		return nil, errors.New("GitHub repository list is unavailable")
+	}
+	return pageItems, nil
 }
 
 func (p *Plugin) flowResponse(status string, flow *deviceFlow) map[string]any {

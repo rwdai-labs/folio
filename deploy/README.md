@@ -64,10 +64,10 @@ read/write. The plugin writes it to a private credential file (mode `0600`) and
 never prints it. `gh` stays in the image because the device flow and the git
 credential helper use it.
 
-Sign in to the local Web page and connect the private repository with the
-picker, or type `owner/name` manually. The GitHub card and the picker are served
-by the built-in GitHub plugin; the service itself runs installed image tools,
-never scripts from the cloned repo.
+Sign in to the local Web page and connect the private repository through the
+searchable picker. The GitHub card and the picker are served by the built-in
+GitHub plugin; the service itself runs installed image tools, never scripts
+from the cloned repo.
 
 GitHub login and model login are separate. To configure Codex through its
 official device login, run locally:
@@ -143,8 +143,14 @@ For a custom location, set `CODEX_CONFIG_HOME` / `DSH_CONFIG_HOME` /
 `GH_CONFIG_HOME` to the mounted directory, or set `DSH_CONFIG_PATCH` to one
 specific `cordis.patch.yml`. An explicit `DSH_CONFIG_PATCH` wins over profile
 discovery. If `~/.config/gh/hosts.yml` is imported, the GitHub card detects the
-existing login on the next state refresh and the repository selector includes
-private repositories visible to that login.
+existing login on the next state refresh and the searchable repository
+selector includes private repositories visible to that login.
+
+`GIT_AUTH_TOKEN` instead fixes the credential to one deployment token. A
+fine-grained token only lists and clones the repositories it was granted, so
+the picker may show fewer private repositories than the account owns; prefer
+the imported `gh` login when the selector must cover all of them. The card and
+the picker state which mode is active.
 
 The scheduler runs every 86400 seconds after startup. Each tick pulls the
 latest checkout, asks the runner for bounded Markdown edits, validates and

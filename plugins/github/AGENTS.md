@@ -14,10 +14,18 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - Keep routes/assets inside the host plugin namespaces. Preserve the
   English/Chinese plugin UI with safe text rendering.
 - While mounted, this plugin owns the repository UX: one sign-in entry in the
-  repository card, the device code, then a repository dropdown wired to the host
-  connect action (`window.folio.connectRepository`). The GitHub card is the
-  sign-in detail surface and stays hidden while signed out. The shell has no
-  repository form; this card and the picker are the whole connect UI.
+  repository card, the device code, then a searchable repository picker wired to
+  the host connect action (`window.folio.connectRepository`). The picker filters
+  the whole loaded list locally (contiguous and scattered matches, keyboard
+  selection) and marks private repositories, because an account can have far
+  more repositories than a select box can show. `/repositories` returns every
+  page up to a bounded cap with `count`, `private` and `truncated`, so the list
+  is never silently shortened. The GitHub card is the sign-in detail surface and
+  stays hidden while signed out. The shell has no repository form; this card and
+  the picker are the whole connect UI.
+- A deployment token (`GIT_AUTH_TOKEN`) fixes the account and its repository
+  scope. In that mode the card explains the limit instead of offering a sign-in
+  button that cannot change the credential; the picker repeats the scope note.
 - Let `folio:session` tell the plugin when the host session is gained or lost;
   drop the picker on the signed-out signal.
 - Storage, authentication or plugin UI contract changes require updating this
