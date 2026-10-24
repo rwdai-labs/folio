@@ -78,8 +78,9 @@ may use only this surface:
 
 `folio:session` with `authenticated: false` obliges a plugin to drop its
 signed-in UI. The plugin mounts into markup the shell reserves and owns its own
-ids there; the host's manual repository form stays available for deployments
-without the plugin, and a mounted plugin hides it rather than competing with it.
+ids there. Built-in capability plugins are compiled in, so the shell carries no
+second implementation of their surface: the repository form lives in the GitHub
+plugin, and the host keeps only the connect transaction and the refresh.
 
 **What a plugin may do
 

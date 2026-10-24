@@ -86,8 +86,8 @@
       </aside>
 
       <div class="panels">
-        <!-- A built-in plugin mounts its own card here. Without the plugin the
-             manual owner/name form below is the whole experience. -->
+        <!-- A built-in plugin mounts its own card here and owns the repository
+             picker below; the shell has no repository form of its own. -->
         <section id="plugin-github" class="card" aria-labelledby="plugin-github-heading" hidden></section>
 
         <section id="repository-section" class="card" aria-labelledby="repository-heading">
@@ -118,24 +118,6 @@
           </div>
 
           <div id="repo-picker-slot" hidden></div>
-
-          <form id="repo-manual" class="form" novalidate>
-            <div class="form form-inline">
-              <div class="field">
-                <label for="repo-owner" data-i18n="repo.owner">Owner</label>
-                <input id="repo-owner" name="owner" autocomplete="off" maxlength="100">
-              </div>
-              <div class="field">
-                <label for="repo-name" data-i18n="repo.name">Name</label>
-                <input id="repo-name" name="name" autocomplete="off" maxlength="100">
-              </div>
-            </div>
-            <div class="actions">
-              <button id="repo-connect" class="btn secondary" type="submit">
-                <span class="btn-label" data-i18n="repo.connect">Connect</span>
-              </button>
-            </div>
-          </form>
 
           <div class="actions">
             <button id="sync-button" class="btn primary" type="button">

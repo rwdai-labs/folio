@@ -138,8 +138,6 @@
         return "error.forbidden";
       case "not_found":
         return "error.not_found";
-      case "invalid_repository":
-        return "repo.invalid";
       case "invalid_change":
       case "invalid_request":
         return "automation.invalid";
@@ -380,9 +378,9 @@
 
   const repositoryPart = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
 
-  // connectRemote is the one connect action. The manual form and a plugin
-  // picker both call it, so there is a single code path and a single error.
-  // It reports a reason, not a translation key, so a plugin can phrase it.
+  // connectRemote is the one connect transaction. The storage plugin's picker
+  // calls it; the shell has no repository form of its own. It reports a reason,
+  // not a translation key, so the calling plugin can phrase the failure.
   async function connectRemote(owner, name) {
     const cleanOwner = typeof owner === "string" ? owner.trim() : "";
     const cleanName = typeof name === "string" ? name.trim() : "";
@@ -401,26 +399,10 @@
       return { ok: true, result };
     } catch (error) {
       if (error.code !== "authentication_required") renderErrorRaw("repository-output", error);
-      return { ok: false, reason: "failed", key: errorKey(error, "repo.connect_failed"), error: error.code || null };
+      return { ok: false, reason: "failed" };
     } finally {
       state.connecting = false;
     }
-  }
-
-  async function connectRepository(event) {
-    event.preventDefault();
-    const button = $("repo-connect");
-    if (button && button.disabled) return;
-    setBusy(button, "repo.connecting");
-    setMessage("repository", null);
-    const outcome = await connectRemote($("repo-owner").value, $("repo-name").value);
-    clearBusy(button);
-    if (outcome.ok) {
-      $("repo-name").value = "";
-      setMessage("repository", "repo.connected_message");
-      return;
-    }
-    setMessage("repository", outcome.reason === "invalid" ? "repo.invalid" : outcome.key, { error: true });
   }
 
   async function syncRepository() {
@@ -1886,7 +1868,6 @@
 
   on("login-form", "submit", login);
   on("logout-button", "click", logout);
-  on("repo-manual", "submit", connectRepository);
   on("sync-button", "click", syncRepository);
   on("automation-form", "submit", (event) => {
     event.preventDefault();
@@ -2070,7 +2051,8 @@
         document.head.append(script);
       }
     } catch (_) {
-      // A missing plugin only means the manual fallback stays in place.
+      // Discovery is best effort: without a plugin there is no repository
+      // picker, and the rest of the console still works.
     }
   }
 

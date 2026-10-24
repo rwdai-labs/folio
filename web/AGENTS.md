@@ -25,8 +25,7 @@ Inherit `../AGENTS.md`.
 - The plugin host surface is `window.folio.api`, `connectRepository`,
   `refreshState`, `refreshTasks`, `formatTime`, `t`, plus the `folio:session`
   and `folio:languagechange` events. Plugins mount into reserved markup; the
-  manual repository form is the headless fallback and stays out of the way when
-  a plugin is mounted.
+  shell keeps no repository form of its own, only the connect transaction.
 - Built-in GitHub UI belongs to `../plugins/github/frontend/`, not core UI.
   Coordinate shared plugin-host changes with its directory instructions.
 - When changing API fields, rendering contracts or file responsibilities,

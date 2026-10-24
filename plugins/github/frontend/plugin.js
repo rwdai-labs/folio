@@ -294,11 +294,6 @@
 
   /* ------------------------------------------------------------------ setup */
 
-  // With the plugin mounted, the repository card never falls back to typing:
-  // the host's manual form is the headless path and stays hidden.
-  const manualForm = document.getElementById("repo-manual");
-  if (manualForm) manualForm.hidden = true;
-
   async function loadStatus() {
     try {
       state.status = await api(API + "/status");
