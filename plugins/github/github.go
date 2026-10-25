@@ -32,9 +32,12 @@ var (
 )
 
 const (
-	tokenEnv          = "GIT_AUTH_TOKEN"
-	credentialHost    = "github.com"
-	deviceClientID    = "Iv1.e7b89e013f801f03"
+	tokenEnv       = "GIT_AUTH_TOKEN"
+	credentialHost = "github.com"
+	// deviceClientID must belong to an OAuth App with Device Flow enabled, not
+	// a GitHub App: GitHub App device tokens ignore the requested scopes, so
+	// private repositories would never be listed or cloned.
+	deviceClientID    = "Ov23lilrzgqsR1xcsbJk"
 	maxAuthBodyBytes  = 128 * 1024
 	credentialTimeout = 20 * time.Second
 )
