@@ -1528,6 +1528,7 @@
   function triggerKey(trigger) {
     if (trigger === "scheduler") return "automation.trigger.scheduler";
     if (trigger === "hook") return "automation.trigger.hook";
+    if (trigger === "task") return "automation.trigger.task";
     return "automation.trigger.manual";
   }
 
@@ -1634,6 +1635,24 @@
       report.textContent = run.report_text;
       container.appendChild(heading);
       container.appendChild(report);
+    }
+    if (Array.isArray(run.needs_review) && run.needs_review.length) {
+      const heading = document.createElement("h3");
+      heading.textContent = t("automation.needs_review");
+      const list = document.createElement("ul");
+      run.needs_review.forEach((issue) => {
+        if (!issue || typeof issue.source !== "string" || typeof issue.reason !== "string") return;
+        const item = document.createElement("li");
+        item.textContent = `${issue.source}: ${translateKnown(`automation.finding.${issue.reason}`, issue.reason)}`;
+        list.appendChild(item);
+      });
+      container.appendChild(heading);
+      container.appendChild(list);
+    }
+    if (Number.isInteger(run.remaining) && run.remaining > 0) {
+      const pending = document.createElement("p");
+      pending.textContent = t("automation.remaining", { count: run.remaining });
+      container.appendChild(pending);
     }
     if ((run.status === "failed" || run.status === "skipped") && run.reason) {
       const reason = document.createElement("p");

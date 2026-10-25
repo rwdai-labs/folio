@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	contextrepo "folio/internal/context"
 	"folio/internal/storage"
 )
 
@@ -35,15 +36,18 @@ var (
 // worker validates the shape first; the store validates every path and byte
 // again before touching the canonical checkout.
 type autoReport struct {
-	Version     int        `json:"version"`
-	Status      string     `json:"status"`
-	Summary     string     `json:"summary"`
-	Device      string     `json:"device"`
-	Created     string     `json:"created"`
-	Skipped     int        `json:"skipped"`
-	InputDigest string     `json:"input_digest"`
-	Usage       *autoUsage `json:"usage,omitempty"`
-	Edits       []autoEdit `json:"edits"`
+	Version     int                            `json:"version"`
+	Status      string                         `json:"status"`
+	Summary     string                         `json:"summary"`
+	Device      string                         `json:"device"`
+	Created     string                         `json:"created"`
+	Skipped     int                            `json:"skipped"`
+	InputDigest string                         `json:"input_digest"`
+	Usage       *autoUsage                     `json:"usage,omitempty"`
+	Edits       []autoEdit                     `json:"edits"`
+	Files       map[string]string              `json:"files,omitempty"`
+	Remaining   int                            `json:"remaining,omitempty"`
+	NeedsReview []contextrepo.MaintenanceIssue `json:"needs_review,omitempty"`
 }
 
 // autoUsage is the token report the worker got from the runner. It stays
@@ -115,9 +119,13 @@ func (s *Store) RunAutomation(trigger, runner, model string) (map[string]any, er
 	if model != "" && !modelRE.MatchString(model) {
 		return nil, errStore("model name is invalid")
 	}
-	return s.withLock(func() (map[string]any, error) {
+	result, runErr := s.withLock(func() (map[string]any, error) {
 		return s.runAutomationLocked(trigger, normalized, model)
 	})
+	if runErr == nil && trigger != "task" {
+		s.queueMaintenanceContinuation(result)
+	}
+	return result, runErr
 }
 
 func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]any, error) {
@@ -144,6 +152,7 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 	if err := s.saveAutomationRun(run); err != nil {
 		return nil, err
 	}
+	var input *contextrepo.ReviewData
 
 	finish := func(status, stage, reason string, extra map[string]any) (map[string]any, error) {
 		run["status"] = status
@@ -161,6 +170,15 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 		}
 		if err := s.saveAutomationRun(run); err != nil {
 			return nil, err
+		}
+		if input != nil && (status == "pushed" || status == "no_changes") {
+			findings, _ := run["needs_review"].([]contextrepo.MaintenanceIssue)
+			if err := s.saveMaintenanceFindings(findings); err != nil {
+				return nil, err
+			}
+			if err := s.saveMaintenanceCheckpoint(input.Files); err != nil {
+				return nil, errStore("maintenance completed but checkpoint could not be saved")
+			}
 		}
 		if err := s.recordSchedulerRun(run); err != nil {
 			return nil, err
@@ -181,6 +199,27 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 		return finish("failed", "pull", "repository_sync_failed", nil)
 	}
 	run["pull"] = automationPullSummary(pull)
+	// A crash between commit and push may leave a clean checkout ahead of the
+	// remote. Never acknowledge unpublished bytes, even on a no-change run.
+	branch, branchErr := s.branch()
+	head, headErr := s.gitHead()
+	remote, remoteErr := s.remoteHead(branch)
+	if branchErr != nil || headErr != nil || remoteErr != nil || head != remote {
+		return finish("failed", "pull", "checkout_remote_mismatch", nil)
+	}
+	router, selected, err := s.maintenanceInput()
+	if err != nil {
+		return finish("failed", "organize", "maintenance_input_invalid", nil)
+	}
+	input = &selected
+	run["remaining"] = selected.Remaining
+	run["input_files"] = selected.Files
+	run["needs_review"] = selected.Issues
+	run["skipped"] = selected.Skipped
+	if len(selected.Files) == 0 {
+		run["summary"] = "No changed context documents need organization."
+		return finish("no_changes", "organize", "", nil)
+	}
 	run["stage"] = "organize"
 	if err := s.saveAutomationRun(run); err != nil {
 		return nil, err
@@ -194,13 +233,44 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 	run["stage"] = "organize"
 	report, err := s.runAutoAgentLocked(runner, model)
 	if err != nil {
-		return finish("failed", "organize", "maintenance_operation_failed", nil)
+		return finish("failed", "organize", automationFailureReason(err), nil)
 	}
 	if secretMaterialRE.MatchString(report.Summary) {
 		return finish("failed", "organize", "content_rejected", nil)
 	}
+	findings := append([]contextrepo.MaintenanceIssue{}, selected.Issues...)
+	for _, issue := range report.NeedsReview {
+		duplicate := false
+		for _, old := range findings {
+			if old == issue {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if _, ok := selected.Files[issue.Source]; !ok || len([]rune(issue.Reason)) > 2000 || strings.TrimSpace(issue.Reason) == "" || secretMaterialRE.MatchString(issue.Reason) {
+			return finish("failed", "validate", "content_rejected", nil)
+		}
+		if !duplicate {
+			if len(findings) >= 60 {
+				return finish("failed", "validate", "content_rejected", nil)
+			}
+			findings = append(findings, issue)
+		}
+	}
+	run["needs_review"] = findings
+	// Validate against the host-built snapshot even with a legacy worker.
+	if _, err := router.SnapshotMaintenanceInput(selected.Files); err != nil {
+		return finish("failed", "validate", "content_rejected", nil)
+	}
+	for _, edit := range report.Edits {
+		if err := router.ValidateMaintenanceEdit(selected, edit.Source, edit.Target, edit.ClaimType, edit.Content); err != nil {
+			return finish("failed", "validate", "content_rejected", nil)
+		}
+	}
 	run["summary"] = publicText(report.Summary, maxAutoSummaryRunes)
-	run["skipped"] = report.Skipped
 	run["input_digest"] = publicText(report.InputDigest, 64)
 	if report.Usage != nil {
 		run["usage"] = map[string]any{
@@ -248,6 +318,14 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 	run["commit"] = applied.commit
 	run["branch"] = applied.branch
 	run["push"] = map[string]any{"status": "pushed", "remote_head": applied.commit}
+	outputFiles := map[string]string{}
+	for path, hash := range input.Files {
+		outputFiles[path] = hash
+	}
+	for _, edit := range report.Edits {
+		outputFiles[edit.Target] = sha256Hex([]byte(edit.Content))
+	}
+	input.Files = outputFiles
 	return finish("pushed", "done", "", nil)
 }
 
@@ -454,7 +532,7 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 	} else if !os.IsNotExist(statErr) {
 		return autoReport{}, errStore("automation report path is invalid")
 	}
-	command = append(command, "agent", "--auto", "--device", "Docker", "--runtime-dir", s.runtimeDir, "--runner", runner, "--auto-report", reportPath, "--timeout", "1200")
+	command = append(command, "agent", "--auto", "--device", "Docker", "--runtime-dir", s.runtimeDir, "--runner", runner, "--auto-report", reportPath, "--maintenance-state", s.maintenanceStatePath(), "--timeout", "1200")
 	if model != "" {
 		command = append(command, "--model", model)
 		if runner == "dsh" {
@@ -473,10 +551,16 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 		env[key] = value
 	}
 	s.modelMu.Lock()
-	_, runErr := s.runCommand(command, s.toolRoot, "", 20*time.Minute, true, env)
+	result, runErr := s.runCommand(command, s.toolRoot, "", 20*time.Minute, false, env)
 	s.modelMu.Unlock()
-	if runErr != nil {
-		return autoReport{}, errStore("automation agent failed")
+	if runErr != nil || result.code != 0 {
+		// check=false retains the bounded worker stderr on nonzero exits; it is
+		// inspected only to propagate a fixed class, never persisted verbatim.
+		diagnostic := result.stderr
+		if runErr != nil {
+			diagnostic = runErr.Error() + "\n" + diagnostic
+		}
+		return autoReport{}, errStore("automation agent failed (" + contextrepo.CodexFailureClass(diagnostic) + ")")
 	}
 	if info, statErr := os.Lstat(reportPath); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxAutoRunBytes {
 		return autoReport{}, errStore("automation report is unavailable")
@@ -490,7 +574,7 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 	if err := json.Unmarshal(raw, &report); err != nil || report.Status != "pending-apply" {
 		return autoReport{}, errStore("automation report is invalid")
 	}
-	if len([]rune(report.Summary)) > maxAutoSummaryRunes || len(report.Edits) > maxAutoEdits || report.Skipped < 0 {
+	if len([]rune(report.Summary)) > maxAutoSummaryRunes || len(report.Edits) > maxAutoEdits || len(report.NeedsReview) > 60 || report.Skipped < 0 {
 		return autoReport{}, errStore("automation report is invalid")
 	}
 	if !validUsage(report.Usage) {
@@ -696,6 +780,19 @@ func automationErrorCode(err error) string {
 	default:
 		return "validation_failed"
 	}
+}
+
+func automationFailureReason(err error) string {
+	if err == nil {
+		return "maintenance_operation_failed"
+	}
+	message := strings.ToLower(err.Error())
+	for _, class := range []string{"rate_limited", "authentication", "timeout", "network", "model_unavailable", "output_schema", "runner_exit"} {
+		if strings.Contains(message, "("+class+")") {
+			return "runner_" + class
+		}
+	}
+	return "maintenance_operation_failed"
 }
 
 func newAutoRunID() (string, error) {

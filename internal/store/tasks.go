@@ -444,7 +444,10 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 		return nil, err
 	}
 	for _, task := range file.Tasks {
-		if task.Kind == kind && task.Source == source && (task.Status == taskStatusQueued || task.Status == taskStatusRunning) {
+		// Changes received after an organizer's pull need a following pass.
+		// Coalesce them into one queued task instead of consuming the event
+		// against the already-running snapshot.
+		if task.Kind == kind && task.Source == source && (task.Status == taskStatusQueued || task.Status == taskStatusRunning && definition.Action != kindActionMaintenance) {
 			return map[string]any{"task": publicTask(task), "created": false}, nil
 		}
 	}
@@ -797,6 +800,7 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 	if runErr != nil {
 		return result, nil
 	}
+	s.queueMaintenanceContinuation(run)
 	return result, nil
 }
 

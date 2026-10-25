@@ -185,6 +185,7 @@ func (r *Router) ReadDoc(path string) (Document, Metadata, error) {
 }
 
 func parseDocument(text string) (Metadata, string) {
+	text = strings.TrimPrefix(strings.ReplaceAll(text, "\r\n", "\n"), "\ufeff")
 	meta := Metadata{}
 	body := text
 	if strings.HasPrefix(text, "---\n") {

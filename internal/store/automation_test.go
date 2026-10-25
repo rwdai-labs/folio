@@ -1,11 +1,14 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	contextrepo "folio/internal/context"
 )
 
 func installAutoFixture(t *testing.T, store *Store, report string) {
@@ -33,13 +36,12 @@ func TestRunAutomationPushesValidatedEditsAndRecordsRun(t *testing.T) {
 	installAutoFixture(t, store, `{
   "version": 1,
   "status": "pending-apply",
-  "summary": "merge the candidate into the profile",
+  "summary": "organize the profile",
   "device": "fixture",
   "created": "2026-10-20T00:00:00Z",
   "skipped": 0,
   "edits": [
-    {"source": "inbox/candidate.md", "target": "core/profile.md", "claim_type": "fact", "reason": "the candidate confirms the profile", "content": "new\n"},
-    {"source": "inbox/candidate.md", "target": "inbox/auto.md", "claim_type": "inference", "reason": "keep the review note", "content": "---\ntype: note\n---\nfresh\n"}
+    {"source": "core/profile.md", "target": "core/profile.md", "claim_type": "fact", "reason": "group the existing text", "content": "## Summary\nold\n"}
   ]
 }`)
 	result, err := store.RunAutomation("manual", "codex", "")
@@ -54,14 +56,11 @@ func TestRunAutomationPushesValidatedEditsAndRecordsRun(t *testing.T) {
 		t.Fatalf("invalid run id: %q", runID)
 	}
 	edits, _ := result["edits"].([]any)
-	if len(edits) != 2 {
+	if len(edits) != 1 {
 		t.Fatalf("edits=%v", result["edits"])
 	}
-	if got, _ := os.ReadFile(filepath.Join(store.repositoryDir, "core", "profile.md")); string(got) != "new\n" {
+	if got, _ := os.ReadFile(filepath.Join(store.repositoryDir, "core", "profile.md")); string(got) != "## Summary\nold\n" {
 		t.Fatalf("profile was not updated: %q", got)
-	}
-	if got, _ := os.ReadFile(filepath.Join(store.repositoryDir, "inbox", "auto.md")); string(got) != "---\ntype: note\n---\nfresh\n" {
-		t.Fatalf("new document was not written: %q", got)
 	}
 	remoteHead := gitOutputForTest(t, filepath.Join(filepath.Dir(store.dataDir), "remote.git"), "rev-parse", "refs/heads/main")
 	if result["commit"] != remoteHead {
@@ -81,7 +80,7 @@ func TestRunAutomationPushesValidatedEditsAndRecordsRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail["status"] != "pushed" || detail["summary"] != "merge the candidate into the profile" {
+	if detail["status"] != "pushed" || detail["summary"] != "organize the profile" {
 		t.Fatalf("automation detail=%v", detail)
 	}
 }
@@ -141,7 +140,7 @@ func TestRunAutomationPullsBeforeApplying(t *testing.T) {
   "status": "pending-apply",
   "summary": "update after pull",
   "edits": [
-    {"source": "inbox/candidate.md", "target": "core/profile.md", "claim_type": "fact", "reason": "latest remote content", "content": "old\nnew from model\n"}
+    {"source": "core/profile.md", "target": "core/profile.md", "claim_type": "fact", "reason": "latest remote content", "content": "## Summary\nold\nremote update\n"}
   ]
 }`)
 	remote := filepath.Join(filepath.Dir(store.dataDir), "remote.git")
@@ -168,13 +167,19 @@ func TestRunAutomationPullsBeforeApplying(t *testing.T) {
 
 func TestRunAutomationSkipsNoopEdits(t *testing.T) {
 	store := newGitStore(t)
+	if err := os.WriteFile(filepath.Join(store.repositoryDir, "core", "other.md"), []byte("---\ntype: note\n---\nfresh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitForTest(t, store.repositoryDir, "add", "--", "core/other.md")
+	runGitForTest(t, store.repositoryDir, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "another document")
+	runGitForTest(t, store.repositoryDir, "push", "origin", "HEAD:refs/heads/main")
 	installAutoFixture(t, store, `{
   "version": 1,
   "status": "pending-apply",
   "summary": "nothing to change",
   "edits": [
-    {"source": "inbox/candidate.md", "target": "core/profile.md", "claim_type": "fact", "reason": "already current", "content": "old\n"},
-    {"source": "inbox/candidate.md", "target": "inbox/new.md", "claim_type": "fact", "reason": "new note", "content": "---\ntype: note\n---\nfresh\n"}
+    {"source": "core/profile.md", "target": "core/profile.md", "claim_type": "fact", "reason": "already current", "content": "old\n"},
+    {"source": "core/other.md", "target": "core/other.md", "claim_type": "fact", "reason": "group the note", "content": "---\ntype: note\n---\n## Details\nfresh\n"}
   ]
 }`)
 	result, err := store.RunAutomation("manual", "codex", "")
@@ -197,7 +202,7 @@ func TestRunAutomationReturnsNoChangesWhenAllEditsAreNoops(t *testing.T) {
   "status": "pending-apply",
   "summary": "nothing to change",
   "edits": [
-    {"source": "inbox/candidate.md", "target": "core/profile.md", "claim_type": "fact", "reason": "already current", "content": "old\n"}
+    {"source": "core/profile.md", "target": "core/profile.md", "claim_type": "fact", "reason": "already current", "content": "old\n"}
   ]
 }`)
 	result, err := store.RunAutomation("manual", "codex", "")
@@ -314,7 +319,7 @@ func TestRunAutomationPublishesRunningAudit(t *testing.T) {
 		"done\n" +
 		"sleep 1\n" +
 		"cat > \"$report\" <<'JSON'\n" +
-		`{"version":1,"status":"pending-apply","summary":"running audit","edits":[{"source":"inbox/candidate.md","target":"core/profile.md","claim_type":"fact","reason":"test","content":"new\n"}]}` + "\n" +
+		`{"version":1,"status":"pending-apply","summary":"running audit","edits":[{"source":"core/profile.md","target":"core/profile.md","claim_type":"fact","reason":"test","content":"## Summary\nold\n"}]}` + "\n" +
 		"JSON\n"
 	if err := os.WriteFile(filepath.Join(store.toolRoot, "folio"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -430,5 +435,76 @@ func TestRunAutomationPassesDSHModelToWorker(t *testing.T) {
 	}
 	if string(configValue) != configPath {
 		t.Fatalf("worker config=%q", configValue)
+	}
+}
+
+func TestAutomationFailureReasonUsesOnlyRunnerClass(t *testing.T) {
+	for _, testCase := range []struct{ message, want string }{
+		{"automation agent failed (network)", "runner_network"},
+		{"automation agent failed (authentication)", "runner_authentication"},
+		{"automation agent failed (runner_exit)", "runner_runner_exit"},
+		{"provider response must not be exposed", "maintenance_operation_failed"},
+	} {
+		if got := automationFailureReason(errStore(testCase.message)); got != testCase.want {
+			t.Errorf("automationFailureReason(%q)=%q, want %q", testCase.message, got, testCase.want)
+		}
+	}
+}
+
+// TestAutomationWorkerProcess lets the store launch the real context CLI in a
+// separate process while all model execution remains a synthetic shell fixture.
+func TestAutomationWorkerProcess(t *testing.T) {
+	for i, arg := range os.Args {
+		if arg == "--" && i+1 < len(os.Args) && os.Args[i+1] == "agent" {
+			os.Exit(contextrepo.Run(os.Args[i+1:], os.Stdout, os.Stderr))
+		}
+	}
+}
+
+func TestRunAutomationPreservesSanitizedWorkerFailureClass(t *testing.T) {
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct{ diagnostic, want string }{
+		{"HTTP/1.1 429", "runner_rate_limited"},
+		{"HTTP status 401", "runner_authentication"},
+		{"HTTP 403", "runner_authentication"},
+		{"dial tcp: connection refused", "runner_network"},
+	} {
+		t.Run(testCase.want+"/"+testCase.diagnostic, func(t *testing.T) {
+			store := newGitStore(t)
+			bin := t.TempDir()
+			t.Setenv("PATH", bin+":/usr/bin:/bin")
+			codex := "#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s\\n' '" + testCase.diagnostic + "' 'synthetic-private-provider-detail Authorization: Bearer synthetic-provider-token' >&2\nexit 1\n"
+			if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(codex), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			launcher := "#!/bin/sh\nexec '" + strings.ReplaceAll(testBinary, "'", "'\\''") + "' -test.run='^TestAutomationWorkerProcess$' -- \"$@\"\n"
+			if err := os.WriteFile(filepath.Join(store.toolRoot, "folio"), []byte(launcher), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			result, err := store.RunAutomation("manual", "codex", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result["status"] != "failed" || result["reason"] != testCase.want {
+				t.Fatalf("worker diagnostic did not survive the process boundary: %v", result)
+			}
+			raw, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runID, _ := result["run_id"].(string)
+			audit, err := os.ReadFile(filepath.Join(store.runsDir, runID+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, data := range [][]byte{raw, audit} {
+				if strings.Contains(string(data), "synthetic-private-provider-detail") || strings.Contains(string(data), "synthetic-provider-token") || strings.Contains(string(data), "Authorization:") {
+					t.Fatal("raw runner output or credentials escaped into the automation result or audit")
+				}
+			}
+		})
 	}
 }

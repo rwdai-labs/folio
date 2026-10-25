@@ -4,6 +4,11 @@ Status: design note. Snapshot date: 2026-10-23. Supersedes the sequencing in
 [personal-assistant-research.md](personal-assistant-research.md) §6.
 No secrets or private context belong in this file.
 
+Current first-scenario implementation is documented in
+[automatic context organization](context-maintenance.md). That contract takes
+precedence for maintenance edit limits, incremental state and continuation
+semantics; historical tables below also contain future design proposals.
+
 ## 1. What actually changes
 
 Folio today is **one nightly job**. The target is **a small automation platform**

@@ -16,6 +16,11 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - API changes require matching `Backend` implementations, fake backends, UI
   consumers, and contract documentation. Task acceptance is not run completion.
   Update these instructions whenever API ownership or security rules change.
+- Maintenance run details add `input_files` (original byte fingerprints),
+  `remaining` (unprocessed changed document count) and `needs_review`
+  (`source`, `reason`). These are private authenticated audit data. Consumers
+  must tolerate their absence on old runs and report runs; findings are not
+  approvals and a successful structural edit does not resolve a factual conflict.
 
 Run `go test -race ./internal/web` from the repository root and the root Go
 checks. Cover affected auth/CSRF/host/origin rejection, limits, redaction and

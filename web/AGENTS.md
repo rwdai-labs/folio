@@ -9,6 +9,9 @@ Inherit `../AGENTS.md`.
 - Preserve same-origin requests, CSRF headers for mutations, session-expiry
   cleanup, bounded polling, and busy/error/empty states. Show task, run,
   deferred and paused states according to backend data.
+- Run details show optional `needs_review` findings and `remaining` backlog.
+  Render source/reason as text, translate known finding codes in both languages,
+  retain unknown model explanations, and tolerate older runs without these fields.
 - Render repository/model/hook/report/diff text through safe text nodes.
   Never interpret it as HTML. Keep transient passwords and one-time hook
   secrets out of persistent browser storage and logs.

@@ -15,6 +15,8 @@ import (
 
 func testRouter(t *testing.T) *Router {
 	t.Helper()
+	// Synthetic router tests must never read the host runner profile.
+	t.Setenv("CODEX_HOME", t.TempDir())
 	root := t.TempDir()
 	for _, directory := range []string{"core", "active", "domains", "projects", "decisions", "knowledge", "history", "inbox"} {
 		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
@@ -178,6 +180,120 @@ func TestWorkerCodexArgsUseIsolatedReviewInvocation(t *testing.T) {
 	}
 	if strings.Count(joined, `model_provider="custom"`) != 1 || !strings.HasSuffix(joined, " -") {
 		t.Fatalf("worker args were duplicated or missing stdin marker: %s", joined)
+	}
+}
+
+func TestCodexFailureClassDoesNotExposeRunnerOutput(t *testing.T) {
+	for _, testCase := range []struct{ message, want string }{
+		{"HTTP 429 too many requests", "rate_limited"},
+		{"HTTP 429", "rate_limited"},
+		{"HTTP/1.1 401", "authentication"},
+		{"HTTP status 403", "authentication"},
+		{"status code: 429", "rate_limited"},
+		{"context: Codex review failed (rate_limited); no changes applied", "rate_limited"},
+		{"unauthorized: token was rejected", "authentication"},
+		{"dial tcp: connection refused", "network"},
+		{"model is unavailable", "model_unavailable"},
+		{"Failed to read output schema", "output_schema"},
+		{"private response text must not escape", "runner_exit"},
+	} {
+		if got := CodexFailureClass(testCase.message); got != testCase.want {
+			t.Errorf("CodexFailureClass(%q)=%q, want %q", testCase.message, got, testCase.want)
+		}
+	}
+}
+
+func TestCodexWorkerStdinAndConfiguredProviderWithoutModel(t *testing.T) {
+	for _, mode := range []string{"review", "report"} {
+		t.Run(mode, func(t *testing.T) {
+			router := testRouter(t)
+			const marker = "synthetic-private-prompt-marker"
+			writeDoc(t, router.Root, "inbox/candidate.md", "type: candidate\nclaim_type: inference", marker)
+			runtime, home, bin, capture := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+			const envKey = "FOLIO_FIXTURE_CODEX_PROVIDER_KEY"
+			config := `model="configured-model"
+model_provider="custom"
+[model_providers.custom]
+base_url="https://example.invalid/v1"
+wire_api="responses"
+env_key="FOLIO_FIXTURE_CODEX_PROVIDER_KEY"
+experimental_bearer_token="synthetic-inline-secret"
+`
+			if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(runtime, "worker.env"), []byte(envKey+"=synthetic-provider-key\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(envKey, "")
+			if err := os.Unsetenv(envKey); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CODEX_HOME", home)
+			t.Setenv("PATH", bin)
+			script := "#!/bin/sh\n" +
+				"printf '%s\\n' \"$@\" > '" + capture + "/args'\n" +
+				"/bin/cat > '" + capture + "/stdin'\n" +
+				"printf '%s' \"$FOLIO_FIXTURE_CODEX_PROVIDER_KEY\" > '" + capture + "/credential'\n" +
+				"out=''\nprev=''\nschema=''\n" +
+				"for arg in \"$@\"; do if [ \"$prev\" = '-o' ]; then out=\"$arg\"; fi; if [ \"$arg\" = '--output-schema' ]; then schema=yes; fi; prev=\"$arg\"; done\n" +
+				"if [ -n \"$schema\" ]; then printf '%s' '{\"summary\":\"Fixture\",\"proposals\":[]}' > \"$out\"; else printf '%s' 'Fixture report' > \"$out\"; fi\n"
+			if err := os.WriteFile(filepath.Join(bin, "codex"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			options := AgentOptions{RuntimeDir: runtime, Device: "fixture", Timeout: 5 * time.Second}
+			if mode == "report" {
+				options.ReportPrompt = filepath.Join(runtime, "prompt.txt")
+				options.ReportOutput = filepath.Join(runtime, "report.json")
+				// The largest accepted prompt must work without argv length limits.
+				prompt := strings.Repeat("p", maxReportPromptBytes-len(marker)) + marker
+				if err := os.WriteFile(options.ReportPrompt, []byte(prompt), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := router.RunAgent(options, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+			args, err := os.ReadFile(filepath.Join(capture, "args"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(args), marker) || strings.Contains(string(args), "synthetic-inline-secret") || strings.Contains(string(args), "synthetic-provider-key") || !strings.HasSuffix(string(args), "-\n") {
+				t.Fatal("private prompt or credential entered argv, or stdin marker was missing")
+			}
+			for _, routing := range []string{`model="configured-model"`, `model_provider="custom"`, `model_providers.custom.base_url="https://example.invalid/v1"`, `model_providers.custom.env_key="FOLIO_FIXTURE_CODEX_PROVIDER_KEY"`} {
+				if !strings.Contains(string(args), routing) {
+					t.Fatalf("configured routing was dropped: %s", routing)
+				}
+			}
+			prompt, err := os.ReadFile(filepath.Join(capture, "stdin"))
+			if err != nil || !strings.Contains(string(prompt), marker) {
+				t.Fatalf("private prompt was not delivered over stdin: %v", err)
+			}
+			credential, err := os.ReadFile(filepath.Join(capture, "credential"))
+			if err != nil || string(credential) != "synthetic-provider-key" {
+				t.Fatalf("configured provider credential was not forwarded: %v", err)
+			}
+		})
+	}
+}
+
+func TestProviderEnvCannotOverrideProxyValidation(t *testing.T) {
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
+		t.Run(name, func(t *testing.T) {
+			if validProviderEnvName(name) {
+				t.Fatal("proxy variable was accepted as a provider credential name")
+			}
+			t.Setenv(name, "http://user:synthetic-password@proxy.example.invalid:8080")
+			if _, err := testRouter(t).buildWorkerEnv(name, t.TempDir()); err == nil {
+				t.Fatal("provider credential bypassed proxy validation")
+			}
+		})
+	}
+	for _, value := range []string{"socks5://proxy.example.invalid:8080", "http://user:password@proxy.example.invalid:8080", "http://proxy.example.invalid:8080?token=synthetic", "http://proxy.example.invalid:8080/#synthetic", "http://proxy.example.invalid:8080/synthetic-secret"} {
+		if safeWorkerProxyValue("HTTPS_PROXY", value) {
+			t.Fatalf("unsafe proxy was accepted: %s", value)
+		}
 	}
 }
 
@@ -441,6 +557,37 @@ func TestWorkerDSHConfigEnvironmentIsForwarded(t *testing.T) {
 	}
 }
 
+func TestBuildWorkerEnvForwardsValidatedProxySettings(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("HOME", "/home/context")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+	t.Setenv("https_proxy", "http://127.0.0.1:7890")
+	t.Setenv("NO_PROXY", "localhost,127.0.0.1,.internal")
+	t.Setenv("HTTP_PROXY", "http://user:password@proxy.internal:8080")
+	t.Setenv("GITHUB_TOKEN", "must-not-be-forwarded")
+
+	router := testRouter(t)
+	env, err := router.buildWorkerEnv("", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(env, "\n")
+	for _, expected := range []string{
+		"HTTPS_PROXY=http://127.0.0.1:7890",
+		"https_proxy=http://127.0.0.1:7890",
+		"NO_PROXY=localhost,127.0.0.1,.internal",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("validated proxy setting was not forwarded: %s", expected)
+		}
+	}
+	for _, forbidden := range []string{"HTTP_PROXY=", "GITHUB_TOKEN=", "password"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("unsafe environment value was forwarded: %s", forbidden)
+		}
+	}
+}
+
 func TestWorkerDSHEnvForcesReadOnlyAndOverridesHome(t *testing.T) {
 	base := []string{"PATH=/usr/bin", "CODEX_HOME=/data/codex", "DSH_PERMISSION_MODE=workspace-write", "DSH_HOME=/old"}
 	env := workerDSHEnv(base, "/data/dsh")
@@ -650,11 +797,12 @@ func TestWorkerDSHMissingBinary(t *testing.T) {
 
 func TestWorkerAutoModeWritesBoundedEditReport(t *testing.T) {
 	router := testRouter(t)
+	writeDoc(t, router.Root, "core/profile.md", "type: profile", "Profile body")
 	writeDoc(t, router.Root, "inbox/candidate.md", "type: candidate\nclaim_type: inference", "Maybe X")
 	runtime := t.TempDir()
 	bin := t.TempDir()
 	fake := filepath.Join(bin, "codex")
-	script := "#!/bin/sh\nout=''\nprev=''\nfor arg in \"$@\"; do if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi; prev=\"$arg\"; done\nprintf '%s\\n' '{\"summary\":\"merge\",\"edits\":[{\"source\":\"inbox/candidate.md\",\"target\":\"core/profile.md\",\"claim_type\":\"inference\",\"reason\":\"fixture\",\"content\":\"# Profile\\n\"}]}' > \"$out\"\n"
+	script := "#!/bin/sh\nout=''\nprev=''\nfor arg in \"$@\"; do if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi; prev=\"$arg\"; done\nprintf '%s\\n' '{\"summary\":\"organize\",\"edits\":[{\"source\":\"core/profile.md\",\"target\":\"core/profile.md\",\"claim_type\":\"fact\",\"reason\":\"fixture\",\"content\":\"---\\ntype: profile\\n---\\n\\n## Summary\\n\\nProfile body\\n\"}]}' > \"$out\"\n"
 	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -672,13 +820,13 @@ func TestWorkerAutoModeWritesBoundedEditReport(t *testing.T) {
 	if err := json.Unmarshal(raw, &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "pending-apply" || report.Summary != "merge" || len(report.Edits) != 1 || report.Edits[0].Target != "core/profile.md" {
+	if report.Status != "pending-apply" || report.Summary != "organize" || len(report.Edits) != 1 || report.Edits[0].Target != "core/profile.md" {
 		t.Fatalf("unexpected auto report: %#v", report)
 	}
 	if _, err := os.Stat(filepath.Join(runtime, "reviews")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("auto mode wrote a proposal review report")
 	}
-	if _, err := os.Stat(filepath.Join(router.Root, "core", "profile.md")); !errors.Is(err, os.ErrNotExist) {
+	if raw, err := os.ReadFile(filepath.Join(router.Root, "core", "profile.md")); err != nil || strings.Contains(string(raw), "## Summary") {
 		t.Fatal("auto worker edited the canonical checkout")
 	}
 	if err := router.RunAgent(AgentOptions{RuntimeDir: runtime, Device: "fixture", Auto: true, AutoReport: filepath.Join(t.TempDir(), "outside.json")}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {

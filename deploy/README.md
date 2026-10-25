@@ -127,6 +127,23 @@ The entrypoint imports only a bounded configuration subset into the private
 | `~/.dsh/profiles/*/cordis.patch.yml` | `/data/dsh/imported/profiles/` | Actual DSH model/provider catalog |
 | `~/.config/gh/hosts.yml` | `/data/secrets/gh/hosts.yml` | Existing GitHub CLI login, including private-repository access |
 
+Codex maintenance preserves the bounded model/provider routing from the imported
+`config.toml`, including when no model is selected in the Web UI. An explicit
+model selection overrides only the model, preserving the configured provider.
+Only the configured provider's named environment credential is forwarded when
+present; inline bearer tokens are not forwarded to the isolated invocation.
+Without configured routing, the isolated CLI uses its authenticated default.
+Prompts are supplied over stdin and are never placed in process arguments.
+
+For a custom provider, prefer `env_key = "FOLIO_PROVIDER_API_KEY"` and provision
+that variable in `/data/runtime/worker.env` (mode `0600`, outside the context
+checkout). Set `requires_openai_auth = false` when the provider uses its own API
+key instead of Codex account authentication. Inline settings such as
+`experimental_bearer_token` are deliberately filtered from the runner invocation;
+having one in the source profile does not authenticate the isolated runner.
+Keep the credential value out of `config.toml` routing overrides, which are
+passed as process arguments.
+
 History databases, sessions, plugins, and `node_modules` are not copied. The
 host directories are mounted read-only and are never chowned; only `/data`
 changes ownership. The service discovers imported profile patches
@@ -153,11 +170,24 @@ the imported `gh` login when the selector must cover all of them. The card and
 the picker state which mode is active.
 
 The scheduler runs every 86400 seconds after startup. Each tick pulls the
-latest checkout, asks the runner for bounded Markdown edits, validates and
-pushes them, and records the run. Set `MAINTENANCE_SCHEDULER_ENABLED` to
+latest checkout and organizes changed documents; unchanged inputs do not call
+the model. It validates bounded structural edits, pushes them and records the
+run. See [automatic organization](../docs/context-maintenance.md) for the
+edit/review boundary. Incremental fingerprints and review findings are private
+files under `/data/runtime`, not repository content. Failed runs do not advance
+progress; large backlogs queue continuations under the normal off-peak/pause
+policy. Set `MAINTENANCE_SCHEDULER_ENABLED` to
 `"false"` to disable automatic runs; the Web UI still allows an immediate run.
 Use only one scheduler for this checkout. The service drops to UID/GID 10001
 after initializing `/data`.
+
+For change-driven maintenance, create and enable a maintenance hook in the Web
+UI, then run `scripts/folio-watch-git.sh` on an external host with private hook
+configuration. Include that caller's address in `TRUSTED_HOSTS`. The watcher
+delivers changed remote HEADs, including the initial HEAD; Folio's fingerprint
+checkpoint prevents its own commit from causing repeated model work. You may
+disable the interval scheduler when the watcher is installed. The service
+itself does not poll GitHub.
 
 Run audits are private: `/data/runtime/runs` holds at most 40 JSON records with
 status, pull/commit/push evidence, summary, and per-file diffs. The Web UI shows

@@ -1,6 +1,12 @@
 # Folio Service
 
 A self-hosted maintenance service for a private Markdown context repository.
+Its first assistant scenario is automatic personal-context organization:
+section cleanup preserving existing text, exact deduplication, extractive
+summaries and local navigation, with conflicts and candidate decisions left
+for owner review.
+See [the maintenance contract](docs/context-maintenance.md) for scope,
+incremental checkpoints and acceptance checks.
 It provides a small Web UI for repository setup and automatic maintenance: pull
 the latest checkout, ask a model
 runner for bounded Markdown edits, validate them, commit, and push. Every run is
@@ -71,9 +77,10 @@ never returned again; unsigned, stale, or replayed calls are refused before any
 state changes, and only a signature check can consume replay or rate budget.
 Folio never polls — `scripts/folio-watch-git.sh` runs outside the service,
 compares `git ls-remote` HEAD, and calls `scripts/folio-hook.sh` only when the
-commit actually changes, using the commit SHA as the event id. The interval
-scheduler still exists but is no longer the intended trigger; runs started by a
-hook are recorded with `trigger: hook`. Hook callers pass the same host
+commit actually changes, using the commit SHA as the event id. Folio compares
+document fingerprints after pulling, so its own maintenance commit does not
+cause another model call. The interval scheduler is also available; queued
+hook attempts are recorded with `trigger: task`. Hook callers pass the same host
 allowlist as the browser UI, so `TRUSTED_HOSTS` must include the address the
 watcher connects to (for example `127.0.0.1` when it runs on the same host).
 
@@ -84,6 +91,11 @@ the dispatcher starts one task at a time so the checkout and commit stay
 single-writer. The owner can pause the whole queue, hold one task, run it now,
 or cancel it; pausing never discards work. A task interrupted by a restart is
 marked failed rather than left phantom-running.
+Large maintenance backlogs automatically queue bounded continuation tasks.
+Changes received during a running maintenance task coalesce into one queued
+follow-up. Run details show the original input fingerprints, remaining
+documents and persistent findings that need owner review. Unchanged inputs
+need no model call; validation and push failures do not advance progress.
 
 Task kinds are data, not code. `data/task-kinds.json` lists them; the hook form
 and the task board read the same file. A kind names an `action` Folio implements

@@ -112,6 +112,10 @@ Content-Type: application/json
 - The event id is the idempotency key. Re-sending the same id returns `200`
   with `duplicate: true` and creates no second task.
 - `202` means the task is durable. It does not mean the task started.
+- Queued maintenance events with the same kind/source coalesce. An event
+  arriving while maintenance is running leaves one queued follow-up so a
+  change after the current pull is not lost. Unchanged document fingerprints
+  prevent that follow-up from making an unnecessary model call.
 - `4xx` is permanent: fix the plugin. `429`/`5xx` are transient: retry later.
 - The secret is shown once, at hook creation, and is never returned again.
 
