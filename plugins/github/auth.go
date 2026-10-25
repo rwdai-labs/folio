@@ -113,7 +113,9 @@ func (p *Plugin) logout(ctx context.Context, request plugin.Request) (map[string
 	p.clearFlow()
 	p.mu.Unlock()
 	if gh, err := request.Exec.LookPath("gh"); err == nil {
-		out, runErr := request.Exec.Exec(ctx, []string{gh, "auth", "logout", "--hostname", credentialHost, "--yes"}, p.dataDir, "", 30*time.Second)
+		// gh auth logout has no confirmation flag: with --hostname and a single
+		// stored account it signs out without prompting, even without a TTY.
+		out, runErr := request.Exec.Exec(ctx, []string{gh, "auth", "logout", "--hostname", credentialHost}, p.dataDir, "", 30*time.Second)
 		if runErr != nil || out.Code != 0 {
 			// A missing session is already signed out.
 			if p.authMode(ctx, request.Exec) != "missing" {

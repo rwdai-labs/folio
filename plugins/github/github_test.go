@@ -53,6 +53,31 @@ func TestPrepareTokenRejectsMalformedValue(t *testing.T) {
 	}
 }
 
+// Signing out must use flags the real gh supports: gh auth logout has never
+// had --yes, so passing it made every sign-out fail with plugin_error while
+// the stored token silently survived.
+func TestLogoutRunsSupportedCommandAndSignsOut(t *testing.T) {
+	t.Setenv("GIT_AUTH_TOKEN", "")
+	item, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := &fakeGH{signedIn: true, token: "gho_" + strings.Repeat("b", 36)}
+	result, err := item.logout(context.Background(), plugin.Request{Exec: exec})
+	if err != nil {
+		t.Fatalf("logout: %v", err)
+	}
+	if result["status"] != "signed_out" {
+		t.Fatalf("status=%v", result["status"])
+	}
+	if exec.signedIn {
+		t.Fatal("gh session survived logout")
+	}
+	if mode := item.authMode(context.Background(), exec); mode != "missing" {
+		t.Fatalf("auth mode after logout=%q", mode)
+	}
+}
+
 func TestResolveRejectsInvalidNames(t *testing.T) {
 	t.Setenv("GIT_AUTH_TOKEN", "")
 	item, err := New(t.TempDir())
@@ -332,6 +357,20 @@ func (f *fakeGH) Exec(ctx context.Context, argv []string, dir string, stdin stri
 			return storage.Output{Code: 1}, nil
 		}
 		return storage.Output{Stdout: f.token + "\n"}, nil
+	case argv[1] == "auth" && argv[2] == "logout":
+		// Mirror real gh: --hostname with one stored account signs out
+		// without prompting, and the command has never had a --yes flag.
+		for _, arg := range argv[3:] {
+			if arg == "--yes" {
+				return storage.Output{Code: 1, Stderr: "unknown flag: --yes"}, nil
+			}
+		}
+		if !f.signedIn {
+			return storage.Output{Code: 1, Stderr: "not logged in to any hosts"}, nil
+		}
+		f.signedIn = false
+		f.token = ""
+		return storage.Output{Stderr: "Logged out of github.com account testuser"}, nil
 	}
 	return storage.Output{Code: 64}, nil
 }
