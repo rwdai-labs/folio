@@ -80,6 +80,41 @@ Alternatively provision the supported provider configuration and credentials
 inside `/data/codex` through your secret manager. Do not put secrets in Compose,
 the context repository or chat. Inspect the Web model status after setup.
 
+## Weixin channel
+
+The optional Weixin text channel uses native Go/iLink; it adds no OpenClaw
+runtime or sidecar. It is disabled by default. Before enabling it, run the login
+command in a private interactive terminal against the same volume as Folio.
+Stop the service first if its Weixin poller is already enabled:
+
+```bash
+docker compose stop folio
+docker compose run --rm --no-deps folio /app/folio weixin login --data-dir /data
+```
+
+The image entrypoint prepares the volume and drops to the service user. Scan
+the terminal QR with Weixin; enter verification digits if requested.
+The CLI prints the scanner's opaque ID locally. Verify it, then add
+`WEIXIN_ENABLED=true` and `WEIXIN_OWNER_ID=<the verified scanner ID>` to your
+private `.env` and run `docker compose up -d`. Never send QR output, token files,
+scanner IDs or private messages to chat or shared logs.
+
+Send `/status` to verify the channel, then a short text question after repository
+and Codex setup. Replies reuse Folio's existing read-only report runner; they
+have no private Context automatically and cannot execute maintenance commands.
+Non-owner senders are denied before any Folio capability. Media, group chats,
+personas and browser-based QR setup are deferred. Calls are ephemeral and are
+not currently counted in the task/run usage dashboard.
+
+Credentials and the durable cursor/inbox/outbox stay in `/data/secrets/weixin/`
+with private permissions. Restarts reuse them. The channel holds an exclusive
+process lock, so stop it before re-login or local `weixin status`. Token expiry
+requires explicit re-login; do not remove cursor state to repair a token.
+`weixin status` reports saved credential presence, not online validity. The Web
+health check does not assert Weixin connectivity. See
+[the channel contract](../docs/weixin-channel.md) for bounded deduplication,
+retry semantics, protocol evidence and live acceptance steps.
+
 ## Maintenance runners
 
 Scheduled maintenance uses Codex. The Web UI can also start a run immediately

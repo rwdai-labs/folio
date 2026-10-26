@@ -9,6 +9,7 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
 | `tasks.go`, `kinds.go`, `hooks.go` | Durable queue, data-defined actions, signed events |
 | `report.go`, `usage.go`, `channels.go`, `models.go` | Reports, usage, notifications and runner catalogs |
+| `inbound.go` | Explicit Weixin owner authorization and bounded read-only text responses |
 
 - A task is durable intent; a run is one attempt. Preserve single-writer
   checkout access, priority/off-peak policies, pause/hold/cancel/run-now
@@ -18,6 +19,12 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   like report runs; each retry keeps the task identity and creates a new run.
 - Kinds are configuration mapped to implemented actions. Reject unknown kinds
   both at hook setup and dispatch. A `report` action has no repository writes.
+- Inbound Weixin uses an explicitly configured account/owner/direct-peer match
+  before any capability, including cached reply delivery. Text reuses the
+  ephemeral read-only report worker with a fresh per-call directory; never pass
+  channel credentials or use transport session IDs to resume a model session.
+  External users are denied; future personas require a separate restricted
+  context/capability boundary. Channel calls do not create task/run audits.
 - Automatic organization uses a host-built complete snapshot and the context
   package's structural validator even with an older worker. Checkpoints advance
   only after successful no-change or verified push, acknowledging resulting

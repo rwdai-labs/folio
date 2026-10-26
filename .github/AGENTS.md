@@ -6,6 +6,8 @@ bridge checks, runtime image smoke tests and GHCR image publication.
 - Keep root-module and nested `plugins/github-bridge` validation separate.
   Source-path filters must cover affected modules/assets so relevant pull
   requests actually run checks; inspect filters when adding an area.
+  Root Go dependency changes include both `go.mod` and `go.sum`; runtime smoke
+  also checks the packaged Weixin/QR dependency license notice.
 - Preserve the dependency chain: tests, runtime smoke, then image delivery.
   Keep pull requests from publishing; branch/tag publishing retains intended
   AMD64/ARM64 support, provenance and SBOM behaviour.

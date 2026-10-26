@@ -12,6 +12,7 @@ all source or documentation by default.
 | --- | --- |
 | CLI, startup, service wiring | `cmd/AGENTS.md` |
 | Backend packages and shared interfaces | `internal/AGENTS.md` |
+| Bidirectional channels and native Weixin | `internal/channel/AGENTS.md` |
 | Routing, packets, model worker | `internal/context/AGENTS.md` |
 | Repository transactions, tasks, hooks, audits | `internal/store/AGENTS.md` |
 | HTTP, sessions, API, plugin hosting | `internal/web/AGENTS.md` |

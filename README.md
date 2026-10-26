@@ -39,6 +39,7 @@ docker build -f deploy/Dockerfile -t folio-service .
 cmd/folio/      service entrypoint and CLI
 internal/       context router, maintenance worker, Git/GitHub store, Web server
 internal/notify outbound push channels (Bark today); no inbound traffic
+internal/channel native inbound/outbound communication (Weixin text MVP)
 scripts/        external watcher and hook client; not part of the service
 plugins/        built-in capability plugins compiled into the binary (GitHub),
                 plus a separate external bridge module for issue events
@@ -75,7 +76,7 @@ the exact raw body, within a five-minute window, with event-id replay protection
 and a per-hook rate limit. Each hook has its own 256-bit secret, shown once and
 never returned again; unsigned, stale, or replayed calls are refused before any
 state changes, and only a signature check can consume replay or rate budget.
-Folio never polls — `scripts/folio-watch-git.sh` runs outside the service,
+Folio never polls Git for changes — `scripts/folio-watch-git.sh` runs outside the service,
 compares `git ls-remote` HEAD, and calls `scripts/folio-hook.sh` only when the
 commit actually changes, using the commit SHA as the event id. Folio compares
 document fingerprints after pulling, so its own maintenance commit does not
@@ -128,6 +129,13 @@ ledger records only kind, channel, status, title, and time — never the message
 body. Plain HTTP is accepted only for loopback or private-network servers,
 because a device key sent over the public internet is a credential leak.
 Additional channels reuse the same outbound contract.
+
+Personal Weixin is a separate optional bidirectional channel, implemented in
+native Go through Tencent's public iLink protocol. It supports terminal QR
+login, private credential/cursor persistence, direct text reception and replies.
+Only an explicitly configured owner can reach Folio's read-only text handler;
+other users are denied. See [docs/weixin-channel.md](docs/weixin-channel.md)
+for protocol research, setup, recovery guarantees and deferred media support.
 
 A maintenance runtime sandbox is not an OS boundary against every readable file. Keep
 unrelated secrets off the service account and volume, and expose the Web UI only

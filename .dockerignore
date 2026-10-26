@@ -2,6 +2,7 @@
 # needs may enter the build context.
 **
 !go.mod
+!go.sum
 !cmd/
 !cmd/**
 !internal/

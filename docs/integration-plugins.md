@@ -11,6 +11,12 @@ The GitHub integration is both: `plugins/github` is the built-in capability
 plugin (remote, credential, device sign-in, repository picker), and
 `plugins/github-bridge` is an external event plugin that reports issues.
 
+Bidirectional communication is a separate service boundary. The native
+[Weixin channel](weixin-channel.md) receives identity/text and sends replies
+through `internal/channel`; its Folio handler enforces owner authorization.
+It uses neither the external signed-hook contract nor the outbound-only
+notification contract, and does not import an external Agent runtime.
+
 
 
 ```

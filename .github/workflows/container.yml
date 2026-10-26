@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "go.mod"
+      - "go.sum"
       - "cmd/**"
       - "internal/**"
       - "web/**"
@@ -82,6 +83,7 @@ jobs:
           docker run --rm "$image" sh -eu -c '
             test "$(id -u)" != "0"
             test -x /app/folio
+            test -r /app/WEIXIN-NOTICE
             test -d /app/web
             test -f /app/web/index.html
             test -f /app/web/app.js

@@ -30,7 +30,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: folio serve | healthcheck | status | build | search | candidate | maintain | agent")
+		fmt.Fprintln(os.Stderr, "Usage: folio serve | weixin login|status | healthcheck | status | build | search | candidate | maintain | agent")
 		return 2
 	}
 	var err error
@@ -39,6 +39,8 @@ func run(args []string) int {
 		err = serve(args[1:])
 	case "healthcheck":
 		err = healthcheck(args[1:])
+	case "weixin":
+		err = weixinCommand(args[1:], os.Stdin, os.Stdout)
 	default:
 		return contextrepo.Run(args, os.Stdout, os.Stderr)
 	}
@@ -102,6 +104,21 @@ func serve(args []string) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	startWeixin, err := prepareWeixin(layout, backend)
+	if err != nil {
+		return err
+	}
+	if startWeixin != nil {
+		done := make(chan struct{})
+		go func() { defer close(done); startWeixin(ctx) }()
+		defer func() {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+			}
+		}()
+	}
 	application.StartScheduler(ctx)
 	application.StartDispatcher(ctx)
 	server := &http.Server{

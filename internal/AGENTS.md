@@ -11,6 +11,7 @@ Applies to `internal/`; inherit `../AGENTS.md` and read local children as needed
 | `plugin/` | Built-in capability interfaces and registry |
 | `dshconfig/` | Bounded extraction of model/provider declarations from profiles |
 | `notify/` | Bounded outbound push messages and credential-free receipts |
+| `channel/` | Inbound identity/text boundary and native Weixin transport; `channel/AGENTS.md` |
 
 - Keep HTTP dependent on its `Backend` interface. Store owns local checkout
   validation, commits, rollback, and auditing; a storage plugin owns the remote
@@ -20,6 +21,8 @@ Applies to `internal/`; inherit `../AGENTS.md` and read local children as needed
   runner/profile data; preserve typed model IDs.
 - Notifications are outbound only. Keep device keys out of API responses and
   delivery receipts; restrict plain HTTP to approved local/private targets.
+- Bidirectional channels are separate from notifications. Channel adapters own
+  protocol and recovery state; store owns authorization and application calls.
 - Update interface producers and consumers together, including their nearest
   instructions and `../docs/integration-plugins.md` when relevant. Add a child
   instruction file when an area needs substantial independent guidance.

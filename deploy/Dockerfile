@@ -77,6 +77,7 @@ RUN groupadd --system --gid 10001 context \
 WORKDIR /app
 
 COPY --from=builder --chown=context:context /out/folio /app/folio
+COPY --chown=context:context internal/channel/weixin/NOTICE /app/WEIXIN-NOTICE
 COPY deploy/entrypoint /usr/local/bin/folio-entrypoint
 COPY --chown=context:context web/ /app/web/
 

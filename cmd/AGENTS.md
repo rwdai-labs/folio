@@ -5,6 +5,12 @@ Applies to `cmd/`; inherit `../AGENTS.md`.
 - `folio/main.go` owns command dispatch, environment/flag defaults, built-in
   plugin wiring, HTTP server lifecycle, health checks, scheduler and dispatcher
   startup. Context commands delegate to `internal/context.Run`.
+- `folio/weixin.go` owns operator-only `weixin login|status`, terminal QR
+  display and optional `WEIXIN_ENABLED` service wiring. Require an explicit
+  `WEIXIN_OWNER_ID` before polling. Keep QR and scanner identity out of logs;
+  credentials/state live under the external data directory. Login/status and
+  the poller share a lifetime process lock; disabled installations make no
+  Weixin requests. See `../docs/weixin-channel.md`.
 - Keep business rules in the owning `internal/` package. Wire capabilities
   through the plugin/storage interfaces rather than importing plugin internals
   into the maintenance worker.
