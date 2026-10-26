@@ -31,7 +31,7 @@
           <button type="button" class="lang-option" data-lang="en" lang="en">EN</button>
         </div>
         <button id="logout-button" class="btn ghost small" type="button" hidden>
-          <span class="btn-label" data-i18n="auth.logout">Log out</span>
+          <span class="btn-label" data-i18n="auth.logout">Log out of Folio</span>
         </button>
       </div>
     </div>
@@ -41,7 +41,7 @@
     <section id="login-view" class="login-view" aria-labelledby="login-heading">
       <div class="login-card">
         <p class="eyebrow" data-i18n="login.eyebrow">Local owner</p>
-        <h1 id="login-heading" data-i18n="login.title">Sign in</h1>
+        <h1 id="login-heading" data-i18n="login.title">Sign in to Folio</h1>
         <p class="lede" data-i18n="login.lead">This console is bound to this host. Use the administrator password from the private data volume.</p>
         <form id="login-form" class="form" novalidate>
           <div class="field">
@@ -49,7 +49,7 @@
             <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096" placeholder="Enter the administrator password" data-i18n-placeholder="login.placeholder">
           </div>
           <button id="login-submit" class="btn primary block" type="submit">
-            <span class="btn-label" data-i18n="login.submit">Sign in</span>
+            <span class="btn-label" data-i18n="login.submit">Sign in to Folio</span>
           </button>
           <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
         </form>
@@ -71,7 +71,7 @@
         <section class="side-card" aria-labelledby="state-heading">
           <h2 id="state-heading" class="side-title" data-i18n="state.title">Current state</h2>
           <dl class="facts">
-            <div class="fact"><dt data-i18n="state.git_credential">Git credential</dt><dd id="fact-git">—</dd></div>
+            <div class="fact"><dt data-i18n="state.git_credential">Repository authorization</dt><dd id="fact-git">—</dd></div>
             <div class="fact"><dt data-i18n="state.repository">Repository</dt><dd id="fact-repository">—</dd></div>
             <div class="fact"><dt data-i18n="state.branch">Branch</dt><dd id="fact-branch">—</dd></div>
             <div class="fact"><dt data-i18n="state.head">HEAD</dt><dd id="fact-head">—</dd></div>
@@ -96,13 +96,13 @@
               <p class="eyebrow" data-i18n="repo.kicker">Remote</p>
               <h2 id="repository-heading" data-i18n="repo.title">Repository</h2>
             </div>
-            <span id="repository-badge" class="badge" data-state="unknown">Not connected</span>
+            <span id="repository-badge" class="badge" data-state="unknown">No repository selected</span>
           </header>
           <p class="lede" data-i18n="repo.lead">Connect the private Markdown repository. The checkout stays in the private data volume.</p>
 
           <div id="repository-summary" class="repo-summary" hidden>
             <div class="repo-summary-main">
-              <p class="device-label" data-i18n="repo.current">Current repository</p>
+              <p class="device-label" data-i18n="repo.current">Selected repository</p>
               <strong id="repo-current-name">—</strong>
             </div>
             <dl class="repo-meta">

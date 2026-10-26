@@ -98,18 +98,18 @@
   function badgeText(status) {
     if (!status || status.status === "loading") return text("加载中", "Loading");
     if (status.status === "authenticated") {
-      return status.mode === "token" ? text("部署令牌", "Deployment token") : text("已登录", "Signed in");
+      return status.mode === "token" ? text("已配置部署令牌", "Deployment token configured") : text("GitHub 已登录", "Signed in to GitHub");
     }
-    if (status.status === "pending") return text("等待授权", "Waiting for authorization");
+    if (status.status === "pending") return text("GitHub 授权中", "GitHub authorization pending");
     if (status.status === "error") return text("需要处理", "Needs attention");
-    return text("未登录", "Signed out");
+    return text("GitHub 未登录", "Signed out of GitHub");
   }
 
   function renderBody(body, note, status) {
     const row = element("div", "gh-row");
     if (status.status === "authenticated") {
       body.append(element("p", "gh-hint", status.mode === "token"
-        ? text("已通过 GIT_AUTH_TOKEN 认证，仓库操作使用部署令牌。", "Authenticated with GIT_AUTH_TOKEN; repository operations use the deployment token.")
+        ? text("仓库操作使用部署令牌，请确认令牌具有所选仓库的读写权限。", "Repository operations use the deployment token. Grant it read and write access to the selected repository.")
         : text("已通过 gh 登录，git 与 API 共用这份凭据。", "Signed in through gh; git and the API share this credential.")));
       if (status.mode === "token") {
         // A deployment token is fixed by the environment. Offering a sign-in
@@ -120,7 +120,7 @@
           "The account is fixed by the deployment and cannot change here; search covers only repositories that token can access.")));
         return;
       }
-      row.append(button(text("退出登录", "Sign out"), () => signOut()));
+      row.append(button(text("退出 GitHub", "Sign out of GitHub"), () => signOut()));
       body.append(row);
       return;
     }
@@ -142,8 +142,8 @@
       return;
     }
     body.append(element("p", "gh-hint", text(
-      "登录 GitHub 后可以直接选择仓库，不需要手动填写。",
-      "Sign in to GitHub to pick a repository from a list; no manual typing.")));
+      "请登录 GitHub，授权 Folio 访问仓库，才能同步和整理。",
+      "Sign in to GitHub to authorize repository access for syncing and organization.")));
     row.append(button(text("登录 GitHub", "Sign in to GitHub"), () => startSignIn(), "btn primary"));
     body.append(row);
     message(note, status.message || "", status.status === "error");
@@ -169,15 +169,15 @@
     const row = element("div", "gh-row");
     if (status.status === "pending") {
       note.textContent = text(
-        "等待 GitHub 授权，授权后这里会出现仓库搜索。",
-        "Waiting for GitHub authorization; repository search appears here after approval.");
+        "GitHub 授权尚未完成，暂时无法同步或整理。请在 GitHub 输入代码，并等待此处确认。",
+        "GitHub authorization is pending. Enter the code on GitHub and wait for confirmation here before syncing or organizing.");
     } else if (status.status === "loading") {
       note.textContent = text("正在检查 GitHub 登录状态…", "Checking GitHub sign-in…");
     } else {
       row.append(button(text("登录 GitHub", "Sign in to GitHub"), () => startSignIn(), "btn primary"));
       note.textContent = text(
-        "一键登录 GitHub 后可直接搜索并选择仓库。",
-        "Sign in to GitHub once, then search and pick the repository.");
+        "GitHub 尚未登录，暂时无法同步或整理仓库。请先登录 GitHub 完成授权。",
+        "Sign in to GitHub to authorize repository access before syncing or organizing.");
     }
     slot.append(note, row);
   }

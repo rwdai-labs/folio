@@ -9,6 +9,10 @@ Inherit `../AGENTS.md`.
 - Preserve same-origin requests, CSRF headers for mutations, session-expiry
   cleanup, bounded polling, and busy/error/empty states. Show task, run,
   deferred and paused states according to backend data.
+- Name Folio explicitly in session/login/logout labels. Repository selection
+  and storage authorization are separate: a saved checkout with missing
+  credentials needs authorization, and must not show a green connected badge.
+  A configured deployment token does not prove live repository access.
 - Run details show optional `needs_review` findings and `remaining` backlog.
   Render source/reason as text, translate known finding codes in both languages,
   retain unknown model explanations, and tolerate older runs without these fields.

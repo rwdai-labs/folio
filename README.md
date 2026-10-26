@@ -169,6 +169,13 @@ reports how many were loaded; a truncated list says so instead of silently
 hiding entries. There is no owner/name form of its own; the shell keeps the
 connect transaction (`/api/repository/connect`) and the plugin drives it.
 
+The header identifies the Folio console session. Repository selection and
+GitHub authorization have separate statuses: a saved repository still needs
+working GitHub credentials to sync or organize. When authorization is missing,
+the repository card shows that access needs authorization and offers GitHub
+sign-in. A configured deployment token still needs access to the selected
+repository.
+
 External triggers (a context watcher, a CI job, the GitHub issue bridge) are a
 different class of plugin: they are separate programs that call the signed hook
 API. See [docs/integration-plugins.md](docs/integration-plugins.md) and

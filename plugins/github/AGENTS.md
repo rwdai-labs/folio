@@ -13,6 +13,10 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   authentication, sync and verified publication.
 - Keep routes/assets inside the host plugin namespaces. Preserve the
   English/Chinese plugin UI with safe text rendering.
+- Name GitHub explicitly in sign-in/sign-out status and controls. The repository
+  slot must explain that missing or pending GitHub authorization prevents sync
+  and organization, even when a repository was previously selected. Deployment
+  token status describes configuration, not verified remote access.
 - While mounted, this plugin owns the repository UX: one sign-in entry in the
   repository card, the device code, then a searchable repository picker wired to
   the host connect action (`window.folio.connectRepository`). The picker filters

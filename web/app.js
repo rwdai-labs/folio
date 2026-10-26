@@ -704,9 +704,10 @@
 
     const repository = data.repository || {};
     const connected = Boolean(repository.connected);
+    const authorizationRequired = connected && credential === "missing";
     const repositoryBadge = $("repository-badge");
-    repositoryBadge.dataset.state = connected ? "connected" : "not_connected";
-    repositoryBadge.textContent = t(connected ? "repo.connected" : "repo.not_connected");
+    repositoryBadge.dataset.state = authorizationRequired ? "pending" : connected ? "connected" : "not_connected";
+    repositoryBadge.textContent = t(authorizationRequired ? "repo.auth_required" : connected ? "repo.connected" : "repo.not_connected");
     $("repository-summary").hidden = !connected;
     $("repo-current-name").textContent = connected ? repository.full_name || "—" : "—";
     $("repo-current-branch").textContent = connected ? repository.branch || "—" : "—";
