@@ -13,6 +13,9 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - A task is durable intent; a run is one attempt. Preserve single-writer
   checkout access, priority/off-peak policies, pause/hold/cancel/run-now
   behaviour, deduplication, and recovery of interrupted tasks after restart.
+  Queue maintenance uses runner `codex` with no explicit model override. Its
+  run records carry `task_id` from the first persisted running snapshot, just
+  like report runs; each retry keeps the task identity and creates a new run.
 - Kinds are configuration mapped to implemented actions. Reject unknown kinds
   both at hook setup and dispatch. A `report` action has no repository writes.
 - Automatic organization uses a host-built complete snapshot and the context
@@ -38,6 +41,12 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - Failed runner audits may store only a fixed diagnostic class such as network,
   authentication, timeout or schema failure; never persist raw stderr or model
   output. Preserve fixed worker diagnostic classes across the service boundary.
+- Maintenance runs snapshot only the storage plugin ID, its validated repository
+  name and the checkout branch before pulling; never copy remote URLs or private
+  repository state into that snapshot. Automation listing keeps `latest` as the
+  newest run and separately exposes `review_run`, the newest retained successful
+  maintenance record with an explicit `needs_review` field. Reports, failures
+  and old records without findings cannot clear that historical review snapshot.
 - Update this file for changed state/transaction invariants. Persisted schemas,
   task/run statuses or response fields also require a compatibility decision
   and synchronized HTTP/UI/worker instructions, tests and contract docs.

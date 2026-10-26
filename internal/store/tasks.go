@@ -747,7 +747,7 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 	if definition.Action == kindActionReport {
 		run, runErr = s.runReportTask(definition, snapshot)
 	} else {
-		run, runErr = s.RunAutomation("task", "", "codex")
+		run, runErr = s.runAutomation("task", "codex", "", taskID)
 	}
 	result := map[string]any{"dispatched": 1, "task_id": taskID}
 

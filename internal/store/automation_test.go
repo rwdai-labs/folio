@@ -31,6 +31,129 @@ func installAutoFixture(t *testing.T, store *Store, report string) {
 	}
 }
 
+func TestRunAutomationSnapshotsRepositoryWithoutPrivateState(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		fullName string
+		wantName string
+		failPull bool
+	}{
+		{name: "successful run", fullName: "owner/context", wantName: "owner/context"},
+		{name: "failed pull", fullName: "owner/context", wantName: "owner/context", failPull: true},
+		{name: "credential URL is not an identity", fullName: "https://user:private-fixture@github.com/owner/context.git"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			s := newGitStore(t)
+			installAutoFixture(t, s, `{"version":1,"status":"pending-apply","summary":"No edits needed.","edits":[]}`)
+			state := map[string]any{"repository": map[string]any{
+				"full_name": testCase.fullName, "branch": "stale-saved-branch",
+				"token": "private-fixture", "credential_url": "https://user:private-fixture@github.com/owner/context.git",
+			}}
+			if err := s.saveState(state); err != nil {
+				t.Fatal(err)
+			}
+			if testCase.failPull {
+				if err := os.WriteFile(filepath.Join(s.repositoryDir, "core", "profile.md"), []byte("uncommitted\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run, err := s.RunAutomation("manual", "codex", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase.failPull && (run["status"] != "failed" || run["stage"] != "pull") {
+				t.Fatalf("expected pull failure, got %v", run)
+			}
+			if !testCase.failPull && run["status"] != "no_changes" {
+				t.Fatalf("expected successful no-change run, got %v", run)
+			}
+			if err := s.saveState(map[string]any{"repository": map[string]any{"full_name": "other/context", "branch": "other"}}); err != nil {
+				t.Fatal(err)
+			}
+			detail, err := s.AutomationRun(responseString(run, "run_id"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := mapValue(detail, "repository")
+			if len(repository) != 3 || repository["plugin"] != "github" || repository["full_name"] != testCase.wantName || repository["branch"] != "main" {
+				t.Fatalf("repository snapshot changed or copied private/stale state: %v", repository)
+			}
+			raw, _ := json.Marshal(detail)
+			if strings.Contains(string(raw), "private-fixture") || strings.Contains(string(raw), "https://") {
+				t.Fatalf("run copied private repository state: %s", raw)
+			}
+		})
+	}
+}
+
+func TestListAutomationKeepsLastSuccessfulReviewSnapshot(t *testing.T) {
+	s := newTestStore(t)
+	writeRun := func(id, status string, fields map[string]any) {
+		t.Helper()
+		run := map[string]any{"run_id": id, "status": status}
+		for key, value := range fields {
+			run[key] = value
+		}
+		if err := s.saveAutomationRun(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const reviewedID = "20261020T010000.000000000Z-00000001"
+	const legacyID = "20261020T020000.000000000Z-00000002"
+	const failedID = "20261020T030000.000000000Z-00000003"
+	const reportID = "20261020T040000.000000000Z-00000004"
+	writeRun(reviewedID, "pushed", map[string]any{
+		"needs_review": []any{map[string]any{"source": "inbox/example.md", "reason": "candidate_requires_owner_review"}},
+		"repository":   map[string]any{"full_name": "owner/context", "branch": "main"},
+		"pull":         map[string]any{"head": strings.Repeat("a", 40)},
+	})
+	writeRun(legacyID, "no_changes", nil)
+	writeRun(failedID, "failed", map[string]any{"needs_review": []any{}})
+	writeRun(reportID, "reported", map[string]any{"report_text": "A read-only report."})
+	listed, err := s.ListAutomation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed["count"] != 4 || mapValue(listed, "latest")["run_id"] != reportID {
+		t.Fatalf("latest/list behavior changed: %v", listed)
+	}
+	review := mapValue(listed, "review_run")
+	if review["run_id"] != reviewedID || mapValue(review, "repository")["full_name"] != "owner/context" || len(review["needs_review"].([]any)) != 1 || mapValue(review, "pull")["head"] != strings.Repeat("a", 40) {
+		t.Fatalf("review snapshot was lost, summarized, or replaced by an unrelated run: %v", review)
+	}
+	for _, findings := range []any{[]any{}, nil} {
+		const clearID = "20261020T050000.000000000Z-00000005"
+		writeRun(clearID, "no_changes", map[string]any{"needs_review": findings})
+		listed, err = s.ListAutomation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mapValue(listed, "review_run")["run_id"] != clearID {
+			t.Fatalf("explicit empty findings did not replace previous snapshot: %v", listed)
+		}
+	}
+}
+
+func TestListAutomationHasNoReviewSnapshotForLegacyOrUnsuccessfulRuns(t *testing.T) {
+	s := newTestStore(t)
+	for _, run := range []map[string]any{
+		{"run_id": "20261020T010000.000000000Z-00000001", "status": "pushed"},
+		{"run_id": "20261020T020000.000000000Z-00000002", "status": "failed", "needs_review": []any{}},
+		{"run_id": "20261020T030000.000000000Z-00000003", "status": "reported", "needs_review": []any{}},
+	} {
+		if err := s.saveAutomationRun(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed, err := s.ListAutomation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listed["review_run"] != nil {
+		t.Fatalf("unknown historical findings were treated as a review snapshot: %v", listed)
+	}
+}
+
 func TestRunAutomationPushesValidatedEditsAndRecordsRun(t *testing.T) {
 	store := newGitStore(t)
 	installAutoFixture(t, store, `{

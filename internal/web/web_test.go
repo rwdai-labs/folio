@@ -220,7 +220,7 @@ func (b *testBackend) DispatchDue() (map[string]any, error) {
 func (b *testBackend) SchedulerTick() (map[string]any, error) {
 	return map[string]any{"status": "skipped"}, nil
 }
-func testServer(t *testing.T, backend *testBackend) (*httptest.Server, string) {
+func testServer(t *testing.T, backend Backend) (*httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
 	assets := filepath.Join(root, "assets")

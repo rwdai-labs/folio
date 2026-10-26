@@ -107,6 +107,12 @@ type plannedAutoEdit struct {
 // commit/push maintenance run. Every outcome, including skips and failures,
 // is recorded in the private runtime for later inspection.
 func (s *Store) RunAutomation(trigger, runner, model string) (map[string]any, error) {
+	return s.runAutomation(trigger, runner, model, "")
+}
+
+// runAutomation keeps queue correlation internal while all entry points share
+// the same validation, repository lock and continuation policy.
+func (s *Store) runAutomation(trigger, runner, model, taskID string) (map[string]any, error) {
 	switch trigger {
 	case "manual", "scheduler", "hook", "task":
 	default:
@@ -120,7 +126,7 @@ func (s *Store) RunAutomation(trigger, runner, model string) (map[string]any, er
 		return nil, errStore("model name is invalid")
 	}
 	result, runErr := s.withLock(func() (map[string]any, error) {
-		return s.runAutomationLocked(trigger, normalized, model)
+		return s.runAutomationLocked(trigger, normalized, model, taskID)
 	})
 	if runErr == nil && trigger != "task" {
 		s.queueMaintenanceContinuation(result)
@@ -128,7 +134,7 @@ func (s *Store) RunAutomation(trigger, runner, model string) (map[string]any, er
 	return result, runErr
 }
 
-func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]any, error) {
+func (s *Store) runAutomationLocked(trigger, runner, model, taskID string) (map[string]any, error) {
 	started := time.Now()
 	runID, err := newAutoRunID()
 	if err != nil {
@@ -144,6 +150,9 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 		"runner":      runner,
 		"summary":     "",
 		"duration_ms": 0,
+	}
+	if taskID != "" {
+		run["task_id"] = taskID
 	}
 	if model != "" {
 		run["model"] = model
@@ -191,8 +200,24 @@ func (s *Store) runAutomationLocked(trigger, runner, model string) (map[string]a
 	if err := s.requireRepository(); err != nil {
 		return finish("skipped", "repository", "repository_not_connected", nil)
 	}
+	// Snapshot only the plugin-validated identity and actual checkout branch.
+	// Saved state can also contain a remote URL and unrelated private fields.
+	repository := mapValue(s.loadState(), "repository")
+	fullName := ""
+	pluginID := ""
+	if s.remote != nil {
+		pluginID = s.remote.ID()
+		if resolved, resolveErr := s.remote.Resolve(responseString(repository, "full_name"), false); resolveErr == nil {
+			fullName = publicText(resolved.Name, 201)
+		}
+	}
+	checkoutBranch, _ := s.branch()
+	run["repository"] = map[string]any{"plugin": publicText(pluginID, 64), "full_name": fullName, "branch": publicText(checkoutBranch, 201)}
 
 	run["stage"] = "pull"
+	if err := s.saveAutomationRun(run); err != nil {
+		return nil, err
+	}
 	pull, err := s.syncRepositoryLocked()
 	if err != nil {
 		run["pull"] = map[string]any{"status": "failed"}
@@ -653,6 +678,7 @@ func (s *Store) ListAutomation() (map[string]any, error) {
 	}
 	runs := make([]any, 0, len(files))
 	var latest map[string]any
+	var reviewRun any
 	for index, name := range files {
 		value, loadErr := s.loadJSON(filepath.Join(s.runsDir, name), maxAutoRunBytes)
 		if loadErr != nil {
@@ -665,9 +691,17 @@ func (s *Store) ListAutomation() (map[string]any, error) {
 		if index == 0 {
 			latest = run
 		}
+		// A report succeeds as "reported". Only successful maintenance records
+		// with an explicit findings field can replace the last review snapshot;
+		// legacy records without it do not mean that review work was cleared.
+		if reviewRun == nil && (run["status"] == "pushed" || run["status"] == "no_changes") {
+			if _, hasFindings := run["needs_review"]; hasFindings {
+				reviewRun = run
+			}
+		}
 		runs = append(runs, automationSummary(run))
 	}
-	return map[string]any{"runs": runs, "count": len(runs), "latest": latest}, nil
+	return map[string]any{"runs": runs, "count": len(runs), "latest": latest, "review_run": reviewRun}, nil
 }
 
 // AutomationRun reads one immutable run record without the repository lock.

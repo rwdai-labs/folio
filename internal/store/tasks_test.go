@@ -3,6 +3,8 @@ package store
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +190,90 @@ func TestDispatchDuePicksHighestPriority(t *testing.T) {
 		if task["priority"] == "P3" && task["attempts"] != 0 {
 			t.Fatalf("P3 task ran before P0: %v", task)
 		}
+	}
+}
+
+func TestDispatchMaintenanceCorrelatesInitialAuditAndUsesCodexDefault(t *testing.T) {
+	s := newGitStore(t)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installAutoFixture(t, s, `{"version":1,"status":"pending-apply","summary":"No edits needed.","edits":[]}`)
+	gate := filepath.Join(t.TempDir(), "continue")
+	// Hold the first branch read after the initial audit is persisted. This
+	// proves correlation is available before pull or model execution begins.
+	gitWrapper := "#!/bin/sh\n" +
+		"for arg do\n" +
+		"  if [ \"$arg\" = symbolic-ref ]; then\n" +
+		"    while [ ! -f '" + gate + "' ]; do sleep 0.01; done\n" +
+		"  fi\n" +
+		"done\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(strings.Split(os.Getenv("PATH"), ":")[0], "git"), []byte(gitWrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.CreateTask("maintenance", "manual", "Organize context", "P0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := mapValue(created, "task")["id"]
+	type dispatchResult struct {
+		value map[string]any
+		err   error
+	}
+	done := make(chan dispatchResult, 1)
+	go func() {
+		value, err := s.DispatchDue()
+		done <- dispatchResult{value, err}
+	}()
+	release := func() {
+		if err := os.WriteFile(gate, []byte("continue"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	defer release()
+	var running map[string]any
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		listing, err := s.ListAutomation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		running = mapValue(listing, "latest")
+		if running["status"] == "running" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if running["status"] != "running" || running["stage"] != "repository" || running["task_id"] != taskID || running["runner"] != "codex" || running["model"] != nil {
+		t.Fatalf("initial task audit was missing correlation or changed runner/model: %v", running)
+	}
+	listing, err := s.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := listing["tasks"].([]any)[0].(map[string]any)
+	if task["status"] != taskStatusRunning || task["run_id"] != nil {
+		t.Fatalf("expected still-running task before its final run link: %v", task)
+	}
+	release()
+	first := <-done
+	if first.err != nil || first.value["run_status"] != "no_changes" || first.value["run_id"] != running["run_id"] {
+		t.Fatalf("dispatch did not finish the correlated attempt: %v %v", first.value, first.err)
+	}
+	if _, err := s.RunTaskNow(taskID.(string)); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.DispatchDue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second["run_status"] != "no_changes" || second["run_id"] == first.value["run_id"] {
+		t.Fatalf("retry did not create a new successful attempt: %v", second)
+	}
+	retried, err := s.AutomationRun(responseString(second, "run_id"))
+	if err != nil || retried["task_id"] != taskID || retried["runner"] != "codex" || retried["model"] != nil {
+		t.Fatalf("retry lost correlation or changed the model default: %v %v", retried, err)
 	}
 }
 

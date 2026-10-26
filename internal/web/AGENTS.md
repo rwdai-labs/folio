@@ -21,6 +21,15 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   (`source`, `reason`). These are private authenticated audit data. Consumers
   must tolerate their absence on old runs and report runs; findings are not
   approvals and a successful structural edit does not resolve a factual conflict.
+- Queue-created maintenance and report runs include `task_id` from their first
+  running audit record. Consumers can correlate a running task with its current
+  attempt before the task's final `run_id` is saved; historical runs may omit it.
+- Maintenance run `repository` snapshots contain only `plugin`, `full_name` and
+  `branch`. Pass through automation listing's optional `review_run` unchanged
+  under the existing authenticated redaction boundary. It is a complete snapshot
+  from the most recent retained successful maintenance with known findings,
+  independent of `latest`; it is not a live approval queue. Older runs may lack
+  repository identity, and an unknown review snapshot must stay unknown.
 
 Run `go test -race ./internal/web` from the repository root and the root Go
 checks. Cover affected auth/CSRF/host/origin rejection, limits, redaction and

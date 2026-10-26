@@ -57,6 +57,11 @@ maintenance event arriving after a task has started creates at most one queued
 follow-up for that kind/source; queued duplicates coalesce. This prevents a
 change arriving after the current pull from being acknowledged and forgotten.
 An interrupted/failed task remains visible and can be retried with Run now.
+Queue maintenance selects the Codex runner without forcing a model name.
+Maintenance and report run audits carry their originating `task_id` from the
+first running record, so a task can be associated with its current attempt
+before it finishes. Retrying preserves the task ID and creates a new run ID;
+older run records without this association remain readable.
 
 The model can also return `needs_review: [{"source": "...", "reason": "..."}]`.
 Pending candidates, stale context, broken document links, unavailable parents,
@@ -65,6 +70,22 @@ Findings never approve or promote context. Model findings are retained in
 `runtime/maintenance-review.json` while the source bytes remain unchanged;
 edited sources are reassessed on the next pass. The Web run view shows these
 findings alongside diffs and the remaining document count.
+
+New maintenance runs record the storage plugin ID, its validated repository
+name and the checkout branch in `repository` before pulling. Remote URLs and
+credentials are excluded. This binds later source/commit links to the run's
+repository rather than whichever repository is currently selected. Older runs
+without this snapshot do not establish a historical repository identity.
+
+`GET /api/automation` returns `review_run` separately from the newest `latest`
+run: it is the complete most recent retained successful maintenance record
+(`pushed` or `no_changes`) with an explicit `needs_review` field. Reports,
+failures and older successes without that field do not replace it. An explicit
+empty or null findings list is a known empty snapshot; no qualifying record
+means `review_run: null`. This describes findings at the last successful
+organization, not a live approval queue or a completed owner decision. The
+snapshot is limited to the retained run history and never fabricates an empty
+review state when older evidence is unavailable.
 
 Older run records without these fields remain readable. The original
 `summary`/`edits` runner response is accepted; new workers additionally return
