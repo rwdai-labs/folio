@@ -376,7 +376,9 @@ func autoPrompt(data ReviewData, device string) ([]byte, error) {
 		"New section headings may be Summary, Details, Related, 摘要, 详情 or 相关文档. " +
 		"New navigation links must reference supplied canonical files and use a heading or existing line as the label. " +
 		"Report conflicts, stale facts, candidate decisions, semantic rewrites and unsupported structural migrations in needs_review " +
-		"as objects with source (a supplied path) and reason; do not resolve them by guessing. " +
+		"as objects with source and reason; do not resolve them by guessing. " +
+		"Each needs_review source must be an exact key in DATA.files, even if other paths occur elsewhere in DATA. " +
+		"Use a nonblank reason of at most 2000 characters and at most 30 findings. Existing DATA.issues are retained by the host; do not repeat them. " +
 		"Keep the original language. Inference is not fact. Prefer no change over cosmetic churn. " +
 		"Never include credentials, tokens, private keys, or sensitive documents. " +
 		"Keep the change set small (at most 8 files) and omit files that need no change. " +
@@ -565,17 +567,18 @@ func parseDSHUsage(stdout []byte) (usageReport, bool) {
 }
 
 type providerConfig struct {
-	Model       string
-	Provider    string
-	Settings    map[string]any
-	ProviderEnv string
+	Model           string
+	ReasoningEffort string
+	Provider        string
+	Settings        map[string]any
+	ProviderEnv     string
 }
 
 var providerNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-// CodexConnectionArgs reads only model/provider routing fields from the
-// external config. MCP, plugin, experimental token, and user instruction
-// settings are intentionally ignored.
+// CodexConnectionArgs reads only model/provider routing and reasoning effort
+// from the external config. MCP, plugin, experimental token, and user
+// instruction settings are intentionally ignored.
 func CodexConnectionArgs() ([]string, string, error) {
 	configHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if configHome == "" {
@@ -600,6 +603,9 @@ func CodexConnectionArgs() ([]string, string, error) {
 	selected := make([]string, 0, 8)
 	if config.Model != "" {
 		selected = append(selected, "-c", "model="+jsonString(config.Model))
+	}
+	if config.ReasoningEffort != "" {
+		selected = append(selected, "-c", "model_reasoning_effort="+jsonString(config.ReasoningEffort))
 	}
 	if config.Provider != "" {
 		selected = append(selected, "-c", "model_provider="+jsonString(config.Provider))
@@ -715,7 +721,7 @@ func parseProviderTOML(text string) (providerConfig, error) {
 		if key == "model_providers" || strings.HasPrefix(key, "model_providers.") {
 			return providerConfig{}, fmt.Errorf("provider tables must use [model_providers.<name>] on line %d", lineNumber+1)
 		}
-		if key != "model" && key != "model_provider" {
+		if key != "model" && key != "model_provider" && key != "model_reasoning_effort" {
 			continue
 		}
 		if seenTopLevel[key] {
@@ -730,7 +736,14 @@ func parseProviderTOML(text string) (providerConfig, error) {
 		if !ok || stringValue == "" {
 			return providerConfig{}, fmt.Errorf("%s must be a non-empty string", key)
 		}
-		if key == "model" {
+		if key == "model_reasoning_effort" {
+			switch stringValue {
+			case "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
+				result.ReasoningEffort = stringValue
+			default:
+				return providerConfig{}, errors.New("model reasoning effort is invalid")
+			}
+		} else if key == "model" {
 			result.Model = stringValue
 		} else {
 			result.Provider = stringValue

@@ -130,6 +130,11 @@ The entrypoint imports only a bounded configuration subset into the private
 Codex maintenance preserves the bounded model/provider routing from the imported
 `config.toml`, including when no model is selected in the Web UI. An explicit
 model selection overrides only the model, preserving the configured provider.
+The isolated worker also preserves `model_reasoning_effort` from this file
+(`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`); choose
+a level supported by the selected model. The Web model field changes only the
+model, so it does not replace this effort setting. Invalid effort settings fail
+before a model call rather than silently falling back to a different level.
 Only the configured provider's named environment credential is forwarded when
 present; inline bearer tokens are not forwarded to the isolated invocation.
 Without configured routing, the isolated CLI uses its authenticated default.

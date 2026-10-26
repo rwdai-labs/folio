@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -212,6 +213,7 @@ func TestCodexWorkerStdinAndConfiguredProviderWithoutModel(t *testing.T) {
 			runtime, home, bin, capture := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 			const envKey = "FOLIO_FIXTURE_CODEX_PROVIDER_KEY"
 			config := `model="configured-model"
+model_reasoning_effort="max"
 model_provider="custom"
 [model_providers.custom]
 base_url="https://example.invalid/v1"
@@ -261,7 +263,7 @@ experimental_bearer_token="synthetic-inline-secret"
 			if strings.Contains(string(args), marker) || strings.Contains(string(args), "synthetic-inline-secret") || strings.Contains(string(args), "synthetic-provider-key") || !strings.HasSuffix(string(args), "-\n") {
 				t.Fatal("private prompt or credential entered argv, or stdin marker was missing")
 			}
-			for _, routing := range []string{`model="configured-model"`, `model_provider="custom"`, `model_providers.custom.base_url="https://example.invalid/v1"`, `model_providers.custom.env_key="FOLIO_FIXTURE_CODEX_PROVIDER_KEY"`} {
+			for _, routing := range []string{`model="configured-model"`, `model_reasoning_effort="max"`, `model_provider="custom"`, `model_providers.custom.base_url="https://example.invalid/v1"`, `model_providers.custom.env_key="FOLIO_FIXTURE_CODEX_PROVIDER_KEY"`} {
 				if !strings.Contains(string(args), routing) {
 					t.Fatalf("configured routing was dropped: %s", routing)
 				}
@@ -385,6 +387,38 @@ func TestProviderConfigAcceptsProviderTableBeforeSelector(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, `model_provider="custom"`) || !strings.Contains(joined, `model_providers.custom.base_url="https://example.invalid/v1"`) || envKey != "CUSTOM_API_KEY" {
 		t.Fatalf("provider table was not retained: %s / %s", joined, envKey)
+	}
+}
+
+func TestProviderConfigPreservesBoundedReasoningEffort(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"} {
+		t.Run(effort, func(t *testing.T) {
+			config := "model_reasoning_effort=" + strconv.Quote(effort) + "\n[mcp_servers.untrusted]\ncommand=\"DO-NOT-COPY\"\n"
+			if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			connection, _, err := CodexConnectionArgs()
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := workerCodexArgs("/tmp/fixture", "", "/tmp/fixture/report", connection, "fixture-model")
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, "model_reasoning_effort="+strconv.Quote(effort)) || !strings.Contains(joined, "--ignore-user-config") || strings.Contains(joined, "DO-NOT-COPY") {
+				t.Fatalf("isolated runner lost effort or copied unrelated config: %s", joined)
+			}
+		})
+	}
+	for _, config := range []string{
+		"model_reasoning_effort=\"bogus\"\n",
+		"model_reasoning_effort=3\n",
+		"model_reasoning_effort=\"\"\n",
+		"model_reasoning_effort=\"max\"\nmodel_reasoning_effort=\"low\"\n",
+	} {
+		if _, err := parseProviderTOML(config); err == nil {
+			t.Fatal("invalid or duplicate reasoning effort was accepted")
+		}
 	}
 }
 
