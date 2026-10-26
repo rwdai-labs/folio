@@ -66,6 +66,10 @@
     modelCatalogSignature: "",
     selectedRunId: "",
     lastState: null,
+    view: "dashboard",
+    viewInitialized: false,
+    rechecking: false,
+    selectedRun: null,
   };
 
   const messageRegions = {
@@ -76,6 +80,8 @@
     hooks: { element: "hooks-message", data: null },
     usage: { element: "usage-message", data: null },
     tasks: { element: "tasks-message", data: null },
+    review: { element: "review-message", data: null },
+    app: { element: "app-message", data: null },
   };
 
   let busyButtons = [];
@@ -242,7 +248,11 @@
     setConnection(true);
     if (!state.timers.automation) {
       state.timers.automation = window.setInterval(() => {
-        if (state.authenticated && !document.hidden) refreshAutomation({ silent: true });
+        if (state.authenticated && !document.hidden) {
+          refreshAutomation({ silent: true });
+          refreshTasks();
+          if (state.view === "dashboard") refreshUsage();
+        }
       }, 15000);
     }
   }
@@ -574,6 +584,7 @@
     input.value = value;
     state.modelValues[activeRunner()] = value;
     closeModelMenu();
+    renderSetup();
     input.focus();
   }
 
@@ -615,7 +626,7 @@
   }
 
   async function runAutomationNow() {
-    if (state.automationRunning) return;
+    if (state.automationRunning || !setupReady()) return;
     state.automationRunning = true;
     const button = $("run-now-button");
     setBusy(button, "automation.running");
@@ -640,6 +651,7 @@
       else if (run.status === "failed") setMessage("automation", "automation.failed", { error: true });
       else setMessage("automation", "automation.completed");
       await refreshAll();
+      return run;
     } catch (error) {
       if (error.code !== "authentication_required") {
         setMessage("automation", errorKey(error, "automation.failed"), { error: true });
@@ -648,6 +660,7 @@
     } finally {
       state.automationRunning = false;
       clearBusy(button);
+      renderSetup();
     }
   }
 
@@ -697,6 +710,174 @@
 
   /* --------------------------------------------------------------- state */
 
+  const views = ["dashboard", "runs", "review", "settings"];
+  const sectionViews = {
+    "repository-section": "settings", "runner-settings": "settings",
+    "channels-section": "settings", "hooks-section": "settings",
+    "automation-section": "runs", "tasks-section": "dashboard", "usage-section": "dashboard", "run-options": "dashboard",
+  };
+
+  function setupReady() {
+    const data = state.lastState || {};
+    return Boolean(data.repository && data.repository.connected && data.storage &&
+      data.storage.auth && data.storage.auth !== "missing" &&
+      (runnerAvailable("codex", data) || runnerAvailable("dsh", data)));
+  }
+
+  function navigate(focus = false) {
+    if (!state.authenticated) return;
+    if ($("task-detail").open) $("task-detail").close();
+    const fragment = window.location.hash.slice(1);
+    const target = views.includes(fragment) ? fragment : sectionViews[fragment];
+    state.view = target || (setupReady() ? "dashboard" : "settings");
+    views.forEach((view) => { $(`${view}-view`).hidden = view !== state.view; });
+    document.querySelectorAll("[data-view]").forEach((link) => {
+      if (link.dataset.view === state.view) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
+    if (focus) {
+      const section = sectionViews[fragment] ? $(fragment) : null;
+      const heading = $(`${state.view === "runs" ? "runs-page" : state.view === "settings" ? "settings" : state.view}-heading`);
+      if (section) {
+        if (section.tagName === "DETAILS") section.open = true;
+        section.scrollIntoView({ block: "start" });
+      }
+      else if (heading) heading.focus();
+    }
+    state.viewInitialized = true;
+    renderSetup();
+  }
+
+  function renderSetup() {
+    const data = state.lastState || {};
+    const repository = data.repository || {};
+    const authorized = data.storage && data.storage.auth && data.storage.auth !== "missing";
+    const available = runnerAvailable("codex", data) || runnerAvailable("dsh", data);
+    $("setup-repository-state").textContent = t(!authorized ? "setup.authorize" : repository.connected ? "setup.selected" : "setup.select");
+    $("setup-runner-state").textContent = t(available ? "setup.installed" : "setup.required");
+    $("setup-runner-detail").textContent = t(available ? "setup.runner_available" : "setup.runner_missing");
+    $("setup-alert").hidden = setupReady() || state.view === "settings";
+    $("dashboard-repository").textContent = repository.connected ? repository.full_name || "" : t("repo.none");
+    const unavailable = !setupReady();
+    if (!state.automationRunning) $("run-now-button").disabled = unavailable;
+    if (!state.rechecking) $("review-recheck").disabled = unavailable;
+    $("run-options-summary").textContent = t("board.run_options", {
+      runner: activeRunner(), model: $("model-input").value.trim() || t("automation.model_default"),
+    });
+    $("review-runner").textContent = t("review.runner", {
+      runner: activeRunner(), model: $("model-input").value.trim() || t("automation.model_default"),
+    });
+  }
+
+  // Only fixed GitHub URLs; model-provided paths never become arbitrary links.
+  function findingURL(run, source, current = false) {
+    const repository = current ? (state.lastState || {}).repository : run && run.repository;
+    const storage = (state.lastState || {}).storage || {};
+    if ((current ? storage.plugin : repository && repository.plugin) !== "github") return "";
+    const name = repository && repository.full_name;
+    if (current && run && run.repository && run.repository.full_name && run.repository.full_name !== name) return "";
+    if (typeof name !== "string" || name.split("/").length !== 2 ||
+        !name.split("/").every((part) => repositoryPart.test(part))) return "";
+    const ref = current ? repository.branch : run && run.pull && run.pull.head;
+    if (typeof ref !== "string" || !ref || (!current && !/^[a-f0-9]{40}$/i.test(ref))) return "";
+    if (typeof source !== "string" || source.length > 512 || !source.endsWith(".md") ||
+        /[\\\x00-\x1f\x7f]/.test(source) || source.split("/").some((part) => !part || part === "." || part === "..")) return "";
+    return `https://github.com/${name.split("/").map(encodeURIComponent).join("/")}/blob/${encodeURIComponent(ref)}/${source.split("/").map(encodeURIComponent).join("/")}`;
+  }
+
+  function findingCards(run, current = false) {
+    const list = document.createElement("div");
+    list.className = "review-findings";
+    const issues = Array.isArray(run && run.needs_review) ? run.needs_review : [];
+    issues.forEach((issue) => {
+      if (!issue || typeof issue.source !== "string" || typeof issue.reason !== "string") return;
+      const card = document.createElement("article");
+      card.className = "review-finding";
+      const source = document.createElement("h3");
+      source.textContent = issue.source;
+      const reason = document.createElement("p");
+      reason.textContent = translateKnown(`automation.finding.${issue.reason}`, issue.reason);
+      const next = document.createElement("p");
+      next.className = "hint";
+      next.textContent = t(issue.reason === "candidate_requires_owner_review" ? "review.candidate_next" : "review.finding_next");
+      const guidance = document.createElement("details");
+      const guidanceTitle = document.createElement("summary");
+      guidanceTitle.textContent = t("review.what_next");
+      guidance.append(guidanceTitle, next);
+      card.append(source, reason, guidance);
+      if (current && !(run.repository && run.repository.full_name)) {
+        const warning = document.createElement("p");
+        warning.className = "hint";
+        warning.textContent = t("review.current_only");
+        card.appendChild(warning);
+      }
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      [false, ...(current ? [true] : [])].forEach((inCurrentRepository) => {
+        const url = findingURL(run, issue.source, inCurrentRepository);
+        if (!url) return;
+        const link = document.createElement("a");
+        link.className = "btn ghost small";
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = t(inCurrentRepository ? "review.open_current" : "review.open_input");
+        actions.appendChild(link);
+      });
+      if (!actions.childNodes.length) {
+        const hint = document.createElement("p");
+        hint.className = "hint";
+        hint.textContent = t("review.no_link");
+        card.appendChild(hint);
+      }
+      card.appendChild(actions);
+      list.appendChild(card);
+    });
+    return list;
+  }
+
+  function renderReview() {
+    const run = state.automation && state.automation.review_run;
+    const issues = Array.isArray(run && run.needs_review) ? run.needs_review : [];
+    const notice = $("dashboard-review");
+    notice.hidden = !issues.length;
+    notice.textContent = t("review.notice", { count: issues.length });
+    $("review-snapshot").textContent = state.automationError ? t("review.snapshot_failed") : run
+      ? t("review.as_of", { time: formatTime(run.finished_at || run.started_at), count: issues.length })
+      : t("review.no_snapshot");
+    const list = $("review-list");
+    list.replaceChildren();
+    if (issues.length) list.appendChild(findingCards(run, true));
+    else {
+      const empty = document.createElement("p");
+      empty.className = "empty-state";
+      empty.textContent = t(run ? "review.empty" : "review.no_snapshot_hint");
+      list.appendChild(empty);
+    }
+    renderSetup();
+  }
+
+  async function recheckReview() {
+    if (state.rechecking || state.automationRunning || !setupReady()) return;
+    state.rechecking = true;
+    const button = $("review-recheck");
+    setBusy(button, "automation.running");
+    setMessage("review", "review.checking");
+    try {
+      // Maintenance already pulls before inspecting files; a separate sync would
+      // introduce a second job and a race without improving freshness.
+      const run = await runAutomationNow();
+      const successful = run && ["pushed", "no_changes"].includes(run.status);
+      setMessage("review", successful ? state.automationError ? "review.snapshot_failed" : "review.checked" : "review.check_failed", {
+        error: !successful || state.automationError,
+      });
+    } finally {
+      state.rechecking = false;
+      clearBusy(button);
+      renderSetup();
+    }
+  }
+
   function renderState(data) {
     if (!data) return;
     const storage = data.storage || {};
@@ -730,6 +911,8 @@
 
     updateRunnerUi(data);
     renderAutomationView();
+    if (!state.viewInitialized) navigate();
+    renderSetup();
   }
 
   async function refreshState() {
@@ -742,17 +925,19 @@
   async function refreshAll() {
     try {
       await refreshState();
+      setMessage("app", null);
     } catch (error) {
       if (error.code !== "authentication_required") {
-        setMessage("automation", errorKey(error, "error.generic"), { error: true });
+        setMessage("app", errorKey(error, "error.generic"), { error: true });
       }
     }
-    await loadTaskKinds();
-    await refreshAutomation({ silent: true });
-    await refreshChannels();
-    await refreshHooks();
-    await refreshUsage();
-    await refreshTasks();
+    if (!state.authenticated) return;
+    if (!state.viewInitialized) navigate();
+    await Promise.allSettled([
+      loadTaskKinds(), refreshAutomation({ silent: true }), refreshChannels(),
+      refreshHooks(), refreshUsage(), refreshTasks(),
+    ]);
+    renderHooks({ hooks: state.hooks });
   }
 
   /* -------------------------------------------------------------- channels */
@@ -1293,10 +1478,10 @@
   function renderUsage(data) {
     state.usage = data || null;
     const totals = (data && data.totals) || {};
-    setUsageText("usage-total", usageNumber(totals.total_tokens));
-    setUsageText("usage-input", usageNumber(totals.input_tokens));
-    setUsageText("usage-output", usageNumber(totals.output_tokens));
-    setUsageText("usage-runs", usageNumber(totals.runs));
+    setUsageText("usage-total", data ? usageNumber(totals.total_tokens) : "—");
+    setUsageText("usage-input", data ? usageNumber(totals.input_tokens) : "—");
+    setUsageText("usage-output", data ? usageNumber(totals.output_tokens) : "—");
+    setUsageText("usage-runs", data ? usageNumber(totals.runs) : "—");
     const note = $("usage-note");
     if (note) {
       note.textContent = data
@@ -1315,6 +1500,7 @@
     try {
       const data = await api(`/api/usage?days=${encodeURIComponent(state.usageWindow)}`);
       renderUsage(data);
+      setMessage("usage", null);
     } catch (error) {
       if (error.code === "authentication_required") return;
       setMessage("usage", errorKey(error, "usage.failed"), { error: true });
@@ -1351,112 +1537,250 @@
     return button;
   }
 
-  function renderTasks(data) {
-    state.tasks = data || null;
-    const list = $("tasks-list");
-    if (!list) return;
-    const tasks = Array.isArray(data && data.tasks) ? data.tasks : [];
-    const counts = (data && data.counts) || {};
-    const pending = (counts.queued || 0) + (counts.running || 0);
-    const badge = $("tasks-count");
-    if (badge) {
-      badge.dataset.state = pending > 0 ? "enabled" : "disabled";
-      badge.textContent = String(pending);
+  function taskWaitText(task, data) {
+    if (task.status === "queued") {
+      if (!task.enabled) return t("board.held");
+      if (data && data.paused) return t("board.queue_paused");
+      if (task.not_before && !task.due) return t("tasks.not_before", { time: formatTime(task.not_before) });
+      const policy = data && data.policy;
+      if (policy && policy.defer && policy.defer[task.priority] && !policy.in_window) return t("board.off_peak");
+      return t("board.ready");
     }
-    const pauseButton = $("tasks-pause");
-    if (pauseButton) {
-      const label = pauseButton.querySelector(".btn-label");
-      if (label) label.textContent = t(data && data.paused ? "tasks.resume" : "tasks.pause");
-      pauseButton.dataset.paused = data && data.paused ? "true" : "false";
+    if (task.status === "failed") return reasonText(task.reason) || t("board.failed_hint");
+    if (task.status === "running") {
+      const latest = state.automation && state.automation.latest;
+      return latest && latest.run_id === task.run_id && latest.stage
+        ? translateKnown(`automation.stage.${latest.stage}`, latest.stage) : t("automation.status.running");
     }
-    const policy = (data && data.policy) || {};
-    const policyLine = $("tasks-policy");
-    if (policyLine) {
-      policyLine.textContent = data
-        ? t(policy.in_window ? "tasks.policy_inside" : "tasks.policy_outside", {
-            start: policy.window_start || "",
-            end: policy.window_end || "",
-          })
-        : "";
-    }
-    while (list.firstChild) list.removeChild(list.firstChild);
-    if (!tasks.length) {
-      const empty = document.createElement("p");
-      empty.className = "hint";
-      empty.textContent = t("tasks.empty");
-      list.appendChild(empty);
-      return;
-    }
-    tasks.forEach((task) => {
-      if (!task || typeof task.id !== "string") return;
-      const row = document.createElement("div");
-      row.className = "task-item";
+    return t(task.status === "canceled" ? "tasks.status.canceled" : "board.finished");
+  }
 
-      const head = document.createElement("div");
-      head.className = "task-head";
+  function taskSourceText(source) {
+    if (source === "maintenance:continuation") return t("board.continuation");
+    if (source === "manual") return t("automation.trigger.manual");
+    if (source === "schedule" || source === "scheduler") return t("automation.trigger.scheduler");
+    return source || "";
+  }
+
+  function boardTasks() {
+    const tasks = Array.isArray(state.tasks && state.tasks.tasks) ? state.tasks.tasks.map((task) => ({ ...task })) : [];
+    const run = state.automation && state.automation.latest;
+    tasks.filter((task) => task.status === "running").forEach((task) => {
+      // Queue records receive their run_id at completion. A live run's explicit
+      // task_id identifies the current attempt; never present an old retry as live.
+      task.run_id = run && run.task_id === task.id ? run.run_id : "";
+    });
+    // Immediate/scheduled runs do not necessarily have a durable queue task.
+    if (run && run.run_id && !tasks.some((task) => task.run_id === run.run_id || task.id === run.task_id)) {
+      tasks.unshift({
+        id: `run:${run.run_id}`, run_id: run.run_id, boardRun: true,
+        title: t("board.direct_run"), kind: run.kind || "maintenance",
+        source: run.trigger, status: ["pushed", "no_changes", "reported"].includes(run.status) ? "done" : run.status === "skipped" ? "failed" : run.status,
+        reason: run.reason, created_at: run.started_at, finished_at: run.finished_at,
+        runner: run.runner, model: run.model,
+      });
+    }
+    return tasks;
+  }
+
+  function taskCard(task, data) {
+    const row = document.createElement("article");
+    row.className = "task-item";
+    const head = document.createElement("div");
+    head.className = "task-head";
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "task-title task-open";
+    title.dataset.taskInspect = task.id;
+    title.textContent = task.source === "maintenance:continuation" ? t("board.continuation") : task.title || task.kind || task.id;
+    head.appendChild(title);
+    if (task.priority) {
       const chip = document.createElement("span");
       chip.className = "task-priority";
-      chip.dataset.priority = task.priority || "P2";
-      chip.textContent = task.priority || "P2";
-      const title = document.createElement("span");
-      title.className = "task-title";
-      title.textContent = task.title || task.kind || task.id;
-      const status = document.createElement("span");
-      status.className = "badge";
-      status.dataset.state =
-        task.status === "running" ? "enabled" : task.status === "failed" ? "disabled" : "neutral";
-      status.textContent = t(taskStatusKey(task.status));
+      chip.dataset.priority = task.priority;
+      chip.textContent = task.priority;
       head.appendChild(chip);
-      head.appendChild(title);
-      head.appendChild(status);
-
-      const meta = document.createElement("p");
-      meta.className = "task-meta";
-      const parts = [kindLabel(task.kind), task.source];
-      if (task.created_at) {
-        parts.push(t("tasks.created", { time: formatTime(task.created_at) }));
-      }
-      if (task.not_before && !task.due && task.status === "queued") {
-        parts.push(t("tasks.not_before", { time: formatTime(task.not_before) }));
-      }
-      if (task.attempts > 0) {
-        parts.push(t("tasks.attempts", { count: task.attempts }));
-      }
-      if (task.payload && typeof task.payload === "object") {
-        Object.entries(task.payload)
-          .filter(([key, value]) => key !== "title" && ["string", "number", "boolean"].includes(typeof value))
-          .slice(0, 3)
-          .forEach(([key, value]) => {
-            const text = String(value);
-            parts.push(`${key}=${text.length > 40 ? `${text.slice(0, 40)}…` : text}`);
-          });
-      }
-      if (task.reason) {
-        parts.push(task.reason);
-      }
-      meta.textContent = parts.filter(Boolean).join(" · ");
-
-      const actions = document.createElement("div");
-      actions.className = "task-actions";
+    }
+    const meta = document.createElement("p");
+    meta.className = "task-meta";
+    const parts = [kindLabel(task.kind), taskSourceText(task.source)];
+    if (task.runner) parts.push(`${task.runner}${task.model ? " · " + task.model : ""}`);
+    const when = task.finished_at || task.created_at;
+    if (when) parts.push(formatTime(when));
+    if (task.attempts > 0) parts.push(t("tasks.attempts", { count: task.attempts }));
+    meta.textContent = parts.filter(Boolean).join(" · ");
+    const progress = document.createElement("p");
+    progress.className = "task-progress";
+    progress.dataset.state = task.status;
+    progress.textContent = taskWaitText(task, data);
+    row.append(head, meta, progress);
+    const actions = document.createElement("div");
+    actions.className = "task-actions";
+    if (!task.boardRun) {
       if (task.status === "queued") {
         actions.appendChild(taskButton(task, "toggle", task.enabled ? "tasks.action.pause" : "tasks.action.resume"));
         actions.appendChild(taskButton(task, "run", "tasks.action.run"));
         actions.appendChild(taskButton(task, "cancel", "tasks.action.cancel"));
-      } else if (task.status !== "running") {
-        actions.appendChild(taskButton(task, "run", "tasks.action.run"));
-      }
+      } else if (["failed", "done"].includes(task.status)) actions.appendChild(taskButton(task, "run", "tasks.action.run"));
+    }
+    if (actions.childNodes.length) row.appendChild(actions);
+    return row;
+  }
 
-      row.appendChild(head);
-      row.appendChild(meta);
-      if (actions.childNodes.length) row.appendChild(actions);
-      list.appendChild(row);
+  function renderTasks(data) {
+    state.tasks = data || null;
+    const board = $("tasks-list");
+    if (!board) return;
+    const query = $("task-search").value.trim().toLocaleLowerCase();
+    const priority = $("task-priority-filter").value;
+    const all = boardTasks();
+    const filtered = all.filter((task) => (!priority || task.priority === priority) &&
+      (!query || [task.title, task.kind, task.source, task.reason, task.runner, task.model, taskSourceText(task.source)].some((value) => typeof value === "string" && value.toLocaleLowerCase().includes(query))));
+    const pending = all.filter((task) => ["queued", "running"].includes(task.status)).length;
+    $("tasks-count").dataset.state = pending ? "enabled" : "disabled";
+    $("tasks-count").textContent = String(pending);
+    $("tasks-pause").querySelector(".btn-label").textContent = t(data && data.paused ? "tasks.resume" : "tasks.pause");
+    $("tasks-pause").dataset.paused = data && data.paused ? "true" : "false";
+    const policy = data && data.policy;
+    $("tasks-policy").textContent = policy ? t(policy.in_window ? "tasks.policy_inside" : "tasks.policy_outside", {
+      start: policy.window_start || "", end: policy.window_end || "",
+    }) : "";
+    $("board-summary").textContent = t("board.summary", { shown: filtered.length, total: all.length });
+    const active = document.activeElement;
+    const focus = active && board.contains(active) ? {
+      inspect: active.dataset.taskInspect, action: active.dataset.taskAction, id: active.dataset.taskId,
+    } : null;
+    const scrollLeft = board.scrollLeft;
+    const columnScroll = new Map(Array.from(board.querySelectorAll(".board-column")).map((column) => [column.dataset.column, column.querySelector(".board-column-body").scrollTop]));
+    board.replaceChildren();
+    const groups = [
+      ["queued", filtered.filter((task) => task.status === "queued")],
+      ["running", filtered.filter((task) => task.status === "running")],
+      ["attention", filtered.filter((task) => task.status === "failed").sort((a, b) => String(b.finished_at || b.updated_at || b.created_at || "").localeCompare(String(a.finished_at || a.updated_at || a.created_at || "")))],
+      ["done", filtered.filter((task) => ["done", "canceled"].includes(task.status)).sort((a, b) => String(b.finished_at || b.updated_at || b.created_at || "").localeCompare(String(a.finished_at || a.updated_at || a.created_at || "")))],
+    ];
+    const reviewRun = state.automation && state.automation.review_run;
+    const findings = Array.isArray(reviewRun && reviewRun.needs_review) ? reviewRun.needs_review : [];
+    const showReview = findings.length && !priority && (!query || findings.some((issue) => [issue.source, issue.reason, t("nav.review")].some((value) => typeof value === "string" && value.toLocaleLowerCase().includes(query))));
+    groups.forEach(([key, tasks]) => {
+      const column = document.createElement("section");
+      column.className = "board-column";
+      column.dataset.column = key;
+      const heading = document.createElement("h3");
+      heading.className = "board-column-heading";
+      const name = document.createElement("span");
+      name.textContent = t(`board.column.${key}`);
+      const count = document.createElement("span");
+      count.className = "board-column-count";
+      count.textContent = String(tasks.length + (key === "attention" && showReview ? 1 : 0));
+      heading.append(name, count);
+      const body = document.createElement("div");
+      body.className = "board-column-body";
+      if (key === "attention" && showReview) {
+        const card = document.createElement("article");
+        card.className = "task-item review-task";
+        const link = document.createElement("a");
+        link.href = "#review";
+        link.className = "task-title";
+        link.textContent = t("board.review_title", { count: findings.length });
+        const note = document.createElement("p");
+        note.className = "task-meta";
+        note.textContent = t("board.review_note", { time: formatTime(reviewRun.finished_at || reviewRun.started_at) });
+        card.append(link, note);
+        body.appendChild(card);
+      }
+      tasks.forEach((task) => body.appendChild(taskCard(task, data)));
+      if (!body.childNodes.length) {
+        const empty = document.createElement("p");
+        empty.className = "board-empty";
+        empty.textContent = t(data ? `board.empty.${key}` : "board.loading");
+        body.appendChild(empty);
+      }
+      column.append(heading, body);
+      board.appendChild(column);
+      body.scrollTop = columnScroll.get(key) || 0;
     });
+    board.scrollLeft = scrollLeft;
+    if (focus) {
+      const replacement = Array.from(board.querySelectorAll("button")).find((button) => focus.inspect
+        ? button.dataset.taskInspect === focus.inspect
+        : focus.action && button.dataset.taskAction === focus.action && button.dataset.taskId === focus.id);
+      if (replacement) replacement.focus({ preventScroll: true });
+    }
+    syncInspectedTask();
+  }
+
+  let inspectedTask = "";
+  let inspectGeneration = 0;
+  let inspectedRun = null;
+  let inspectedRunId = "";
+  function renderTaskContext(task) {
+    $("task-detail-context").textContent = `${task.title || task.kind} · ${taskWaitText(task, state.tasks)}${task.status === "queued" && task.run_id ? " · " + t("board.previous_attempt") : ""}`;
+  }
+
+  function syncInspectedTask() {
+    if (!$("task-detail").open) return;
+    const task = boardTasks().find((item) => item.id === inspectedTask);
+    if (!task) return;
+    renderTaskContext(task);
+    const latest = state.automation && state.automation.latest;
+    if (task.run_id && latest && latest.run_id === task.run_id) {
+      if (inspectedRun && inspectedRun.run_id === latest.run_id && inspectedRun.status !== "running" && latest.status === "running") return;
+      if (JSON.stringify(inspectedRun) !== JSON.stringify(latest)) {
+        inspectGeneration += 1;
+        inspectedRunId = task.run_id;
+        inspectedRun = latest;
+        renderLatestRun(latest, "task-detail-body");
+      }
+    } else if ((task.run_id || "") !== inspectedRunId) {
+      inspectTask(task.id);
+    }
+  }
+
+  async function inspectTask(id) {
+    const task = boardTasks().find((item) => item.id === id);
+    if (!task) return;
+    inspectedTask = id;
+    const generation = ++inspectGeneration;
+    inspectedRun = null;
+    inspectedRunId = task.run_id || "";
+    const dialog = $("task-detail");
+    const body = $("task-detail-body");
+    renderTaskContext(task);
+    body.replaceChildren();
+    const title = document.createElement("h3");
+    title.textContent = task.title || task.kind;
+    body.appendChild(title);
+    const status = document.createElement("p");
+    status.className = "notice";
+    status.textContent = taskWaitText(task, state.tasks);
+    body.appendChild(status);
+    if (!dialog.open) dialog.showModal();
+    if (!task.run_id) {
+      const note = document.createElement("p");
+      note.textContent = t(task.status === "running" ? "board.starting_attempt" : "board.no_attempt");
+      body.appendChild(note);
+      return;
+    }
+    const loading = document.createElement("p");
+    loading.textContent = t("automation.loading");
+    body.appendChild(loading);
+    try {
+      const run = await api(`/api/automation/runs/${encodeURIComponent(task.run_id)}`);
+      if (inspectGeneration === generation && dialog.open && state.authenticated) {
+        inspectedRun = run;
+        renderLatestRun(run, "task-detail-body");
+      }
+    } catch (error) {
+      if (inspectGeneration === generation && dialog.open) loading.textContent = t(errorKey(error, "automation.load_failed"));
+    }
   }
 
   async function refreshTasks() {
     try {
       const data = await api("/api/tasks");
       renderTasks(data);
+      setMessage("tasks", null);
     } catch (error) {
       if (error.code === "authentication_required") return;
       setMessage("tasks", errorKey(error, "tasks.failed"), { error: true });
@@ -1521,6 +1845,8 @@
         return "automation.status.failed";
       case "running":
         return "automation.status.running";
+      case "reported":
+        return "automation.status.reported";
       default:
         return "automation.status.unknown";
     }
@@ -1595,8 +1921,8 @@
     }
   }
 
-  function renderLatestRun(run) {
-    const container = $("latest-run");
+  function renderLatestRun(run, containerId = "latest-run") {
+    const container = $(containerId);
     if (!container) return;
     while (container.firstChild) container.removeChild(container.firstChild);
     if (!run || !run.run_id) {
@@ -1625,7 +1951,17 @@
       const summary = document.createElement("p");
       summary.className = "run-summary";
       summary.textContent = run.summary;
-      container.appendChild(summary);
+      const details = document.createElement("details");
+      const title = document.createElement("summary");
+      title.textContent = t("run.model_summary");
+      details.append(title, summary);
+      container.appendChild(details);
+    }
+    if (["pushed", "no_changes"].includes(run.status)) {
+      const outcome = document.createElement("p");
+      outcome.className = "run-summary";
+      outcome.textContent = t("run.outcome", { count: Array.isArray(run.edits) ? run.edits.length : 0 });
+      container.appendChild(outcome);
     }
     if (typeof run.report_text === "string" && run.report_text.trim()) {
       const heading = document.createElement("h3");
@@ -1640,20 +1976,22 @@
     if (Array.isArray(run.needs_review) && run.needs_review.length) {
       const heading = document.createElement("h3");
       heading.textContent = t("automation.needs_review");
-      const list = document.createElement("ul");
-      run.needs_review.forEach((issue) => {
-        if (!issue || typeof issue.source !== "string" || typeof issue.reason !== "string") return;
-        const item = document.createElement("li");
-        item.textContent = `${issue.source}: ${translateKnown(`automation.finding.${issue.reason}`, issue.reason)}`;
-        list.appendChild(item);
-      });
       container.appendChild(heading);
-      container.appendChild(list);
+      const guidance = document.createElement("a");
+      guidance.href = "#review";
+      guidance.textContent = t("review.open_guide");
+      container.appendChild(guidance);
+      container.appendChild(findingCards(run));
     }
     if (Number.isInteger(run.remaining) && run.remaining > 0) {
       const pending = document.createElement("p");
-      pending.textContent = t("automation.remaining", { count: run.remaining });
+      pending.className = "notice";
+      pending.textContent = t(run.continuation_queued === true ? "review.continuation_queued" : "review.continuation_unqueued", { count: run.remaining });
       container.appendChild(pending);
+      const board = document.createElement("a");
+      board.href = "#dashboard";
+      board.textContent = t("review.queue_link");
+      container.appendChild(board);
     }
     if ((run.status === "failed" || run.status === "skipped") && run.reason) {
       const reason = document.createElement("p");
@@ -1674,6 +2012,8 @@
     const edits = Array.isArray(run.edits) ? run.edits : [];
     addRunMeta(meta, t("automation.files"), String(edits.length));
     addRunMeta(meta, t("automation.duration"), run.status === "running" ? "—" : formatDuration(run.duration_ms));
+    addRunMeta(meta, t("board.run_tokens"), run.usage && Number.isFinite(run.usage.total_tokens)
+      ? usageNumber(run.usage.total_tokens) : t("board.no_usage"));
     addRunMeta(meta, t("automation.input"), shortHash(run.input_digest));
     container.appendChild(meta);
 
@@ -1815,8 +2155,11 @@
 
     const showingSelected = Boolean(latest && state.selectedRunId && latest.run_id !== state.selectedRunId);
     if (!showingSelected) renderLatestRun(latest);
+    else if (state.selectedRun && state.selectedRun.run_id === state.selectedRunId) renderLatestRun(state.selectedRun);
     renderRunHistory(state.automation ? state.automation.runs : []);
     renderRaw("automation-output", { service: service, automation: state.automation });
+    renderReview();
+    renderTasks(state.tasks);
   }
 
   async function refreshAutomation(options = {}) {
@@ -1863,6 +2206,8 @@
     }
     try {
       const detail = await api(`/api/automation/runs/${encodeURIComponent(runID)}`);
+      if (state.selectedRunId !== runID) return;
+      state.selectedRun = detail;
       renderLatestRun(detail);
       renderRunHistory(state.automation ? state.automation.runs : []);
     } catch (error) {
@@ -1887,6 +2232,30 @@
   /* --------------------------------------------------------------- events */
 
   on("login-form", "submit", login);
+  window.addEventListener("hashchange", () => navigate(true));
+  on("review-refresh", "click", async () => {
+    const button = $("review-refresh");
+    setBusy(button, "common.refreshing");
+    try { await refreshAll(); } finally { clearBusy(button); }
+  });
+  on("review-recheck", "click", recheckReview);
+  on("task-search", "input", () => renderTasks(state.tasks));
+  on("task-priority-filter", "change", () => renderTasks(state.tasks));
+  on("task-detail-close", "click", () => $("task-detail").close());
+  on("task-detail", "close", () => {
+    if ($("task-detail").open) return;
+    inspectGeneration += 1;
+    inspectedRun = null;
+    inspectedRunId = "";
+    if (state.authenticated && state.view === "dashboard") {
+      const opener = Array.from($("tasks-list").querySelectorAll("[data-task-inspect]")).find((button) => button.dataset.taskInspect === inspectedTask);
+      (opener || $("tasks-list")).focus({ preventScroll: true });
+    }
+  });
+  on("tasks-list", "click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button[data-task-inspect]") : null;
+    if (target) inspectTask(target.dataset.taskInspect);
+  });
   on("logout-button", "click", logout);
   on("sync-button", "click", syncRepository);
   on("automation-form", "submit", (event) => {
@@ -1908,13 +2277,17 @@
     const button = target ? target.closest("button[data-run-id]") : null;
     if (button) selectAutomationRun(button.dataset.runId);
   });
-  on("runner-select", "change", () => updateRunnerUi(state.lastState));
+  on("runner-select", "change", () => {
+    updateRunnerUi(state.lastState);
+    renderSetup();
+  });
   on("model-input", "click", () => {
     if (!state.modelMenuOpen) openModelMenu();
   });
   on("model-input", "input", () => {
     state.modelValues[activeRunner()] = $("model-input").value;
     if (state.modelMenuOpen) renderModelMenu();
+    renderSetup();
   });
   on("model-input", "keydown", (event) => {
     const menu = $("model-options");
@@ -2018,6 +2391,10 @@
     renderHooks({ hooks: state.hooks });
     renderUsage(state.usage);
     renderTasks(state.tasks);
+    if ($("task-detail").open) {
+      if (inspectedRun) renderLatestRun(inspectedRun, "task-detail-body");
+      else inspectTask(inspectedTask);
+    }
     rerenderBusyLabels();
   });
 
@@ -2052,6 +2429,16 @@
   // leaveSession is the other half: a plugin must drop its signed-in state
   // instead of leaving a picker on screen after the owner logs out.
   function leaveSession() {
+    if ($("task-detail").open) $("task-detail").close();
+    state.viewInitialized = false;
+    state.lastState = null;
+    state.selectedRun = null;
+    state.selectedRunId = "";
+    state.usage = null;
+    state.tasks = null;
+    state.channels = null;
+    $("review-list").replaceChildren();
+    $("latest-run").replaceChildren();
     document.dispatchEvent(new CustomEvent("folio:session", { detail: { authenticated: false } }));
   }
 

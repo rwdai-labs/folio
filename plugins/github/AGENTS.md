@@ -17,6 +17,9 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   slot must explain that missing or pending GitHub authorization prevents sync
   and organization, even when a repository was previously selected. Deployment
   token status describes configuration, not verified remote access.
+- The host mounts the GitHub card and repository slot inside Settings, also
+  used for first-time setup. Hidden parent navigation does not end a Folio
+  session; use the existing session events for auth lifecycle.
 - While mounted, this plugin owns the repository UX: one sign-in entry in the
   repository card, the device code, then a searchable repository picker wired to
   the host connect action (`window.folio.connectRepository`). The picker filters

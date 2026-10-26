@@ -77,7 +77,9 @@ may use only this surface:
 | `folio:languagechange` event | the owner switched the interface language |
 
 `folio:session` with `authenticated: false` obliges a plugin to drop its
-signed-in UI. The plugin mounts into markup the shell reserves and owns its own
+signed-in UI. The GitHub mounts live inside the shell Settings page, which also serves first-time
+setup. Changing the visible page does not end the session or remove the mount.
+The plugin mounts into markup the shell reserves and owns its own
 ids there. Built-in capability plugins are compiled in, so the shell carries no
 second implementation of their surface: the searchable repository picker lives
 in the GitHub plugin, and the host keeps only the connect transaction and the

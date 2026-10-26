@@ -169,6 +169,31 @@ reports how many were loaded; a truncated list says so instead of silently
 hiding entries. There is no owner/name form of its own; the shell keeps the
 connect transaction (`/api/repository/connect`) and the plugin drives it.
 
+The console separates daily work from setup. The default page after repository
+setup is a task and Token usage dashboard; run history and owner review have
+separate pages. The board groups waiting work, running attempts, items needing
+attention, and finished work into columns, with local search and priority
+filters. Cards explain waiting or failure and open run evidence in a side dialog:
+runner/model, reported tokens, changes and diffs. Human-review snapshots are
+labelled separately from failed tasks. GitHub authorization, repository selection, model runner
+readiness, push notifications and event hooks are grouped in Settings. On an
+unconfigured installation the console starts there, with a setup checklist;
+notifications and triggers are optional. Runner installation is reported
+separately from provider authentication, which the first model run checks.
+
+Owner review shows the findings from the most recent retained successful
+maintenance, with a timestamp. It is a historical snapshot, not a live approval
+queue; reports and failed runs do not replace it. Each finding explains the next
+step and can link to its input version and current file on GitHub. Older runs
+without repository identity cannot supply a historical source link. Review
+happens in the private repository: read the evidence, record a decision, and make
+any intended canonical edit explicitly, then commit and push. Changing a
+candidate's status alone does not promote it. The console offers no in-page
+approval. **Pull latest and recheck** runs maintenance using the dashboard's
+selected runner/model and may consume tokens. Remaining changed documents are
+shown separately from human findings, including whether a continuation task was
+queued; pauses and off-peak policy still apply.
+
 The header identifies the Folio console session. Repository selection and
 GitHub authorization have separate statuses: a saved repository still needs
 working GitHub credentials to sync or organize. When authorization is missing,

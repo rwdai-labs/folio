@@ -60,32 +60,226 @@
     <div id="app-view" class="app-layout" hidden>
       <aside class="sidebar">
         <nav class="section-nav" aria-label="Sections" data-i18n-aria-label="nav.aria">
-          <a href="#repository-section" data-i18n="nav.repository">Repository</a>
-          <a href="#automation-section" data-i18n="nav.automation">Automation</a>
-          <a href="#tasks-section" data-i18n="nav.tasks">Tasks</a>
-          <a href="#usage-section" data-i18n="nav.usage">Usage</a>
-          <a href="#channels-section" data-i18n="nav.channels">Notifications</a>
-          <a href="#hooks-section" data-i18n="nav.hooks">Event hooks</a>
+          <a href="#dashboard" data-view="dashboard" data-i18n="nav.dashboard">Dashboard</a>
+          <a href="#runs" data-view="runs" data-i18n="nav.runs">Run history</a>
+          <a href="#review" data-view="review" data-i18n="nav.review">Owner review</a>
+          <a href="#settings" data-view="settings" data-i18n="nav.settings">Settings</a>
         </nav>
 
-        <section class="side-card" aria-labelledby="state-heading">
-          <h2 id="state-heading" class="side-title" data-i18n="state.title">Current state</h2>
-          <dl class="facts">
-            <div class="fact"><dt data-i18n="state.git_credential">Repository authorization</dt><dd id="fact-git">—</dd></div>
-            <div class="fact"><dt data-i18n="state.repository">Repository</dt><dd id="fact-repository">—</dd></div>
-            <div class="fact"><dt data-i18n="state.branch">Branch</dt><dd id="fact-branch">—</dd></div>
-            <div class="fact"><dt data-i18n="state.head">HEAD</dt><dd id="fact-head">—</dd></div>
-            <div class="fact"><dt data-i18n="state.model">Codex</dt><dd id="fact-model">—</dd></div>
-            <div class="fact"><dt data-i18n="state.scheduler">Scheduler</dt><dd id="fact-scheduler">—</dd></div>
-            <div class="fact"><dt data-i18n="state.last_run">Last run</dt><dd id="fact-last-run">—</dd></div>
-          </dl>
-          <button id="refresh-button" class="btn ghost small" type="button">
-            <span class="btn-label" data-i18n="common.refresh">Refresh</span>
-          </button>
-        </section>
+
       </aside>
 
       <div class="panels">
+        <p id="app-message" class="form-message" role="status" aria-live="polite"></p>
+        <div id="setup-alert" class="notice" hidden>
+          <span data-i18n="setup.alert">Finish repository and runner setup before starting maintenance.</span>
+          <a href="#settings" data-i18n="setup.open">Open settings</a>
+        </div>
+        <section id="dashboard-view" class="page-view" aria-labelledby="dashboard-heading" hidden>
+          <header class="page-heading"><div><p class="eyebrow" data-i18n="dashboard.kicker">Overview</p>
+            <h1 id="dashboard-heading" tabindex="-1" data-i18n="dashboard.title">Tasks and usage</h1>
+            <p id="dashboard-repository" class="hint"></p></div>
+            <a class="btn ghost" href="#runs" data-i18n="dashboard.results">View results</a>
+          </header>
+          <a id="dashboard-review" class="notice review-notice" href="#review" hidden></a>
+        <section id="usage-section" class="card" aria-labelledby="usage-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="usage.kicker">Usage</p>
+              <h2 id="usage-heading" data-i18n="usage.title">Token usage</h2>
+            </div>
+            <label class="usage-window-field">
+              <span data-i18n="usage.window">Window</span>
+              <select id="usage-window">
+                <option value="7" data-i18n="usage.days7">Last 7 days</option>
+                <option value="30" selected data-i18n="usage.days30">Last 30 days</option>
+                <option value="90" data-i18n="usage.days90">Last 90 days</option>
+              </select>
+            </label>
+          </header>
+          <p class="lede" data-i18n="usage.lead">
+            Every number below was reported by the runner itself. A run that called no model
+            has no usage at all, and a run whose runner reported nothing stays unknown — it is
+            never estimated.
+          </p>
+
+          <div class="usage-tiles">
+            <div class="usage-tile">
+              <span class="usage-value" id="usage-total">—</span>
+              <span class="usage-label" data-i18n="usage.total">Total tokens</span>
+            </div>
+            <div class="usage-tile">
+              <span class="usage-value" id="usage-input">—</span>
+              <span class="usage-label" data-i18n="usage.input">Input (uncached)</span>
+            </div>
+            <div class="usage-tile">
+              <span class="usage-value" id="usage-output">—</span>
+              <span class="usage-label" data-i18n="usage.output">Output</span>
+            </div>
+            <div class="usage-tile">
+              <span class="usage-value" id="usage-runs">—</span>
+              <span class="usage-label" data-i18n="usage.runs">Runs</span>
+            </div>
+          </div>
+          <p id="usage-note" class="hint"></p>
+
+          <details class="usage-breakdown"><summary data-i18n="board.usage_details">Usage by day and model</summary>
+          <div class="usage-days" id="usage-days"></div>
+
+          <div class="table-wrap">
+            <table class="usage-table">
+              <thead>
+                <tr>
+                  <th scope="col" data-i18n="usage.model">Runner / model</th>
+                  <th scope="col" data-i18n="usage.col_total">Total</th>
+                  <th scope="col" data-i18n="usage.col_input">Input</th>
+                  <th scope="col" data-i18n="usage.col_cached">Cached</th>
+                  <th scope="col" data-i18n="usage.col_output">Output</th>
+                  <th scope="col" data-i18n="usage.col_runs">Runs</th>
+                </tr>
+              </thead>
+              <tbody id="usage-models"></tbody>
+            </table>
+          </div>
+          </details>
+          <p id="usage-message" class="form-message" role="status" aria-live="polite"></p>
+        </section>
+        <section id="tasks-section" class="card" aria-labelledby="tasks-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="tasks.kicker">Queue</p>
+              <h2 id="tasks-heading" data-i18n="tasks.title">Task board</h2>
+            </div>
+            <div class="card-head-actions">
+              <button id="run-now-button" class="btn primary" type="button">
+                <span class="btn-label" data-i18n="automation.run_now">Run now</span>
+              </button>
+              <span id="tasks-count" class="badge" data-state="disabled">0</span>
+              <button id="tasks-pause" class="btn ghost small" type="button">
+                <span class="btn-label" data-i18n="tasks.pause">Pause queue</span>
+              </button>
+            </div>
+          </header>
+          <p class="lede" data-i18n="tasks.lead">
+            An event creates a task, not a run. Pending tasks start one at a time, highest
+            priority first, and a deferrable priority waits for the off-peak window instead of
+            spending tokens when you are working. Pausing never drops work.
+          </p>
+          <details id="run-options" class="run-options"><summary id="run-options-summary" data-i18n="board.run_options">Runner and model</summary>
+          <form id="automation-form" class="form form-inline" novalidate>
+            <div class="field">
+              <label for="runner-select" data-i18n="automation.runner">Runner</label>
+              <select id="runner-select" name="runner">
+                <option value="codex" data-i18n="runner.codex">Codex</option>
+                <option value="dsh" data-i18n="runner.dsh">DSH</option>
+              </select>
+              <p id="runner-hint" class="hint" hidden></p>
+            </div>
+            <div class="field grow">
+              <label for="model-input" data-i18n="automation.model">Model</label>
+              <div id="model-combo" class="model-combo">
+                <input id="model-input" name="model" type="text" autocomplete="off" spellcheck="false" maxlength="200" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-options" aria-describedby="model-hint" placeholder="Runner default" data-i18n-placeholder="automation.model_placeholder">
+                <button id="model-toggle" class="model-toggle" type="button" aria-expanded="false" aria-controls="model-options" aria-label="Show model suggestions" data-i18n-aria-label="automation.model_toggle">
+                  <span aria-hidden="true"></span>
+                </button>
+                <div id="model-options" class="model-options" role="listbox" hidden></div>
+              </div>
+            </div>
+          </form>
+          <p id="model-hint" class="hint" data-i18n="automation.runner_hint">Pick a suggestion or type any model ID; blank uses the runner default. Scheduled runs use Codex; Run now can use Codex or DSH.</p>
+          </details>
+          <p id="automation-message" class="form-message" role="status" aria-live="polite"></p>
+          <p id="tasks-policy" class="hint"></p>
+          <div class="board-toolbar">
+            <div class="field grow"><label for="task-search" data-i18n="board.search">Search tasks</label>
+              <input id="task-search" type="search" maxlength="120" autocomplete="off" data-i18n-placeholder="board.search_placeholder" placeholder="Title, source or reason"></div>
+            <div class="field"><label for="task-priority-filter" data-i18n="board.priority">Priority</label>
+              <select id="task-priority-filter"><option value="" data-i18n="board.all_priorities">All priorities</option>
+                <option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></div>
+          </div>
+          <p id="board-summary" class="hint" role="status" aria-live="polite"></p>
+          <div id="tasks-list" class="task-board" tabindex="0" role="region" aria-label="Task board" data-i18n-aria-label="tasks.title"></div>
+          <p id="tasks-message" class="form-message" role="status" aria-live="polite"></p>
+        </section>
+
+        </section>
+        <section id="runs-view" class="page-view" aria-labelledby="runs-page-heading" hidden>
+          <header class="page-heading"><h1 id="runs-page-heading" tabindex="-1" data-i18n="nav.runs">Run history</h1>
+            <a class="btn ghost" href="#dashboard" data-i18n="dashboard.back">Back to dashboard</a></header>
+        <section id="automation-section" class="card" aria-labelledby="automation-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="automation.kicker">Autopilot</p>
+              <h2 id="automation-heading" data-i18n="automation.title">Automatic maintenance</h2>
+            </div>
+            <span id="automation-badge" class="badge" data-state="unknown">Not checked</span>
+          </header>
+          <p class="lede" data-i18n="automation.lead">Folio pulls the latest context, asks the runner for bounded Markdown edits, validates them, and pushes the result. Every run is recorded below with its edits and diffs.</p>
+
+          <dl class="facts automation-facts">
+            <div class="fact"><dt data-i18n="automation.schedule">Schedule</dt><dd id="automation-schedule">—</dd></div>
+            <div class="fact"><dt data-i18n="automation.next_run">Next run</dt><dd id="automation-next">—</dd></div>
+            <div class="fact"><dt data-i18n="automation.last_run">Last run</dt><dd id="automation-last">—</dd></div>
+          </dl>
+
+
+
+          <section class="automation-panel" aria-labelledby="latest-run-heading">
+            <div class="section-subhead">
+              <h3 id="latest-run-heading" data-i18n="automation.latest">Latest run</h3>
+              <button id="automation-refresh" class="btn ghost small" type="button">
+                <span class="btn-label" data-i18n="automation.refresh">Refresh runs</span>
+              </button>
+            </div>
+            <div id="latest-run" class="run-detail" aria-live="polite"></div>
+          </section>
+
+          <section class="automation-panel" aria-labelledby="runs-heading">
+            <div class="section-subhead">
+              <h3 id="runs-heading" data-i18n="automation.history">Run history</h3>
+              <span class="hint" data-i18n="automation.history_hint">Newest first. Select a run to inspect its edits.</span>
+            </div>
+            <div id="runs-list" class="run-list" aria-live="polite"></div>
+          </section>
+
+          <details class="raw-details">
+            <summary data-i18n="common.details">Technical details</summary>
+            <pre id="automation-output" class="output raw-output"></pre>
+          </details>
+        </section>
+        </section>
+        <section id="review-view" class="page-view" aria-labelledby="review-heading" hidden>
+          <header class="page-heading"><div><p class="eyebrow" data-i18n="review.kicker">Human decisions</p>
+            <h1 id="review-heading" tabindex="-1" data-i18n="nav.review">Owner review</h1></div>
+            <button id="review-refresh" class="btn ghost" type="button" data-i18n="common.refresh">Refresh</button></header>
+          <section class="card">
+            <h2 data-i18n="review.how_title">How to handle a finding</h2>
+            <ol class="review-steps">
+              <li data-i18n="review.step1">Open the source and read its evidence and proposed claim.</li>
+              <li data-i18n="review.step2">Record your decision in the repository. If accepted, make the intended canonical edit yourself; changing a candidate status alone does not publish it.</li>
+              <li data-i18n="review.step3">Commit and push, then return here and recheck. A recheck calls the selected model and may use tokens.</li>
+            </ol>
+            <p class="hint" data-i18n="review.boundary">Review happens in your repository. Folio does not approve candidates or decide facts for you.</p>
+            <div class="actions"><button id="review-recheck" class="btn primary" type="button" data-i18n="review.recheck">Pull and recheck</button>
+              <a class="btn ghost" href="#run-options" data-i18n="review.model">Choose runner / model</a></div>
+            <p id="review-runner" class="hint"></p>
+            <p id="review-message" class="form-message" role="status" aria-live="polite"></p>
+          </section>
+          <section class="card"><h2 data-i18n="review.snapshot">Findings at the last successful maintenance</h2>
+            <p id="review-snapshot" class="hint"></p>
+            <div id="review-list" class="run-edit-list" aria-live="polite"></div>
+          </section>
+        </section>
+        <section id="settings-view" class="page-view" aria-labelledby="settings-heading" hidden>
+          <header class="page-heading"><div><p class="eyebrow" data-i18n="setup.kicker">Get started</p>
+            <h1 id="settings-heading" tabindex="-1" data-i18n="nav.settings">Settings</h1>
+            <p class="lede" data-i18n="setup.lead">Connect a repository and check your runner. Notifications and event triggers are optional.</p></div></header>
+          <nav class="setup-steps" aria-label="Setup steps" data-i18n-aria-label="setup.steps">
+            <a href="#repository-section"><span data-i18n="setup.repository">1 · GitHub and repository</span><strong id="setup-repository-state"></strong></a>
+            <a href="#runner-settings"><span data-i18n="setup.runner">2 · Model runner</span><strong id="setup-runner-state"></strong></a>
+            <a href="#channels-section"><span data-i18n="setup.notifications">3 · Notifications</span><strong data-i18n="setup.optional">Optional</strong></a>
+            <a href="#hooks-section"><span data-i18n="setup.triggers">4 · Event triggers</span><strong data-i18n="setup.optional">Optional</strong></a>
+          </nav>
         <!-- A built-in plugin mounts its own card here and owns the repository
              picker below; the shell has no repository form of its own. -->
         <section id="plugin-github" class="card" aria-labelledby="plugin-github-heading" hidden></section>
@@ -130,159 +324,11 @@
             <pre id="repository-output" class="output raw-output"></pre>
           </details>
         </section>
-
-        <section id="automation-section" class="card" aria-labelledby="automation-heading">
-          <header class="card-head">
-            <div>
-              <p class="eyebrow" data-i18n="automation.kicker">Autopilot</p>
-              <h2 id="automation-heading" data-i18n="automation.title">Automatic maintenance</h2>
-            </div>
-            <span id="automation-badge" class="badge" data-state="unknown">Not checked</span>
-          </header>
-          <p class="lede" data-i18n="automation.lead">Folio pulls the latest context, asks the runner for bounded Markdown edits, validates them, and pushes the result. Every run is recorded below with its edits and diffs.</p>
-
-          <dl class="facts automation-facts">
-            <div class="fact"><dt data-i18n="automation.schedule">Schedule</dt><dd id="automation-schedule">—</dd></div>
-            <div class="fact"><dt data-i18n="automation.next_run">Next run</dt><dd id="automation-next">—</dd></div>
-            <div class="fact"><dt data-i18n="automation.last_run">Last run</dt><dd id="automation-last">—</dd></div>
-          </dl>
-
-          <form id="automation-form" class="form form-inline" novalidate>
-            <div class="field">
-              <label for="runner-select" data-i18n="automation.runner">Runner</label>
-              <select id="runner-select" name="runner">
-                <option value="codex" data-i18n="runner.codex">Codex</option>
-                <option value="dsh" data-i18n="runner.dsh">DSH</option>
-              </select>
-              <p id="runner-hint" class="hint" hidden></p>
-            </div>
-            <div class="field grow">
-              <label for="model-input" data-i18n="automation.model">Model</label>
-              <div id="model-combo" class="model-combo">
-                <input id="model-input" name="model" type="text" autocomplete="off" spellcheck="false" maxlength="200" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-options" aria-describedby="model-hint" placeholder="Runner default" data-i18n-placeholder="automation.model_placeholder">
-                <button id="model-toggle" class="model-toggle" type="button" aria-expanded="false" aria-controls="model-options" aria-label="Show model suggestions" data-i18n-aria-label="automation.model_toggle">
-                  <span aria-hidden="true"></span>
-                </button>
-                <div id="model-options" class="model-options" role="listbox" hidden></div>
-              </div>
-            </div>
-            <div class="actions">
-              <button id="run-now-button" class="btn primary" type="button">
-                <span class="btn-label" data-i18n="automation.run_now">Run now</span>
-              </button>
-            </div>
-          </form>
-          <p id="model-hint" class="hint" data-i18n="automation.runner_hint">Pick a suggestion or type any model ID; blank uses the runner default. Scheduled runs use Codex; Run now can use Codex or DSH.</p>
-          <p id="automation-message" class="form-message" role="status" aria-live="polite"></p>
-
-          <section class="automation-panel" aria-labelledby="latest-run-heading">
-            <div class="section-subhead">
-              <h3 id="latest-run-heading" data-i18n="automation.latest">Latest run</h3>
-              <button id="automation-refresh" class="btn ghost small" type="button">
-                <span class="btn-label" data-i18n="automation.refresh">Refresh runs</span>
-              </button>
-            </div>
-            <div id="latest-run" class="run-detail" aria-live="polite"></div>
+          <section id="runner-settings" class="card">
+            <h2 data-i18n="setup.runner">2 · Model runner</h2>
+            <p id="setup-runner-detail" class="lede"></p>
+            <p class="hint" data-i18n="setup.runner_hint">Runner installation and provider credentials are configured on the host. Availability does not verify provider login. The dashboard lets you select a runner and model; your first run checks the connection.</p>
           </section>
-
-          <section class="automation-panel" aria-labelledby="runs-heading">
-            <div class="section-subhead">
-              <h3 id="runs-heading" data-i18n="automation.history">Run history</h3>
-              <span class="hint" data-i18n="automation.history_hint">Newest first. Select a run to inspect its edits.</span>
-            </div>
-            <div id="runs-list" class="run-list" aria-live="polite"></div>
-          </section>
-
-          <details class="raw-details">
-            <summary data-i18n="common.details">Technical details</summary>
-            <pre id="automation-output" class="output raw-output"></pre>
-          </details>
-        </section>
-
-        <section id="tasks-section" class="card" aria-labelledby="tasks-heading">
-          <header class="card-head">
-            <div>
-              <p class="eyebrow" data-i18n="tasks.kicker">Queue</p>
-              <h2 id="tasks-heading" data-i18n="tasks.title">Task board</h2>
-            </div>
-            <div class="card-head-actions">
-              <span id="tasks-count" class="badge" data-state="disabled">0</span>
-              <button id="tasks-pause" class="btn ghost small" type="button">
-                <span class="btn-label" data-i18n="tasks.pause">Pause queue</span>
-              </button>
-            </div>
-          </header>
-          <p class="lede" data-i18n="tasks.lead">
-            An event creates a task, not a run. Pending tasks start one at a time, highest
-            priority first, and a deferrable priority waits for the off-peak window instead of
-            spending tokens when you are working. Pausing never drops work.
-          </p>
-          <p id="tasks-policy" class="hint"></p>
-          <div id="tasks-list" class="run-list" aria-live="polite"></div>
-          <p id="tasks-message" class="form-message" role="status" aria-live="polite"></p>
-        </section>
-
-        <section id="usage-section" class="card" aria-labelledby="usage-heading">
-          <header class="card-head">
-            <div>
-              <p class="eyebrow" data-i18n="usage.kicker">Usage</p>
-              <h2 id="usage-heading" data-i18n="usage.title">Token usage</h2>
-            </div>
-            <label class="usage-window-field">
-              <span data-i18n="usage.window">Window</span>
-              <select id="usage-window">
-                <option value="7" data-i18n="usage.days7">Last 7 days</option>
-                <option value="30" selected data-i18n="usage.days30">Last 30 days</option>
-                <option value="90" data-i18n="usage.days90">Last 90 days</option>
-              </select>
-            </label>
-          </header>
-          <p class="lede" data-i18n="usage.lead">
-            Every number below was reported by the runner itself. A run that called no model
-            has no usage at all, and a run whose runner reported nothing stays unknown — it is
-            never estimated.
-          </p>
-
-          <div class="usage-tiles">
-            <div class="usage-tile">
-              <span class="usage-value" id="usage-total">—</span>
-              <span class="usage-label" data-i18n="usage.total">Total tokens</span>
-            </div>
-            <div class="usage-tile">
-              <span class="usage-value" id="usage-input">—</span>
-              <span class="usage-label" data-i18n="usage.input">Input (uncached)</span>
-            </div>
-            <div class="usage-tile">
-              <span class="usage-value" id="usage-output">—</span>
-              <span class="usage-label" data-i18n="usage.output">Output</span>
-            </div>
-            <div class="usage-tile">
-              <span class="usage-value" id="usage-runs">—</span>
-              <span class="usage-label" data-i18n="usage.runs">Runs</span>
-            </div>
-          </div>
-          <p id="usage-note" class="hint"></p>
-
-          <div class="usage-days" id="usage-days"></div>
-
-          <div class="table-wrap">
-            <table class="usage-table">
-              <thead>
-                <tr>
-                  <th scope="col" data-i18n="usage.model">Runner / model</th>
-                  <th scope="col" data-i18n="usage.col_total">Total</th>
-                  <th scope="col" data-i18n="usage.col_input">Input</th>
-                  <th scope="col" data-i18n="usage.col_cached">Cached</th>
-                  <th scope="col" data-i18n="usage.col_output">Output</th>
-                  <th scope="col" data-i18n="usage.col_runs">Runs</th>
-                </tr>
-              </thead>
-              <tbody id="usage-models"></tbody>
-            </table>
-          </div>
-          <p id="usage-message" class="form-message" role="status" aria-live="polite"></p>
-        </section>
-
         <section id="channels-section" class="card" aria-labelledby="channels-heading">
           <header class="card-head">
             <div>
@@ -351,7 +397,6 @@
             <div id="deliveries-list" class="run-list" aria-live="polite"></div>
           </section>
         </section>
-
         <section id="hooks-section" class="card" aria-labelledby="hooks-heading">
           <header class="card-head">
             <div>
@@ -415,9 +460,39 @@
             <div id="hooks-list" class="run-list" aria-live="polite"></div>
           </section>
         </section>
+          <section class="card setup-finish">
+            <h2 data-i18n="setup.finish_title">Ready for daily use</h2>
+            <p data-i18n="setup.finish_hint">You can add notifications and triggers later in Settings. Tasks and token usage live on the dashboard.</p>
+            <a id="setup-finish" class="btn primary" href="#dashboard" data-i18n="setup.finish">Go to dashboard</a>
+          </section>
+          <details class="card"><summary data-i18n="common.details">Technical details</summary>
+        <section class="side-card" aria-labelledby="state-heading">
+          <h2 id="state-heading" class="side-title" data-i18n="state.title">Current state</h2>
+          <dl class="facts">
+            <div class="fact"><dt data-i18n="state.git_credential">Repository authorization</dt><dd id="fact-git">—</dd></div>
+            <div class="fact"><dt data-i18n="state.repository">Repository</dt><dd id="fact-repository">—</dd></div>
+            <div class="fact"><dt data-i18n="state.branch">Branch</dt><dd id="fact-branch">—</dd></div>
+            <div class="fact"><dt data-i18n="state.head">HEAD</dt><dd id="fact-head">—</dd></div>
+            <div class="fact"><dt data-i18n="state.model">Codex</dt><dd id="fact-model">—</dd></div>
+            <div class="fact"><dt data-i18n="state.scheduler">Scheduler</dt><dd id="fact-scheduler">—</dd></div>
+            <div class="fact"><dt data-i18n="state.last_run">Last run</dt><dd id="fact-last-run">—</dd></div>
+          </dl>
+          <button id="refresh-button" class="btn ghost small" type="button">
+            <span class="btn-label" data-i18n="common.refresh">Refresh</span>
+          </button>
+        </section>
+          </details>
+        </section>
       </div>
     </div>
   </main>
+
+  <dialog id="task-detail" class="task-drawer" aria-labelledby="task-detail-heading">
+    <header class="page-heading"><h2 id="task-detail-heading" data-i18n="board.detail">Run details</h2>
+      <button id="task-detail-close" class="btn ghost small" type="button" data-i18n="board.close">Close</button></header>
+    <p id="task-detail-context" class="hint"></p>
+    <div id="task-detail-body" class="run-detail" aria-live="polite"></div>
+  </dialog>
 
   <footer class="site-footer">
     <div class="shell">
