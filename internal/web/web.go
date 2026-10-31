@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"folio/internal/channel/weixin"
 	"folio/internal/plugin"
 	"folio/internal/quota"
 	"folio/internal/storage"
@@ -96,6 +97,20 @@ type QuotaBackend interface {
 	Quotas(refresh bool) (quota.Snapshot, error)
 }
 
+// WeixinBackend is the optional bidirectional-channel control contract. The
+// process supervisor implements it rather than the store: login and polling own
+// an exclusive private-directory lock that is not repository state. Every method
+// returns or consumes bounded data, never QR payloads, tokens or cursors.
+type WeixinBackend interface {
+	WeixinStatus() map[string]any
+	WeixinStartLogin() (map[string]any, error)
+	WeixinLoginStatus() map[string]any
+	WeixinSubmitCode(code string) error
+	WeixinCancelLogin()
+	WeixinConfirm(ownerID string) (map[string]any, error)
+	WeixinSetEnabled(enabled bool) (map[string]any, error)
+}
+
 // ChannelBackend is the optional outbound-notification contract. It is
 // separate from Backend so a backend that has no channels still satisfies the
 // core adapter; the handlers answer 503 instead of failing to compile.
@@ -141,6 +156,9 @@ type Options struct {
 	CookieSecure      bool
 	SchedulerEnabled  bool
 	SchedulerInterval time.Duration
+	// Weixin is the optional inbound-channel control surface. A process that
+	// wires no supervisor keeps answering 503 for these routes.
+	Weixin WeixinBackend
 	// DispatcherInterval is how often the task queue is checked. It is
 	// independent of the scheduler: deferred work must start even when
 	// interval maintenance is disabled.
@@ -992,6 +1010,49 @@ func channelErrorCode(err error) string {
 	}
 }
 
+// weixinCode maps a supervisor error to a stable client code. Anything
+// unrecognized collapses to a generic failure so new internal wording cannot
+// reach the page.
+func weixinCode(err error) string {
+	switch {
+	case errors.Is(err, weixin.ErrDeploymentOff):
+		return "weixin_deployment_off"
+	case errors.Is(err, weixin.ErrBusy):
+		return "weixin_busy"
+	case errors.Is(err, weixin.ErrNotConfigured):
+		return "weixin_not_configured"
+	case errors.Is(err, weixin.ErrOwnerRequired):
+		return "weixin_owner_required"
+	case errors.Is(err, weixin.ErrOwnerMismatch):
+		return "weixin_owner_mismatch"
+	case errors.Is(err, weixin.ErrNoLogin):
+		return "weixin_no_login"
+	case errors.Is(err, weixin.ErrNoPrompt):
+		return "weixin_no_prompt"
+	case errors.Is(err, weixin.ErrProtocol):
+		return "weixin_invalid_code"
+	case errors.Is(err, weixin.ErrState):
+		return "weixin_state_error"
+	default:
+		return "weixin_failed"
+	}
+}
+
+// weixinStatus keeps conflicts (another login, nothing to confirm) distinct
+// from deployment refusals and real faults.
+func weixinStatus(err error) int {
+	switch weixinCode(err) {
+	case "weixin_deployment_off":
+		return http.StatusForbidden
+	case "weixin_invalid_code":
+		return http.StatusBadRequest
+	case "weixin_state_error", "weixin_failed":
+		return http.StatusInternalServerError
+	default:
+		return http.StatusConflict
+	}
+}
+
 // taskBackend reports whether the configured store exposes the task queue.
 func (s *Server) taskBackend() (TaskBackend, bool) {
 	backend, ok := s.store.(TaskBackend)
@@ -1634,6 +1695,18 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusOK, value.Map(), nil)
+	case "/api/weixin":
+		if s.opts.Weixin == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, s.opts.Weixin.WeixinStatus(), nil)
+	case "/api/weixin/login":
+		if s.opts.Weixin == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, s.opts.Weixin.WeixinLoginStatus(), nil)
 	case "/api/automation":
 		value, err := s.store.ListAutomation()
 		if err != nil {
@@ -1840,6 +1913,76 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusOK, value.Map(), nil)
+	case "/api/weixin/login":
+		backend := s.opts.Weixin
+		if backend == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		value, callErr := backend.WeixinStartLogin()
+		if callErr != nil {
+			s.writeError(w, weixinStatus(callErr), weixinCode(callErr))
+			return
+		}
+		s.writeJSON(w, http.StatusAccepted, value, nil)
+	case "/api/weixin/login/code":
+		backend := s.opts.Weixin
+		if backend == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		code, ok := payload["code"].(string)
+		if !ok || len(code) > 32 {
+			s.writeError(w, http.StatusBadRequest, "weixin_invalid_code")
+			return
+		}
+		if callErr := backend.WeixinSubmitCode(code); callErr != nil {
+			s.writeError(w, weixinStatus(callErr), weixinCode(callErr))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, backend.WeixinLoginStatus(), nil)
+	case "/api/weixin/login/cancel":
+		backend := s.opts.Weixin
+		if backend == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		backend.WeixinCancelLogin()
+		s.writeJSON(w, http.StatusOK, backend.WeixinStatus(), nil)
+	case "/api/weixin/confirm":
+		backend := s.opts.Weixin
+		if backend == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		owner, ok := payload["owner_id"].(string)
+		if !ok || owner == "" || len(owner) > 512 {
+			s.writeError(w, http.StatusBadRequest, "weixin_invalid_owner")
+			return
+		}
+		value, callErr := backend.WeixinConfirm(owner)
+		if callErr != nil {
+			s.writeError(w, weixinStatus(callErr), weixinCode(callErr))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, value, nil)
+	case "/api/weixin/enabled":
+		backend := s.opts.Weixin
+		if backend == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		enabled, ok := payload["enabled"].(bool)
+		if !ok {
+			s.writeError(w, http.StatusBadRequest, "weixin_invalid_request")
+			return
+		}
+		value, callErr := backend.WeixinSetEnabled(enabled)
+		if callErr != nil {
+			s.writeError(w, weixinStatus(callErr), weixinCode(callErr))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, value, nil)
 	case "/api/hooks":
 		backend, ok := s.hookBackend()
 		if !ok {

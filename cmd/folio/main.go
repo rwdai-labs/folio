@@ -88,6 +88,13 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	// One supervisor owns the private channel directory for this process, so an
+	// interactive login from the console and the background poller can never
+	// fight over the same lock.
+	weixin := newWeixinSupervisor(layout, backend)
+	defer weixin.Close()
 	application, err := web.New(backend, web.Options{
 		DataDir: layout, Plugins: plugin.NewRegistry(githubPlugin), PasswordFile: *passwordFile, AssetsDir: *assetsDir,
 		PasswordNotice: func(password, path string) {
@@ -98,26 +105,13 @@ func serve(args []string) error {
 		CookieSecure:      envBool("COOKIE_SECURE"),
 		SchedulerEnabled:  envBool("MAINTENANCE_SCHEDULER_ENABLED"),
 		SchedulerInterval: time.Duration(envInt("MAINTENANCE_INTERVAL_SECONDS", 86400, 60, 604800)) * time.Second,
+		Weixin:            weixinConsole{supervisor: weixin},
 	})
 	if err != nil {
 		return err
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	startWeixin, err := prepareWeixin(layout, backend)
-	if err != nil {
+	if err := weixin.Start(ctx); err != nil {
 		return err
-	}
-	if startWeixin != nil {
-		done := make(chan struct{})
-		go func() { defer close(done); startWeixin(ctx) }()
-		defer func() {
-			cancel()
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-			}
-		}()
 	}
 	application.StartScheduler(ctx)
 	application.StartDispatcher(ctx)

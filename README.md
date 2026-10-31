@@ -145,11 +145,14 @@ because a device key sent over the public internet is a credential leak.
 Additional channels reuse the same outbound contract.
 
 Personal Weixin is a separate optional bidirectional channel, implemented in
-native Go through Tencent's public iLink protocol. It supports terminal QR
-login, private credential/cursor persistence, direct text reception and replies.
-Only an explicitly configured owner can reach Folio's read-only text handler;
-other users are denied. See [docs/weixin-channel.md](docs/weixin-channel.md)
-for protocol research, setup, recovery guarantees and deferred media support.
+native Go through Tencent's public iLink protocol. The settings page can run the
+QR login, show the scanner's identity for confirmation, and start or stop
+polling without a restart; a terminal login and pinned environment variables
+remain available for unattended deployments. Credentials and the cursor stay in
+the private volume. Only the owner confirmed in the console, or pinned by the
+deployment, can reach Folio's read-only text handler; other users are denied.
+See [docs/weixin-channel.md](docs/weixin-channel.md) for protocol research,
+setup, recovery guarantees and deferred media support.
 
 A maintenance runtime sandbox is not an OS boundary against every readable file. Keep
 unrelated secrets off the service account and volume, and expose the Web UI only

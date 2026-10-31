@@ -13,8 +13,10 @@ Inherit `../AGENTS.md`.
   incremental input, structural edit limits, checkpoint/backlog semantics,
   persistent owner-review findings and focused acceptance checks.
 - `weixin-channel.md` records the native iLink protocol reference, transport
-  and owner-handler boundary, private state schema, delivery limits and operator
-  acceptance. Do not claim live Weixin acceptance from synthetic HTTP tests.
+  and owner-handler boundary, the console binding flow (rendered QR over an
+  authenticated route, explicit owner confirmation, runtime start and stop),
+  private state schema, delivery limits and operator acceptance. Do not claim
+  live Weixin acceptance from synthetic HTTP tests.
 - Keep protocol details consistent with service validation and every affected
   caller: headers, raw-body signatures, event IDs, limits, response semantics,
   retries, payload projection and owner-selected task kinds.

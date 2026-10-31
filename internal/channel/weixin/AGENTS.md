@@ -8,8 +8,24 @@ Inherit `../../../AGENTS.md`, `../../AGENTS.md` and `../AGENTS.md`.
 - `login.go` owns interactive QR/verification state, not application authority.
   CLI display is local interactive output, never a service log. Login and the
   poller share an exclusive process lock; stop the poller before replacing login.
+- `session.go` is the only presentation of that state to a browser. It renders
+  the QR to a PNG and exposes a `data:image/png;base64,` string through `Map`;
+  the raw payload, token and transport error never enter a serialized value.
+  Never return a `Snapshot` struct: the Web redactor recurses only into maps and
+  would flatten a struct, including the image, into one string.
+- `settings.go` owns the owner decision beside the credentials: `credentials.json`,
+  `pending_owner_id` from the last scan, and the persisted `enabled` flag, all
+  `0600` through the same rejecting reader. Enabling without a confirmed owner
+  is invalid state, not a normal combination.
+- `supervisor.go` owns the process lifetime. One `Disk` handle serves both login
+  and polling, so the flock never conflicts with itself; operator mutations are
+  serialized by `control` before `mu`. Confirmation compares the submitted
+  identity with the session scanner and the persisted pending value in constant
+  time. Deployment `ModeOff` refuses every mutation; `ModeOn` fails startup
+  without credentials and a pinned owner.
 - `state.go` owns 0700 directories, 0600 regular files, atomic synced writes,
-  account-bound cursor, pending replies and a bounded deduplication window.
+  the account-bound cursor, pending replies and a bounded deduplication window;
+  `settings.json` uses the same reader and writer.
   Refuse state paths inside Git worktrees. Corrupt state fails closed; never
   silently reset the cursor.
 - `service.go` stages inbox plus cursor before invoking the handler and stages

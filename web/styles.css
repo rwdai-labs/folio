@@ -2307,3 +2307,46 @@ textarea {
 .review-finding details summary { color: var(--muted); font-size: .8rem; cursor: pointer; }
 .review-finding details p { margin-top: 8px; }
 #task-detail-context { margin-bottom: 18px; overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------- weixin */
+
+/* The QR is a credential while it is live: keep it on a light plate so phone
+   cameras read it in either theme, and never stretch it with a fractional size. */
+.weixin-qr-wrap {
+  display: flex;
+  gap: 22px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin: 18px 0 6px;
+}
+
+.weixin-qr {
+  width: 220px;
+  height: 220px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+  image-rendering: pixelated;
+}
+
+.weixin-qr-wrap .hint {
+  max-width: 34rem;
+  margin: 0;
+}
+
+.weixin-confirm {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+}
+
+.weixin-confirm code {
+  word-break: break-all;
+}
+
+.weixin-confirm .actions {
+  margin-top: 12px;
+}

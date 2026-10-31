@@ -16,10 +16,13 @@ entrypoint and optional read-only host-config mounts.
 - Preserve persistent private data, loopback port exposure, health checks and
   secret-file permissions. Test with disposable volumes, never remove an
   operator's volume or print real first-start credentials into shared output.
-- Weixin is disabled by default. Keep `WEIXIN_ENABLED`/`WEIXIN_OWNER_ID` examples
-  aligned with the CLI; login runs interactively as the service user against
-  the same private volume while the poller is stopped. The runtime must include
-  the Weixin/QR dependency license notice; no Weixin sidecar is needed.
+- Weixin is console-managed by default: leave `WEIXIN_ENABLED`/`WEIXIN_OWNER_ID`
+  unset so the settings page drives QR login and runtime start/stop. `false` is a
+  hard kill switch; `true` plus an owner pins a headless deployment and fails
+  startup without credentials. Keep the examples aligned with the CLI, which
+  runs interactively as the service user against the same private volume while
+  the poller is stopped. The runtime must include the Weixin/QR dependency
+  license notice; no Weixin sidecar is needed.
 - Changes to environment/defaults, paths, dependencies or security settings
   require this file, deployment README, Compose examples, CLI wiring and CI
   expectations to be reviewed and updated together where affected.

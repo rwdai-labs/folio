@@ -21,6 +21,13 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   bounded maps, never raw magpie bodies, key paths, or credentials. A
   `quota_refresh_limited` refresh returns 429 with `Retry-After`; other source
   failures stay 200 with a fixed error code and stale cards when available.
+- The optional `WeixinBackend` contract serves session-protected
+  `GET /api/weixin`, `GET /api/weixin/login` and CSRF-protected
+  `POST /api/weixin/{login,login/code,login/cancel,confirm,enabled}`. The process
+  supervisor implements it; the store does not. Responses carry fixed state and
+  a rendered PNG data URL only, never the raw QR payload, tokens, cursors or
+  transport wording. Errors map to stable `weixin_*` codes: 409 for conflicts,
+  403 for the deployment kill switch, 500 for private-state faults.
 - Maintenance run details add `input_files` (original byte fingerprints),
   `remaining` (unprocessed changed document count) and `needs_review`
   (`source`, `reason`). These are private authenticated audit data. Consumers

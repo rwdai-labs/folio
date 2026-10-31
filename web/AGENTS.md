@@ -44,6 +44,12 @@ Inherit `../AGENTS.md`.
   retain unknown model explanations, and tolerate older runs without these fields.
   Distinguish `continuation_queued` automatic backlog from human review; never
   imply that remaining documents require approval or will start immediately.
+- The WeChat card binds through the console. Render only a `data:image/png`
+  source, poll `/api/weixin/login` with a bounded timer until a terminal state,
+  require the owner to confirm the displayed scanner identity before enabling,
+  and offer an enable/disable toggle only when an owner exists. Explain the
+  deployment kill switch and a pinned owner; keep the QR out of storage, URLs
+  and logs; stop polling on logout and session expiry.
 - The subscription-quota panel is read-only. Render magpie's card/window text
   as text nodes, show `text`/`unlimited` windows without a fake percentage,
   keep source errors and stale cards visible, and never put a quota key or URL

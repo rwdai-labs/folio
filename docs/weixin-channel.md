@@ -52,22 +52,60 @@ can establish communication before model setup.
 
 ## Operator setup
 
-Login runs in an interactive private terminal. Never redirect its QR output to
-service logs, public files or chat. Use the same OS user and external private
-data directory as the service. For a local build:
+Folio supports two paths. The console path is the default and needs no restart;
+the environment path pins an unattended deployment.
+
+### Console binding (default)
+
+With `WEIXIN_ENABLED` unset, the authenticated settings page owns the channel.
+The service renders the login QR **in process** and sends only a rendered image
+to the browser:
+
+1. The owner chooses Connect. The supervisor stops the poller if it is running,
+   then drives one login attempt while holding the single channel lock.
+2. The page shows the QR. Scan it with Weixin and enter the digits the phone
+   displays when asked.
+3. On success the transport saves `credentials.json` and the supervisor records
+   the scanner's opaque user ID as `pending_owner_id`. Nothing polls yet.
+4. The page shows that identity. Confirming it writes `owner_id`, sets
+   `enabled`, and starts the poller without restarting Folio.
+
+The raw QR payload never crosses the HTTP boundary: `internal/channel/weixin`
+encodes it to a PNG and the only serialized form is a
+`data:image/png;base64,…` string on a session-protected, CSRF-protected,
+`Cache-Control: no-store` route. This replaces the earlier rule that QR content
+must never reach an HTTP handler, under the same intent: no log, no shared
+file, no unauthenticated response, and no raw payload the browser could reuse
+after the image is gone. QR content and scanner identity are still never logged.
+
+`WEIXIN_ENABLED=false` is a hard deployment kill switch: login, confirmation and
+enable all refuse with `weixin_deployment_off`. `WEIXIN_ENABLED=true` pins the
+channel on and fails startup when credentials or the owner are missing.
+`WEIXIN_OWNER_ID`, when set, pins the owner and makes the page read-only.
+
+### Terminal login
+
+The CLI remains for headless provisioning and emergencies. It prints the QR to
+the local terminal, so never redirect its output to service logs, public files or
+chat. Use the same OS user and external private data directory as the service:
 
 ```sh
 go build -o /tmp/folio ./cmd/folio
 /tmp/folio weixin login --data-dir /path/to/private-folio-data
 ```
 
-Scan the terminal QR in Weixin and enter the phone's verification digits when
-requested. Login lasts at most five minutes, with at most three QR refreshes.
-The command saves the bot token and prints the scanner's opaque user ID locally.
-After checking the scanner identity, set `WEIXIN_OWNER_ID` to that exact ID in
-the service environment and `WEIXIN_ENABLED=true`, then start Folio normally.
-The environment example is in `compose.yaml`; container steps are in
+Login lasts at most five minutes, with at most three QR refreshes. The command
+saves the bot token, records the same pending owner the console flow writes, and
+prints the scanner's opaque user ID locally. A console can then complete the
+confirmation; for an unattended deployment set `WEIXIN_OWNER_ID` to that exact ID
+and `WEIXIN_ENABLED=true`, then start Folio normally. The environment example is
+in `compose.yaml`; container steps are in
 [`../deploy/README.md`](../deploy/README.md#weixin-channel).
+
+The CLI and the service both open the lock file directly. Running the command
+against the volume of a live service therefore fails with the lock held: stop
+the service first. Inside the service, login and the poller share one lock
+handle through the supervisor, so the console can switch between them.
 
 The owner is **never** inferred from the first inbound message, nickname,
 message text or prompt. Login alone does not enable processing or grant owner
@@ -79,9 +117,10 @@ processing and before delivering a saved reply, including after an owner change.
 
 Send `/status` first, then a short question after the model runner is ready.
 `folio weixin status --data-dir ...` checks only local credential presence and
-shows scanner identity; it does not validate the token online. Login/status use
-the exclusive channel lock, so stop an enabled service first. Disabling Weixin
-leaves its private credentials and pending state available for later restart.
+shows scanner identity; it does not validate the token online. The CLI login/status commands take
+the exclusive channel lock directly, so stop an enabled service before running
+them. Disabling Weixin leaves its private credentials, pending decision and
+cursor available for a later restart.
 
 ## Storage, delivery and failure behavior
 
@@ -91,6 +130,7 @@ directory, never in the context repository or image:
 | File | Contents |
 | --- | --- |
 | `credentials.json` | Bot token, account ID, scanner ID and validated API base URL |
+| `settings.json` | Confirmed `owner_id`, the `pending_owner_id` awaiting confirmation, and the persisted `enabled` decision |
 | `sync.json` | Schema version, account ID, cursor, pending inbound messages/prepared replies and recent message hashes |
 | `channel.lock` | Exclusive process lock, released by OS on process exit |
 
@@ -158,8 +198,10 @@ cursor/inbox checkpoint ordering, retry after restart, cached-reply revocation,
 deduplication, account/session isolation, unauthorized access, cancellation and
 private-state checks. They do not establish compatibility with a live account.
 
-For operator acceptance, use a private terminal to log in, test `/status` and a
-short model question, restart with the same data volume, then test another
-message and verify that an unapproved sender gets no reply. Do not paste real
-tokens, scanner IDs, QR images or message contents into reports. No live account
-was connected during development.
+For operator acceptance, bind through the console (or the private terminal),
+test `/status` and a short model question, restart with the same data volume,
+then test another message and verify that an unapproved sender gets no reply.
+Also verify that stopping the channel in the console stops reading: no message
+posted while it is disabled may produce a reply after it is enabled again.
+Do not paste real tokens, scanner IDs, QR images or message contents into
+reports. No live account was connected during development.

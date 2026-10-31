@@ -418,6 +418,74 @@
             <div id="deliveries-list" class="run-list" aria-live="polite"></div>
           </section>
         </section>
+        <section id="weixin-section" class="card" aria-labelledby="weixin-heading" hidden>
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="weixin.kicker">Inbound</p>
+              <h2 id="weixin-heading" data-i18n="weixin.title">WeChat</h2>
+            </div>
+            <span id="weixin-badge" class="badge" data-state="disabled" data-i18n="weixin.badge.unconfigured">Not connected</span>
+          </header>
+          <p class="lede" data-i18n="weixin.lead">
+            A private WeChat account can message Folio and receive one short answer. Only the
+            owner you confirm here is allowed to reach the read-only handler; everyone else is refused.
+          </p>
+          <p id="weixin-note" class="hint"></p>
+
+          <div class="actions">
+            <button id="weixin-connect" class="btn primary" type="button">
+              <span class="btn-label" data-i18n="weixin.connect">Connect WeChat</span>
+            </button>
+            <button id="weixin-cancel" class="btn ghost" type="button" hidden>
+              <span class="btn-label" data-i18n="weixin.cancel">Cancel</span>
+            </button>
+            <button id="weixin-toggle" class="btn ghost" type="button" hidden>
+              <span class="btn-label" data-i18n="weixin.enable">Enable channel</span>
+            </button>
+          </div>
+
+          <div id="weixin-login" hidden>
+            <div id="weixin-qr-wrap" class="weixin-qr-wrap" hidden>
+              <img id="weixin-qr" class="weixin-qr" width="320" height="320" alt="">
+              <p class="hint" data-i18n="weixin.qr_hint">
+                Scan with the phone that should reach Folio. The code is shown only on this
+                page, never in a log, and it expires after five minutes.
+              </p>
+            </div>
+            <form id="weixin-code-form" class="form" novalidate hidden>
+              <div class="field">
+                <label for="weixin-code" data-i18n="weixin.code">Digits shown on your phone</label>
+                <input id="weixin-code" type="text" inputmode="numeric" autocomplete="one-time-code"
+                       pattern="[0-9]{1,12}" maxlength="12" spellcheck="false">
+              </div>
+              <div class="actions">
+                <button id="weixin-code-submit" class="btn primary" type="submit">
+                  <span class="btn-label" data-i18n="weixin.code_submit">Submit digits</span>
+                </button>
+              </div>
+            </form>
+            <p id="weixin-verify-hint" class="hint" data-i18n="weixin.verifying" hidden>
+              Waiting for WeChat to confirm the scan…
+            </p>
+            <div id="weixin-confirm" class="weixin-confirm" hidden>
+              <p class="hint" data-i18n="weixin.confirm_lead">
+                Compare this identity with the account that scanned. Confirming starts the channel;
+                a scan alone never authorizes anything.
+              </p>
+              <p>
+                <span class="device-label" data-i18n="weixin.scanner">Scanner identity</span>
+                <code id="weixin-scanner"></code>
+              </p>
+              <div class="actions">
+                <button id="weixin-confirm-button" class="btn primary" type="button">
+                  <span class="btn-label" data-i18n="weixin.confirm">Confirm owner</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <p id="weixin-message" class="form-message" role="status" aria-live="polite"></p>
+        </section>
         <section id="hooks-section" class="card" aria-labelledby="hooks-heading">
           <header class="card-head">
             <div>

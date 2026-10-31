@@ -13,9 +13,11 @@ services:
       # session; set it in .env next to this file.
       GIT_AUTH_TOKEN: "${GIT_AUTH_TOKEN:-}"
       TRUSTED_HOSTS: localhost,127.0.0.1
-      # Native Weixin text channel. Log in interactively before enabling;
-      # verify the locally printed scanner ID and set it as the owner.
-      WEIXIN_ENABLED: "${WEIXIN_ENABLED:-false}"
+      # Native Weixin text channel. Leave both variables empty to let the
+      # authenticated console run QR login and confirm the owner; set
+      # WEIXIN_ENABLED=true plus WEIXIN_OWNER_ID for a headless deployment, or
+      # WEIXIN_ENABLED=false as a hard kill switch.
+      WEIXIN_ENABLED: "${WEIXIN_ENABLED:-}"
       WEIXIN_OWNER_ID: "${WEIXIN_OWNER_ID:-}"
       MAINTENANCE_SCHEDULER_ENABLED: "true"
       MAINTENANCE_INTERVAL_SECONDS: "86400"

@@ -43,6 +43,13 @@ const quotaSnapshot = () => {
     }],
   };
 };
+// A 1x1 PNG: the console only accepts a server-rendered data URL here.
+const syntheticQR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const weixinStatus = (overrides = {}) => ({
+  deployment: { mode: 'auto', owner_pinned: false },
+  configured: false, enabled: false, running: false, owner_id: '',
+  state: 'idle', login: null, ...overrides,
+});
 const visible = async (page, selector) => page.locator(selector).waitFor({ state: 'visible' });
 async function main() {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -58,6 +65,7 @@ async function main() {
       let usageError = false, stateError = false, expired = false, jobFailed = false;
       let run = maintenance(), reviewRun = null, runRequests = [], jobRequests = 0, quotaRefreshes = 0;
       let tasks = [];
+      let weixinLogin = null, weixinConfigured = false, weixinRunning = false, weixinOwner = '';
       const taskListing = () => ({ tasks, paused, counts: {}, policy: { defer: { P2: true }, in_window: false, window_start: '00:30', window_end: '07:30' } });
       await page.route('**/api/**', async route => {
         const req = route.request(); const url = new URL(req.url()); const endpoint = url.pathname;
@@ -111,6 +119,25 @@ async function main() {
         else if (endpoint === '/api/hooks') body = { hooks: [] };
         else if (endpoint === '/api/quotas') body = quotaSnapshot();
         else if (endpoint === '/api/quotas/refresh') { quotaRefreshes++; body = quotaSnapshot(); }
+        else if (endpoint === '/api/weixin') body = weixinStatus({ configured: weixinConfigured, enabled: weixinRunning, running: weixinRunning, owner_id: weixinOwner, login: weixinLogin });
+        else if (endpoint === '/api/weixin/login') {
+          if (req.method() === 'POST') weixinLogin = { status: 'waiting', qr_image: syntheticQR };
+          else if (weixinLogin && weixinLogin.status === 'waiting') weixinLogin = { status: 'need_code', qr_image: syntheticQR };
+          body = { login: weixinLogin };
+        }
+        else if (endpoint === '/api/weixin/login/code') {
+          weixinLogin = { status: 'awaiting_confirmation', scanner_id: 'synthetic-owner' };
+          body = { login: weixinLogin };
+        }
+        else if (endpoint === '/api/weixin/login/cancel') { weixinLogin = null; body = weixinStatus({ configured: weixinConfigured, owner_id: weixinOwner }); }
+        else if (endpoint === '/api/weixin/confirm') {
+          weixinConfigured = true; weixinRunning = true; weixinOwner = 'synthetic-owner'; weixinLogin = null;
+          body = weixinStatus({ configured: true, enabled: true, running: true, owner_id: weixinOwner });
+        }
+        else if (endpoint === '/api/weixin/enabled') {
+          weixinRunning = req.postDataJSON().enabled;
+          body = weixinStatus({ configured: weixinConfigured, enabled: weixinRunning, running: weixinRunning, owner_id: weixinOwner });
+        }
         else throw new Error('Unexpected synthetic endpoint: ' + endpoint);
         await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
       });
@@ -134,6 +161,31 @@ async function main() {
       await page.locator('#gh-connect').click();
       await page.waitForFunction(() => !document.getElementById('run-now-button').disabled);
       assert.equal(await page.locator('#settings-view').isVisible(), true, 'setup must not disappear after connecting');
+      // WeChat: the QR renders, the phone asks for digits, the owner decides, then
+      // the channel starts without a restart.
+      await visible(page, '#weixin-section');
+      // Assert translated copy, not just state: a missing dictionary entry used
+      // to pass because every assertion above read data attributes.
+      assert.equal((await page.locator('#weixin-heading').innerText()).trim(), language === 'zh' ? '微信' : 'WeChat');
+      assert.equal((await page.locator('#weixin-connect').innerText()).trim(), language === 'zh' ? '连接微信' : 'Connect WeChat');
+      assert.equal(await page.locator('#weixin-connect').isDisabled(), false);
+      await page.locator('#weixin-connect').click();
+      await visible(page, '#weixin-qr');
+      assert.match(await page.locator('#weixin-qr').getAttribute('src'), /^data:image\/png;base64,/);
+      await visible(page, '#weixin-code-form');
+      await page.locator('#weixin-code').fill('123456');
+      await page.locator('#weixin-code-submit').click();
+      await visible(page, '#weixin-confirm');
+      assert.equal(await page.locator('#weixin-scanner').textContent(), 'synthetic-owner');
+      await page.locator('#weixin-confirm-button').click();
+      await visible(page, '#weixin-toggle');
+      await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'enabled');
+      assert.equal(await page.locator('#weixin-qr-wrap').isVisible(), false);
+      if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-weixin-${language}.png`, fullPage: true });
+      await page.locator('#weixin-toggle').click();
+      await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'disabled');
+      await page.locator('#weixin-toggle').click();
+      await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'enabled');
       await page.locator('#setup-finish').click();
       await visible(page, '#dashboard-view');
       await visible(page, '#quotas-cards .quota-card');

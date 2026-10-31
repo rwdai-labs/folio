@@ -59,6 +59,9 @@
     usageWindow: 30,
     quotas: null,
     quotasLoading: false,
+    weixin: null,
+    weixinBusy: false,
+    weixinPoll: null,
     tasks: null,
     kinds: null,
     tasksBusy: "",
@@ -82,6 +85,7 @@
     hooks: { element: "hooks-message", data: null },
     usage: { element: "usage-message", data: null },
     quotas: { element: "quotas-message", data: null },
+    weixin: { element: "weixin-message", data: null },
     tasks: { element: "tasks-message", data: null },
     review: { element: "review-message", data: null },
     app: { element: "app-message", data: null },
@@ -187,6 +191,29 @@
         return "quota.error.quota_rate_limited";
       case "quota_refresh_limited":
         return "quota.error.quota_refresh_limited";
+      case "weixin_busy":
+        return "weixin.error.busy";
+      case "weixin_deployment_off":
+        return "weixin.error.deployment_off";
+      case "weixin_not_configured":
+        return "weixin.error.not_configured";
+      case "weixin_owner_required":
+        return "weixin.error.owner_required";
+      case "weixin_owner_mismatch":
+        return "weixin.error.owner_mismatch";
+      case "weixin_no_login":
+        return "weixin.error.no_login";
+      case "weixin_no_prompt":
+        return "weixin.error.no_prompt";
+      case "weixin_state_error":
+        return "weixin.error.state";
+      case "weixin_invalid_code":
+        return "weixin.code_invalid";
+      case "weixin_invalid_owner":
+      case "weixin_invalid_request":
+        return "weixin.error.invalid";
+      case "weixin_unavailable":
+        return "weixin.error.unavailable";
       case "task_not_found":
         return "tasks.not_found";
       case "task_busy":
@@ -955,7 +982,7 @@
     refreshQuotas();
     await Promise.allSettled([
       loadTaskKinds(), refreshAutomation({ silent: true }), refreshChannels(),
-      refreshHooks(), refreshUsage(), refreshTasks(),
+      refreshHooks(), refreshUsage(), refreshTasks(), loadWeixin(),
     ]);
     renderHooks({ hooks: state.hooks });
   }
@@ -1855,6 +1882,263 @@
     }
   }
 
+  /* ---------------------------------------------------------------- weixin */
+
+  const WEIXIN_POLL_MS = 1500;
+  // The transport gives a QR five minutes. One poll per 1.5s keeps a bounded
+  // timer count well inside that window and stops on any terminal state.
+  const WEIXIN_POLL_LIMIT = 200;
+  const WEIXIN_LOGIN_ERRORS = {
+    expired: "weixin.error.login_expired",
+    protocol_error: "weixin.error.protocol",
+    state_error: "weixin.error.state",
+    unavailable: "weixin.error.unavailable",
+    login_failed: "weixin.failed",
+  };
+
+  function weixinLoginActive(login) {
+    const status = login && login.status;
+    return status === "waiting" || status === "need_code" || status === "verifying";
+  }
+
+  function stopWeixinPoll() {
+    if (state.weixinPoll) {
+      window.clearTimeout(state.weixinPoll);
+      state.weixinPoll = null;
+    }
+  }
+
+  // Only a server-rendered PNG may reach the image element. The raw QR payload
+  // is never part of an API response, so there is nothing here to encode.
+  function weixinQRSrc(value) {
+    return typeof value === "string" && value.startsWith("data:image/png;base64,") ? value : "";
+  }
+
+  function weixinBadgeText(data) {
+    const deployment = (data && data.deployment) || {};
+    if (deployment.mode === "off") return ["disabled", t("weixin.badge.deployment_off")];
+    if (data.running) return ["enabled", t("weixin.badge.running")];
+    if (data.enabled) return ["disabled", t("weixin.badge.stopped")];
+    if (data.owner_id) return ["disabled", t("weixin.badge.ready")];
+    if (data.configured) return ["disabled", t("weixin.badge.unconfirmed")];
+    return ["disabled", t("weixin.badge.unconfigured")];
+  }
+
+  function weixinNoteText(data) {
+    const deployment = (data && data.deployment) || {};
+    if (deployment.mode === "off") return t("weixin.note.deployment_off");
+    if (deployment.owner_pinned) return t("weixin.note.owner_pinned");
+    if (!data.configured) return t("weixin.note.unconfigured");
+    if (!data.owner_id) return t("weixin.note.pending");
+    return "";
+  }
+
+  function renderWeixin(data) {
+    const section = $("weixin-section");
+    if (!section) return;
+    state.weixin = data || null;
+    if (!data) {
+      section.hidden = true;
+      stopWeixinPoll();
+      return;
+    }
+    section.hidden = false;
+
+    const badge = $("weixin-badge");
+    if (badge) {
+      const [stateName, text] = weixinBadgeText(data);
+      badge.dataset.state = stateName;
+      badge.textContent = text;
+    }
+    const note = $("weixin-note");
+    if (note) note.textContent = weixinNoteText(data);
+
+    const deployment = data.deployment || {};
+    const login = data.login || null;
+    const active = weixinLoginActive(login);
+    const awaiting = Boolean(login && login.status === "awaiting_confirmation");
+    const disabled = deployment.mode === "off";
+
+    const connect = $("weixin-connect");
+    if (connect) {
+      connect.hidden = active || awaiting;
+      connect.disabled = disabled;
+    }
+    const cancel = $("weixin-cancel");
+    if (cancel) cancel.hidden = !active;
+
+    const toggle = $("weixin-toggle");
+    if (toggle) {
+      const canToggle = Boolean(data.owner_id) && Boolean(data.configured) && !active && !awaiting && !disabled;
+      toggle.hidden = !canToggle;
+      toggle.disabled = !canToggle;
+      const label = toggle.querySelector(".btn-label");
+      if (label) label.textContent = t(data.running ? "weixin.disable" : "weixin.enable");
+    }
+
+    const loginBox = $("weixin-login");
+    if (loginBox) loginBox.hidden = !login || (!active && !awaiting);
+
+    const qrWrap = $("weixin-qr-wrap");
+    const qr = $("weixin-qr");
+    const src = login ? weixinQRSrc(login.qr_image) : "";
+    if (qrWrap) qrWrap.hidden = !src;
+    if (qr) {
+      if (src && qr.getAttribute("src") !== src) qr.setAttribute("src", src);
+      if (!src && qr.hasAttribute("src")) qr.removeAttribute("src");
+      qr.alt = src ? t("weixin.qr_alt") : "";
+    }
+
+    const codeForm = $("weixin-code-form");
+    if (codeForm) codeForm.hidden = !(login && login.status === "need_code");
+    const verifyHint = $("weixin-verify-hint");
+    if (verifyHint) verifyHint.hidden = !(login && login.status === "verifying");
+
+    const confirm = $("weixin-confirm");
+    if (confirm) confirm.hidden = !awaiting;
+    const scanner = $("weixin-scanner");
+    if (scanner) {
+      scanner.textContent = awaiting && typeof login.scanner_id === "string" ? login.scanner_id : "";
+    }
+
+    if (login && login.error) {
+      const key = WEIXIN_LOGIN_ERRORS[login.error] || "weixin.failed";
+      setMessage("weixin", key, { error: true });
+    }
+  }
+
+  async function loadWeixin() {
+    try {
+      renderWeixin(await api("/api/weixin"));
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      if (error.code === "weixin_unavailable") {
+        renderWeixin(null);
+        return;
+      }
+      setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+    }
+  }
+
+  function scheduleWeixinPoll(remaining) {
+    stopWeixinPoll();
+    state.weixinPoll = window.setTimeout(() => pollWeixinLogin(remaining), WEIXIN_POLL_MS);
+  }
+
+  async function pollWeixinLogin(remaining = WEIXIN_POLL_LIMIT) {
+    if (!state.authenticated || remaining <= 0) {
+      stopWeixinPoll();
+      return;
+    }
+    try {
+      const data = await api("/api/weixin/login");
+      const login = data.login || null;
+      if (state.weixin) renderWeixin({ ...state.weixin, login });
+      else await loadWeixin();
+      if (login && weixinLoginActive(login)) {
+        scheduleWeixinPoll(remaining - 1);
+        return;
+      }
+      stopWeixinPoll();
+      if (login && login.status === "awaiting_confirmation") await loadWeixin();
+    } catch (error) {
+      stopWeixinPoll();
+      if (error.code !== "authentication_required") {
+        setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+      }
+    }
+  }
+
+  async function startWeixinLogin() {
+    if (state.weixinBusy) return;
+    state.weixinBusy = true;
+    const button = $("weixin-connect");
+    setBusy(button, "weixin.connecting");
+    setMessage("weixin", null);
+    try {
+      renderWeixin(await api("/api/weixin/login", { method: "POST", body: {} }));
+      scheduleWeixinPoll(WEIXIN_POLL_LIMIT);
+    } catch (error) {
+      setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+      await loadWeixin();
+    } finally {
+      state.weixinBusy = false;
+      clearBusy(button);
+    }
+  }
+
+  async function cancelWeixinLogin() {
+    stopWeixinPoll();
+    const button = $("weixin-cancel");
+    setBusy(button, "weixin.canceling");
+    try {
+      renderWeixin(await api("/api/weixin/login/cancel", { method: "POST", body: {} }));
+      setMessage("weixin", null);
+    } catch (error) {
+      setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function submitWeixinCode(event) {
+    if (event) event.preventDefault();
+    const input = $("weixin-code");
+    const code = input ? input.value.trim() : "";
+    if (!/^[0-9]{1,12}$/.test(code)) {
+      setMessage("weixin", "weixin.code_invalid", { error: true });
+      return;
+    }
+    const button = $("weixin-code-submit");
+    setBusy(button, "weixin.sending");
+    setMessage("weixin", null);
+    try {
+      const data = await api("/api/weixin/login/code", { method: "POST", body: { code } });
+      if (state.weixin) renderWeixin({ ...state.weixin, login: data.login || null });
+      if (input) input.value = "";
+      scheduleWeixinPoll(WEIXIN_POLL_LIMIT);
+    } catch (error) {
+      setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function confirmWeixinOwner() {
+    const scanner = $("weixin-scanner");
+    const owner = scanner ? scanner.textContent.trim() : "";
+    if (!owner) {
+      setMessage("weixin", "weixin.error.no_login", { error: true });
+      return;
+    }
+    const button = $("weixin-confirm-button");
+    setBusy(button, "weixin.confirming");
+    try {
+      renderWeixin(await api("/api/weixin/confirm", { method: "POST", body: { owner_id: owner } }));
+      stopWeixinPoll();
+      setMessage("weixin", "weixin.confirmed");
+    } catch (error) {
+      setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+    } finally {
+      clearBusy(button);
+    }
+  }
+
+  async function toggleWeixin() {
+    const data = state.weixin || {};
+    const enable = !data.running;
+    const button = $("weixin-toggle");
+    setBusy(button, enable ? "weixin.enabling" : "weixin.disabling");
+    try {
+      renderWeixin(await api("/api/weixin/enabled", { method: "POST", body: { enabled: enable } }));
+      setMessage("weixin", enable ? "weixin.enabled" : "weixin.disabled");
+    } catch (error) {
+      setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+    } finally {
+      clearBusy(button);
+    }
+  }
+
   /* ----------------------------------------------------------------- tasks */
 
   function taskStatusKey(status) {
@@ -2716,6 +3000,12 @@
     if (button) hookAction(button);
   });
 
+  on("weixin-connect", "click", startWeixinLogin);
+  on("weixin-cancel", "click", cancelWeixinLogin);
+  on("weixin-code-form", "submit", submitWeixinCode);
+  on("weixin-confirm-button", "click", confirmWeixinOwner);
+  on("weixin-toggle", "click", toggleWeixin);
+
   on("bark-form", "submit", saveBark);
   on("bark-test", "click", testBark);
 
@@ -2741,6 +3031,7 @@
     renderHooks({ hooks: state.hooks });
     renderUsage(state.usage);
     renderQuotas(state.quotas);
+    if (state.weixin) renderWeixin(state.weixin);
     renderTasks(state.tasks);
     if ($("task-detail").open) {
       if (inspectedRun) renderLatestRun(inspectedRun, "task-detail-body");
@@ -2788,6 +3079,9 @@
     state.usage = null;
     state.tasks = null;
     state.channels = null;
+    state.weixin = null;
+    stopWeixinPoll();
+    if ($("weixin-section")) $("weixin-section").hidden = true;
     $("review-list").replaceChildren();
     $("latest-run").replaceChildren();
     document.dispatchEvent(new CustomEvent("folio:session", { detail: { authenticated: false } }));

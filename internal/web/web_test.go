@@ -232,6 +232,10 @@ func (b *testBackend) SchedulerTick() (map[string]any, error) {
 	return map[string]any{"status": "skipped"}, nil
 }
 func testServer(t *testing.T, backend Backend) (*httptest.Server, string) {
+	return testServerWith(t, backend, Options{})
+}
+
+func testServerWith(t *testing.T, backend Backend, options Options) (*httptest.Server, string) {
 	t.Helper()
 	root := t.TempDir()
 	assets := filepath.Join(root, "assets")
@@ -250,7 +254,11 @@ func testServer(t *testing.T, backend Backend) (*httptest.Server, string) {
 	if err := os.WriteFile(passwordFile, []byte("correct horse\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server, err := New(backend, Options{DataDir: filepath.Join(root, "data"), PasswordFile: passwordFile, AssetsDir: assets, TrustedHosts: []string{"127.0.0.1"}})
+	options.DataDir = filepath.Join(root, "data")
+	options.PasswordFile = passwordFile
+	options.AssetsDir = assets
+	options.TrustedHosts = []string{"127.0.0.1"}
+	server, err := New(backend, options)
 	if err != nil {
 		t.Fatal(err)
 	}

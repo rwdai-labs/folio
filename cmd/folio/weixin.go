@@ -44,12 +44,20 @@ func weixinCommand(args []string, in io.Reader, out io.Writer) error {
 	}
 	defer disk.Close()
 	if args[0] == "status" {
-		creds, err := disk.Credentials()
+		settings, err := disk.Settings()
 		if err != nil {
 			return err
 		}
-		// Local configuration presence is not a live token-validity check.
-		return json.NewEncoder(out).Encode(map[string]any{"configured": true, "scanner_id": creds.UserID})
+		value := map[string]any{"configured": false, "owner_confirmed": settings.OwnerID != "", "enabled": settings.Enabled}
+		if disk.HasCredentials() {
+			creds, err := disk.Credentials()
+			if err != nil {
+				return err
+			}
+			// Local configuration presence is not a live token-validity check.
+			value["configured"], value["scanner_id"] = true, creds.UserID
+		}
+		return json.NewEncoder(out).Encode(value)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -85,44 +93,63 @@ func weixinCommand(args []string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "已保存登录凭据。扫码用户 ID：%s\n核对身份后配置 WEIXIN_OWNER_ID，再启用 WEIXIN_ENABLED。\n", creds.UserID)
+	if err := disk.SaveSettings(weixin.Settings{Version: 1, PendingOwner: creds.UserID}); err != nil {
+		return err
+	}
+	// A fresh scan always needs a fresh owner decision, in the console or by
+	// pinning WEIXIN_OWNER_ID for a headless deployment.
+	_, err = fmt.Fprintf(out, "已保存登录凭据。扫码用户 ID：%s\n请在 Folio 控制台核对身份并确认绑定；无控制台时设置 WEIXIN_OWNER_ID 与 WEIXIN_ENABLED=true。\n", creds.UserID)
 	return err
 }
 
-// prepareWeixin fails closed before starting HTTP when enabled configuration
-// or private state is invalid. The returned function owns the channel lock.
-func prepareWeixin(layout string, backend *store.Store) (func(context.Context), error) {
-	if !envBool("WEIXIN_ENABLED") {
-		return nil, nil
+// weixinMode reads the deployment switch. Unset leaves the decision to the
+// authenticated console; an explicit true or false pins the channel so an
+// operator can guarantee state regardless of what the page last saved.
+func weixinMode() weixin.Mode {
+	raw, ok := os.LookupEnv("WEIXIN_ENABLED")
+	if !ok {
+		return weixin.ModeAuto
 	}
-	disk, err := weixin.OpenDisk(filepath.Join(layout, "secrets", "weixin"))
-	if err != nil {
-		return nil, err
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return weixin.ModeAuto
+	case "1", "true", "yes", "on":
+		return weixin.ModeOn
+	default:
+		return weixin.ModeOff
 	}
-	creds, err := disk.Credentials()
-	if err != nil {
-		_ = disk.Close()
-		return nil, err
-	}
-	handler, err := backend.WeixinHandler(creds.AccountID, os.Getenv("WEIXIN_OWNER_ID"))
-	if err != nil {
-		_ = disk.Close()
-		return nil, err
-	}
-	service, err := weixin.NewService(disk, handler)
-	if err != nil {
-		_ = disk.Close()
-		return nil, err
-	}
-	return func(ctx context.Context) {
-		defer disk.Close()
-		if err := service.Run(ctx); err != nil && ctx.Err() == nil {
-			// Fixed classes only. Never log peer IDs, text, cursors or tokens.
-			if errors.Is(err, weixin.ErrSessionExpired) {
-				fmt.Fprintln(os.Stderr, "folio: weixin login expired; stop service and run weixin login")
-			} else {
-				fmt.Fprintln(os.Stderr, "folio: weixin channel stopped; check private configuration and state")
-			}
-		}
-	}, nil
+}
+
+// newWeixinSupervisor is the only owner of the private channel directory in the
+// serving process. Login and polling share one lock handle, so the console can
+// replace a session without a restart and without a second open of the lock.
+func newWeixinSupervisor(layout string, backend *store.Store) *weixin.Supervisor {
+	return weixin.NewSupervisor(
+		filepath.Join(layout, "secrets", "weixin"),
+		weixinMode(),
+		strings.TrimSpace(os.Getenv("WEIXIN_OWNER_ID")),
+		backend.WeixinHandler,
+	)
+}
+
+// weixinConsole adapts the channel supervisor to the Web contract. The host
+// keeps HTTP naming in internal/web; the transport package keeps its own.
+type weixinConsole struct{ supervisor *weixin.Supervisor }
+
+func (c weixinConsole) WeixinStatus() map[string]any { return c.supervisor.Status() }
+
+func (c weixinConsole) WeixinStartLogin() (map[string]any, error) { return c.supervisor.StartLogin() }
+
+func (c weixinConsole) WeixinLoginStatus() map[string]any { return c.supervisor.LoginStatus() }
+
+func (c weixinConsole) WeixinSubmitCode(code string) error { return c.supervisor.SubmitCode(code) }
+
+func (c weixinConsole) WeixinCancelLogin() { c.supervisor.CancelLogin() }
+
+func (c weixinConsole) WeixinConfirm(ownerID string) (map[string]any, error) {
+	return c.supervisor.Confirm(ownerID)
+}
+
+func (c weixinConsole) WeixinSetEnabled(enabled bool) (map[string]any, error) {
+	return c.supervisor.SetEnabled(enabled)
 }
