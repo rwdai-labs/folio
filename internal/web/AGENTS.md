@@ -16,6 +16,11 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - API changes require matching `Backend` implementations, fake backends, UI
   consumers, and contract documentation. Task acceptance is not run completion.
   Update these instructions whenever API ownership or security rules change.
+- The optional `QuotaBackend` contract exposes session-protected
+  `GET /api/quotas` and CSRF-protected `POST /api/quotas/refresh`. Responses are
+  bounded maps, never raw magpie bodies, key paths, or credentials. A
+  `quota_refresh_limited` refresh returns 429 with `Retry-After`; other source
+  failures stay 200 with a fixed error code and stale cards when available.
 - Maintenance run details add `input_files` (original byte fingerprints),
   `remaining` (unprocessed changed document count) and `needs_review`
   (`source`, `reason`). These are private authenticated audit data. Consumers

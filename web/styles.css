@@ -1933,6 +1933,194 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+/* ----------------------------------------------------- subscription quota */
+
+.quota-note {
+  margin: 10px 0 0;
+}
+
+.quota-note[data-state="stale"] {
+  color: var(--amber);
+}
+
+.quota-note[data-state="error"] {
+  color: var(--red);
+}
+
+.quota-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 14px;
+  margin: 16px 0 4px;
+}
+
+.quota-grid[aria-busy="true"] {
+  opacity: 0.72;
+  transition: opacity var(--ease);
+}
+
+.quota-card {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.quota-card[data-state="stale"] {
+  border-color: var(--amber-border);
+}
+
+.quota-card[data-state="error"] {
+  border-color: var(--red-border);
+}
+
+.quota-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.quota-card-heading {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.quota-card-provider {
+  overflow-wrap: break-word;
+}
+
+.quota-card-identity {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.quota-card-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.quota-card-meta {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.quota-card-error {
+  padding: 7px 9px;
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.quota-windows {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quota-window {
+  display: grid;
+  gap: 5px;
+  padding: 10px 11px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.quota-window-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.quota-window-name {
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 660;
+  overflow-wrap: anywhere;
+}
+
+.quota-window-display {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.quota-window[data-unlimited="true"] .quota-window-display,
+.quota-window[data-text="true"] .quota-window-display {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.quota-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.quota-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--ease);
+}
+
+.quota-window-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .quota-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .quota-card-head {
+    flex-wrap: wrap;
+  }
+
+  .quota-card-badges {
+    justify-content: flex-start;
+  }
+
+  .quota-window-head {
+    flex-wrap: wrap;
+  }
+
+  .quota-window-display {
+    text-align: left;
+  }
+}
+
 /* ------------------------------------------------------------- task board */
 
 .card-head-actions {

@@ -57,6 +57,8 @@
     hookBusy: "",
     usage: null,
     usageWindow: 30,
+    quotas: null,
+    quotasLoading: false,
     tasks: null,
     kinds: null,
     tasksBusy: "",
@@ -79,6 +81,7 @@
     channels: { element: "channels-message", data: null },
     hooks: { element: "hooks-message", data: null },
     usage: { element: "usage-message", data: null },
+    quotas: { element: "quotas-message", data: null },
     tasks: { element: "tasks-message", data: null },
     review: { element: "review-message", data: null },
     app: { element: "app-message", data: null },
@@ -170,6 +173,20 @@
         return "hooks.failed";
       case "usage_unavailable":
         return "usage.failed";
+      case "quota_invalid":
+        return "quota.error.quota_invalid";
+      case "quota_key_unavailable":
+        return "quota.error.quota_key_unavailable";
+      case "quota_unauthorized":
+        return "quota.error.quota_unauthorized";
+      case "quota_unavailable":
+        return "quota.error.quota_unavailable";
+      case "quota_invalid_response":
+        return "quota.error.quota_invalid_response";
+      case "quota_rate_limited":
+        return "quota.error.quota_rate_limited";
+      case "quota_refresh_limited":
+        return "quota.error.quota_refresh_limited";
       case "task_not_found":
         return "tasks.not_found";
       case "task_busy":
@@ -933,6 +950,9 @@
     }
     if (!state.authenticated) return;
     if (!state.viewInitialized) navigate();
+    // The quota source is optional and may take its full timeout; do not hold
+    // the rest of the dashboard refresh behind a slow external gateway.
+    refreshQuotas();
     await Promise.allSettled([
       loadTaskKinds(), refreshAutomation({ silent: true }), refreshChannels(),
       refreshHooks(), refreshUsage(), refreshTasks(),
@@ -1504,6 +1524,334 @@
     } catch (error) {
       if (error.code === "authentication_required") return;
       setMessage("usage", errorKey(error, "usage.failed"), { error: true });
+    }
+  }
+
+  /* ---------------------------------------------------------------- quotas */
+
+  function quotaLocale() {
+    const lang = document.documentElement.lang;
+    return typeof lang === "string" && lang ? lang : "en";
+  }
+
+  function quotaNumeric(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function quotaNumberText(value) {
+    const number = quotaNumeric(value);
+    if (number === null) return "";
+    try {
+      return new Intl.NumberFormat(quotaLocale(), { maximumFractionDigits: 1 }).format(number);
+    } catch (_) {
+      return String(number);
+    }
+  }
+
+  function quotaKindLabel(kind) {
+    if (typeof kind !== "string" || !kind) return "";
+    const key = `quota.kind.${kind}`;
+    return hasI18n() && window.FolioI18n.has(key) ? t(key) : kind;
+  }
+
+  function quotaErrorText(code) {
+    if (typeof code !== "string" || !code) return t("quota.failed");
+    const key = `quota.error.${code}`;
+    return hasI18n() && window.FolioI18n.has(key) ? t(key) : t("quota.failed");
+  }
+
+  // Relative time is best effort: without Intl.RelativeTimeFormat the caller
+  // falls back to an absolute Intl.DateTimeFormat timestamp.
+  function quotaRelativePhrase(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    if (typeof Intl === "undefined" || typeof Intl.RelativeTimeFormat !== "function") return "";
+    const deltaSeconds = (date.getTime() - Date.now()) / 1000;
+    const magnitude = Math.abs(deltaSeconds);
+    let unit = "second";
+    let amount = deltaSeconds;
+    if (magnitude >= 86400) {
+      unit = "day";
+      amount = deltaSeconds / 86400;
+    } else if (magnitude >= 3600) {
+      unit = "hour";
+      amount = deltaSeconds / 3600;
+    } else if (magnitude >= 60) {
+      unit = "minute";
+      amount = deltaSeconds / 60;
+    }
+    amount = Math.round(amount);
+    if (amount === 0) amount = 0;
+    try {
+      return new Intl.RelativeTimeFormat(quotaLocale(), { numeric: "auto" }).format(amount, unit);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function quotaReadLabel(value) {
+    if (value === null || value === undefined || value === "") return t("quota.read_unknown");
+    const relative = quotaRelativePhrase(value);
+    if (relative) return t("quota.read_at", { time: relative });
+    const absolute = formatTime(value);
+    if (absolute) return t("quota.read_at", { time: absolute });
+    return t("quota.read_unknown");
+  }
+
+  function quotaResetLabel(value) {
+    if (value === null || value === undefined || value === "") return t("quota.window.no_reset");
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return t("quota.window.no_reset");
+    if (date.getTime() <= Date.now()) return t("quota.window.reset_passed");
+    const relative = quotaRelativePhrase(value);
+    return t("quota.window.reset_in", { time: relative || formatTime(value) || String(value) });
+  }
+
+  function quotaAmountText(value, unit) {
+    const text = quotaNumberText(value);
+    if (!text) return "";
+    return unit ? `${text} ${unit}` : text;
+  }
+
+  function renderQuotaWindow(reading) {
+    const item = document.createElement("li");
+    item.className = "quota-window";
+
+    const unlimited = reading.unlimited === true;
+    const textOnly = reading.text === true;
+    const used = quotaNumeric(reading.used);
+    const remaining = quotaNumeric(reading.remaining);
+    const name =
+      typeof reading.name === "string" && reading.name.trim() ? reading.name.trim() : "—";
+    const display = typeof reading.display === "string" ? reading.display.trim() : "";
+    const usedText = used === null ? "" : t("quota.window.used", { percent: quotaNumberText(used) });
+
+    const head = document.createElement("div");
+    head.className = "quota-window-head";
+    const nameNode = document.createElement("span");
+    nameNode.className = "quota-window-name";
+    nameNode.textContent = name;
+    const displayNode = document.createElement("span");
+    displayNode.className = "quota-window-display";
+    if (display) displayNode.textContent = display;
+    else if (unlimited) displayNode.textContent = t("quota.window.unlimited");
+    else if (textOnly || used === null) displayNode.textContent = t("quota.window.no_reading");
+    else displayNode.textContent = usedText;
+    head.appendChild(nameNode);
+    head.appendChild(displayNode);
+    item.appendChild(head);
+
+    if (!unlimited && !textOnly && used !== null) {
+      const clamped = Math.min(100, Math.max(0, used));
+      const bar = document.createElement("div");
+      bar.className = "quota-bar";
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
+      bar.setAttribute("aria-valuenow", String(clamped));
+      bar.setAttribute("aria-valuetext", usedText || t("quota.window.no_reading"));
+      bar.setAttribute("aria-label", `${name}: ${usedText || t("quota.window.no_reading")}`);
+      const fill = document.createElement("span");
+      fill.className = "quota-bar-fill";
+      fill.style.width = `${clamped}%`;
+      bar.appendChild(fill);
+      item.appendChild(bar);
+    }
+    if (unlimited) item.dataset.unlimited = "true";
+    if (textOnly) item.dataset.text = "true";
+
+    const meta = document.createElement("p");
+    meta.className = "quota-window-meta";
+    const parts = [];
+    if (!unlimited && !textOnly && remaining !== null) {
+      parts.push(t("quota.window.remaining", { percent: quotaNumberText(remaining) }));
+    }
+    parts.push(quotaResetLabel(reading.resets_at));
+    const balance = quotaNumeric(reading.balance);
+    const unit = typeof reading.unit === "string" ? reading.unit.trim() : "";
+    if (balance !== null) {
+      parts.push(t("quota.window.balance", { amount: quotaAmountText(balance, unit) }));
+    } else {
+      const amount = quotaNumeric(reading.amount);
+      if (amount !== null && amount !== 0) {
+        parts.push(t("quota.window.amount", { amount: quotaAmountText(amount, unit) }));
+      }
+    }
+    meta.textContent = parts.join(" · ");
+    item.appendChild(meta);
+    return item;
+  }
+
+  function renderQuotaCard(card) {
+    const article = document.createElement("article");
+    article.className = "quota-card";
+    if (card.stale) article.dataset.state = "stale";
+    if (card.error) article.dataset.state = "error";
+
+    const providerLabel =
+      typeof card.provider_label === "string" ? card.provider_label.trim() : "";
+    const provider = typeof card.provider === "string" ? card.provider.trim() : "";
+    const alias = typeof card.alias === "string" ? card.alias.trim() : "";
+    const account = typeof card.account === "string" ? card.account.trim() : "";
+    const identity = alias || account || providerLabel || provider || "—";
+
+    const head = document.createElement("div");
+    head.className = "quota-card-head";
+    const heading = document.createElement("div");
+    heading.className = "quota-card-heading";
+    const providerNode = document.createElement("h3");
+    providerNode.className = "quota-card-provider";
+    providerNode.textContent = providerLabel || provider || "—";
+    const identityNode = document.createElement("p");
+    identityNode.className = "quota-card-identity";
+    identityNode.textContent = identity;
+    heading.appendChild(providerNode);
+    heading.appendChild(identityNode);
+    head.appendChild(heading);
+
+    const badges = document.createElement("div");
+    badges.className = "quota-card-badges";
+    const plan = typeof card.plan === "string" ? card.plan.trim() : "";
+    const kindText = quotaKindLabel(card.kind);
+    if (plan || kindText) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.dataset.state = "neutral";
+      badge.textContent = [plan, kindText].filter(Boolean).join(" · ");
+      badges.appendChild(badge);
+    }
+    if (card.stale) {
+      const stale = document.createElement("span");
+      stale.className = "badge";
+      stale.dataset.state = "skipped";
+      stale.textContent = t("quota.stale_badge");
+      badges.appendChild(stale);
+    }
+    if (badges.childNodes.length) head.appendChild(badges);
+    article.appendChild(head);
+
+    const metaParts = [quotaReadLabel(card.read_at)];
+    const balance = typeof card.balance === "string" ? card.balance.trim() : "";
+    if (balance) metaParts.push(t("quota.card_balance", { amount: balance }));
+    const meta = document.createElement("p");
+    meta.className = "quota-card-meta";
+    meta.textContent = metaParts.join(" · ");
+    article.appendChild(meta);
+
+    if (typeof card.error === "string" && card.error.trim()) {
+      const errorNode = document.createElement("p");
+      errorNode.className = "quota-card-error";
+      errorNode.textContent = t("quota.card_error", { detail: card.error.trim() });
+      article.appendChild(errorNode);
+    }
+
+    const readings = Array.isArray(card.windows) ? card.windows : [];
+    if (readings.length) {
+      const list = document.createElement("ul");
+      list.className = "quota-windows";
+      readings.forEach((reading) => {
+        if (reading && typeof reading === "object") list.appendChild(renderQuotaWindow(reading));
+      });
+      if (list.childNodes.length) article.appendChild(list);
+    }
+    return article;
+  }
+
+  function quotaSourceNote(data, cardCount) {
+    if (data.error) {
+      let text = quotaErrorText(data.error);
+      const retry = quotaNumeric(data.retry_after_seconds);
+      if (retry !== null && retry > 0) {
+        text += ` · ${t("quota.retry_after", { seconds: Math.round(retry) })}`;
+      }
+      if (data.stale) text += ` · ${t("quota.stale")}`;
+      return { text, state: "error" };
+    }
+    const stale = data.stale === true;
+    if (!cardCount) {
+      return {
+        text: stale ? `${t("quota.empty")} · ${t("quota.stale")}` : t("quota.empty"),
+        state: stale ? "stale" : "",
+      };
+    }
+    const parts = [];
+    if (typeof data.source === "string" && data.source.trim()) {
+      parts.push(t("quota.source", { source: data.source.trim() }));
+    }
+    const fetchedAt = typeof data.fetched_at === "string" ? data.fetched_at : "";
+    const updated = fetchedAt ? formatTime(fetchedAt) : "";
+    if (updated) parts.push(t("quota.updated", { time: updated }));
+    if (stale) parts.push(t("quota.stale"));
+    return { text: parts.join(" · "), state: stale ? "stale" : "" };
+  }
+
+  function renderQuotas(data) {
+    if (data !== undefined) state.quotas = data || null;
+    const source = state.quotas;
+    const note = $("quotas-note");
+    const container = $("quotas-cards");
+    if (container) {
+      while (container.firstChild) container.removeChild(container.firstChild);
+      container.setAttribute("aria-busy", state.quotasLoading ? "true" : "false");
+    }
+    if (!source) {
+      if (note) {
+        note.textContent = state.quotasLoading ? t("quota.loading") : t("quota.empty");
+        delete note.dataset.state;
+      }
+      return;
+    }
+    const cards = Array.isArray(source.cards) ? source.cards : [];
+    const configured = source.configured !== false;
+    if (note) {
+      if (!configured) {
+        note.textContent = t("quota.unconfigured");
+        delete note.dataset.state;
+      } else {
+        const summary = quotaSourceNote(source, cards.length);
+        note.textContent = summary.text;
+        if (summary.state) note.dataset.state = summary.state;
+        else delete note.dataset.state;
+      }
+    }
+    if (!configured || !container) return;
+    cards.forEach((card) => {
+      if (card && typeof card === "object") container.appendChild(renderQuotaCard(card));
+    });
+  }
+
+  async function refreshQuotas({ refresh = false } = {}) {
+    if (state.quotasLoading) return;
+    state.quotasLoading = true;
+    const button = $("quotas-refresh");
+    const container = $("quotas-cards");
+    setBusy(button, refresh ? "quota.refreshing" : "quota.loading");
+    setMessage("quotas", null);
+    if (!state.quotas) renderQuotas(state.quotas);
+    if (container) container.setAttribute("aria-busy", "true");
+    try {
+      const data = refresh
+        ? await api("/api/quotas/refresh", { method: "POST", body: {} })
+        : await api("/api/quotas");
+      renderQuotas(data);
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      const retry = quotaNumeric(error.payload && error.payload.retry_after_seconds);
+      let key = errorKey(error, "quota.failed");
+      if (error.code === "quota_refresh_limited" && retry !== null && retry > 0) {
+        key = "quota.refresh_limited";
+      }
+      setMessage("quotas", key, {
+        error: true,
+        vars: retry !== null && retry > 0 ? { seconds: Math.round(retry) } : null,
+      });
+    } finally {
+      state.quotasLoading = false;
+      if (container) container.setAttribute("aria-busy", "false");
+      if (!state.quotas) renderQuotas(state.quotas);
+      clearBusy(button);
     }
   }
 
@@ -2358,6 +2706,8 @@
     refreshUsage();
   });
 
+  on("quotas-refresh", "click", () => refreshQuotas({ refresh: true }));
+
   on("hook-form", "submit", createHook);
   on("hook-secret-copy", "click", copyHookSecret);
   on("hooks-list", "click", (event) => {
@@ -2390,6 +2740,7 @@
     renderChannelTexts(state.channels);
     renderHooks({ hooks: state.hooks });
     renderUsage(state.usage);
+    renderQuotas(state.quotas);
     renderTasks(state.tasks);
     if ($("task-detail").open) {
       if (inspectedRun) renderLatestRun(inspectedRun, "task-detail-body");

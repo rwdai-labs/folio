@@ -10,6 +10,7 @@ Applies to `internal/`; inherit `../AGENTS.md` and read local children as needed
 | `storage/` | `Remote` and hardened process `Executor` contracts |
 | `plugin/` | Built-in capability interfaces and registry |
 | `dshconfig/` | Bounded extraction of model/provider declarations from profiles |
+| `quota/` | Optional bounded subscription-allowance source; `quota/AGENTS.md` |
 | `notify/` | Bounded outbound push messages and credential-free receipts |
 | `channel/` | Inbound identity/text boundary and native Weixin transport; `channel/AGENTS.md` |
 

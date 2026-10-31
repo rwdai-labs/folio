@@ -315,6 +315,11 @@ window only counts runs whose `started_at` falls inside it.
 - **Priority, peak windows, budget policy.** They need the same policy data
   plus a router; nothing consumes them yet, so building the matrix first would
   be speculative.
+- **Subscription allowance routing.** A separate dimension from price and
+  priority: which subscription or account has quota left, and when it resets.
+  A read-only magpie-backed panel now exposes the cards; routing or deferring
+  tasks by allowance is still deferred. See
+  [subscription-quota.md](subscription-quota.md).
 - **Job/trigger breakdown.** Every run today is the same job. The dimension
   becomes meaningful when a second action exists.
 

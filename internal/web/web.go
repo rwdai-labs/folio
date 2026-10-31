@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"folio/internal/plugin"
+	"folio/internal/quota"
 	"folio/internal/storage"
 )
 
@@ -87,6 +88,12 @@ type Backend interface {
 	UsageSummary(days int) (map[string]any, error)
 	ModelCatalog() map[string]any
 	SchedulerTick() (map[string]any, error)
+}
+
+// QuotaBackend is the optional subscription-allowance contract. The source is
+// external and optional; a backend without it keeps the core adapter usable.
+type QuotaBackend interface {
+	Quotas(refresh bool) (quota.Snapshot, error)
 }
 
 // ChannelBackend is the optional outbound-notification contract. It is
@@ -964,6 +971,11 @@ func (s *Server) channelBackend() (ChannelBackend, bool) {
 	return backend, ok
 }
 
+func (s *Server) quotaBackend() (QuotaBackend, bool) {
+	backend, ok := s.store.(QuotaBackend)
+	return backend, ok
+}
+
 // channelErrorCode maps a backend channel error to a stable client code.
 // Anything unrecognized becomes a generic failure so a new backend error
 // cannot leak internal wording into the UI.
@@ -1610,6 +1622,18 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusOK, value, nil)
+	case "/api/quotas":
+		backend, ok := s.quotaBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "quota_unavailable")
+			return
+		}
+		value, err := backend.Quotas(false)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "quota_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, value.Map(), nil)
 	case "/api/automation":
 		value, err := s.store.ListAutomation()
 		if err != nil {
@@ -1793,6 +1817,29 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "started": started, "mode": mode, "runner": runner, "status": jobStatus(started)}, nil)
+	case "/api/quotas/refresh":
+		backend, ok := s.quotaBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "quota_unavailable")
+			return
+		}
+		value, callErr := backend.Quotas(true)
+		if callErr != nil {
+			s.writeError(w, http.StatusInternalServerError, "quota_unavailable")
+			return
+		}
+		if value.Error == quota.ErrRefreshLimited {
+			headers := http.Header{}
+			if value.RetryAfterSeconds > 0 {
+				headers.Set("Retry-After", strconv.Itoa(value.RetryAfterSeconds))
+			}
+			s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":               quota.ErrRefreshLimited,
+				"retry_after_seconds": value.RetryAfterSeconds,
+			}, headers)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, value.Map(), nil)
 	case "/api/hooks":
 		backend, ok := s.hookBackend()
 		if !ok {

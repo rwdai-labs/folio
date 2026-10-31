@@ -115,6 +115,40 @@ health check does not assert Weixin connectivity. See
 [the channel contract](../docs/weixin-channel.md) for bounded deduplication,
 retry semantics, protocol evidence and live acceptance steps.
 
+## Subscription quota view (optional)
+
+Folio can show a read-only subscription-allowance panel backed by a
+[magpie](https://github.com/yetone/magpie) gateway. This does not route model
+calls and does not give Folio subscription credentials; it asks magpie for
+already-normalized quota cards.
+
+1. Run magpie on the same private network as Folio and create a dedicated
+   gateway key with quota visibility enabled. Restrict the key to the models and
+   accounts Folio may inspect. It is still a gateway key, not a read-only token:
+   keep it out of runners, browsers, Compose and chat.
+2. Write the key to `/data/secrets/magpie-quota-key` with mode `0600`.
+3. Write `/data/quotas.json` in the service data volume with mode `0600`:
+
+```json
+{
+  "version": 1,
+  "source": {
+    "kind": "magpie",
+    "url": "http://magpie:3425",
+    "key_file": "secrets/magpie-quota-key",
+    "timeout_seconds": 5,
+    "max_age_seconds": 60
+  }
+}
+```
+
+`url` must be `http` or `https` with no userinfo, query, fragment or path.
+`key_file` is relative to `/data` and must be a regular file, not a symlink.
+Folio never returns the key or URL to the browser. The refresh button asks
+magpie to read the vendors and is limited to once every 30 seconds; normal page
+loads use magpie's cached `?kept=1` cards. If magpie is down, Folio keeps the
+last successful cards and marks them stale; it never blocks maintenance runs.
+
 ## Maintenance runners
 
 Scheduled maintenance uses Codex. The Web UI can also start a run immediately

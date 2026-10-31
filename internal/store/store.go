@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"folio/internal/quota"
 	"folio/internal/storage"
 )
 
@@ -73,6 +74,10 @@ type Store struct {
 	// remote is the storage plugin that owns the code host. Folio keeps the
 	// checkout, the commit, and the audit trail; the plugin owns the remote.
 	remote storage.Remote
+
+	// quotas reads an optional external quota source. It never shares the
+	// runtime lock: a slow source must not block maintenance or task dispatch.
+	quotaService *quota.Service
 
 	threadMu sync.Mutex
 
@@ -158,6 +163,7 @@ func New(dataDir, toolRoot string, remote storage.Remote) (*Store, error) {
 		policyPath:     policyPathFor(data),
 		replayPath:     filepath.Join(data, "runtime", "hook-replay.json"),
 		remote:         remote,
+		quotaService:   quota.New(data),
 		notifyLast:     map[string]time.Time{},
 		hookCalls:      map[string][]time.Time{},
 	}

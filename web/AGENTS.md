@@ -44,6 +44,10 @@ Inherit `../AGENTS.md`.
   retain unknown model explanations, and tolerate older runs without these fields.
   Distinguish `continuation_queued` automatic backlog from human review; never
   imply that remaining documents require approval or will start immediately.
+- The subscription-quota panel is read-only. Render magpie's card/window text
+  as text nodes, show `text`/`unlimited` windows without a fake percentage,
+  keep source errors and stale cards visible, and never put a quota key or URL
+  in the page, storage or logs.
 - Render repository/model/hook/report/diff text through safe text nodes.
   Never interpret it as HTML. Keep transient passwords and one-time hook
   secrets out of persistent browser storage and logs.

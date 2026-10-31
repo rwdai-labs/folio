@@ -8,7 +8,7 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `automation.go`, `review.go` | Validated automatic edits and owner-reviewed changes |
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
 | `tasks.go`, `kinds.go`, `hooks.go` | Durable queue, data-defined actions, signed events |
-| `report.go`, `usage.go`, `channels.go`, `models.go` | Reports, usage, notifications and runner catalogs |
+| `report.go`, `usage.go`, `channels.go`, `models.go`, `quota.go` | Reports, usage, notifications, runner catalogs and the optional quota snapshot |
 | `inbound.go` | Explicit Weixin owner authorization and bounded read-only text responses |
 
 - A task is durable intent; a run is one attempt. Preserve single-writer

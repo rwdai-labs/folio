@@ -144,6 +144,27 @@
           </details>
           <p id="usage-message" class="form-message" role="status" aria-live="polite"></p>
         </section>
+        <section id="quotas-section" class="card" aria-labelledby="quotas-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="quota.kicker">Subscriptions</p>
+              <h2 id="quotas-heading" data-i18n="quota.title">Subscription quota</h2>
+            </div>
+            <div class="card-head-actions">
+              <button id="quotas-refresh" class="btn ghost small" type="button">
+                <span class="btn-label" data-i18n="quota.refresh">Refresh quota</span>
+              </button>
+            </div>
+          </header>
+          <p class="lede" data-i18n="quota.lead">
+            Read-only readings from the configured quota source. Folio shows what the source
+            last reported and never estimates a cap or treats a missing reading as zero.
+          </p>
+          <p id="quotas-note" class="hint quota-note"></p>
+          <div id="quotas-cards" class="quota-grid" aria-live="polite"></div>
+          <p id="quotas-message" class="form-message" role="status" aria-live="polite"></p>
+        </section>
+
         <section id="tasks-section" class="card" aria-labelledby="tasks-heading">
           <header class="card-head">
             <div>

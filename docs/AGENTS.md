@@ -6,6 +6,9 @@ Inherit `../AGENTS.md`.
   event contracts. `event-driven-assistant.md` and
   `personal-assistant-research.md` contain design/research context; verify any
   proposal against code before treating it as shipped behaviour.
+- `subscription-quota.md` covers subscription allowance/quota management: what
+  to borrow from magpie, the implemented read-only panel, and the unshipped
+  gateway/deferral phases. Keep its status block accurate as phases land.
 - `context-maintenance.md` is the automatic organization contract: complete
   incremental input, structural edit limits, checkpoint/backlog semantics,
   persistent owner-review findings and focused acceptance checks.

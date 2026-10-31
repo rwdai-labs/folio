@@ -38,6 +38,7 @@ docker build -f deploy/Dockerfile -t folio-service .
 ```text
 cmd/folio/      service entrypoint and CLI
 internal/       context router, maintenance worker, Git/GitHub store, Web server
+internal/quota  optional bounded subscription-allowance source for the dashboard
 internal/notify outbound push channels (Bark today); no inbound traffic
 internal/channel native inbound/outbound communication (Weixin text MVP)
 scripts/        external watcher and hook client; not part of the service
@@ -120,6 +121,19 @@ called a model carries no usage at all — the dashboard shows how many runs
 reported and how many did not instead of estimating the difference. Cost is not
 shown yet: it needs a price table the owner maintains, and a wrong price is
 worse than no price. The window is `GET /api/usage?days=7|30|90`.
+
+The Web UI can also show subscription allowances from an optional
+[magpie](https://github.com/yetone/magpie) gateway. `data/quotas.json` names the
+private/local gateway and a dedicated key file under `data/secrets/` (0600).
+Folio reads `GET /v1/magpie/quotas?kept=1`, normalizes provider, account,
+window, reset, read time, and error cards, and shows them read-only. The panel
+never routes a run, changes a task, returns the key or URL, or invents a missing
+reading: a failed source keeps the last successful cards visible with a stale
+marker, and absent configuration shows a setup hint. `GET /api/quotas` is
+session-protected; `POST /api/quotas/refresh` also requires CSRF and is limited
+to one refresh every 30 seconds. See
+[docs/subscription-quota.md](docs/subscription-quota.md) for the control-plane
+design and the phases that are not implemented.
 
 Outbound push is optional and strictly one-way. The operator configures a Bark
 server and device key in the Web UI; the key is stored in the private volume

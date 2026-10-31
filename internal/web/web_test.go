@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"folio/internal/quota"
 	"folio/internal/storage"
 )
 
@@ -33,6 +34,8 @@ type testBackend struct {
 	syncRun      chan struct{}
 	syncDone     chan struct{}
 	channelSaves []map[string]any
+	quotaCalls   []bool
+	quotaValue   quota.Snapshot
 }
 
 func (b *testBackend) Executor() storage.Executor { return nil }
@@ -84,6 +87,14 @@ func (b *testBackend) UsageSummary(days int) (map[string]any, error) {
 		"days":   []any{},
 		"models": []any{},
 	}, nil
+}
+
+func (b *testBackend) Quotas(refresh bool) (quota.Snapshot, error) {
+	b.mu.Lock()
+	b.quotaCalls = append(b.quotaCalls, refresh)
+	value := b.quotaValue
+	b.mu.Unlock()
+	return value, nil
 }
 
 func (b *testBackend) ListAutomation() (map[string]any, error) {
@@ -874,5 +885,109 @@ func TestTaskEndpointsRequireSessionAndControlTheQueue(t *testing.T) {
 	status, _, _ = client.request(t, http.MethodPost, "/api/tasks/t-000000000001/dispatch", map[string]any{}, server.URL)
 	if status != http.StatusNotFound {
 		t.Fatalf("unknown verb status=%d", status)
+	}
+}
+
+func TestQuotaEndpointIsSessionProtectedAndReturnsCards(t *testing.T) {
+	backend := &testBackend{quotaValue: quota.Snapshot{
+		Configured: true,
+		Source:     "magpie",
+		FetchedAt:  "2026-10-29T08:00:00Z",
+		Cards: []quota.Card{{
+			Provider:      "codex",
+			ProviderLabel: "Codex",
+			Account:       "a@example.com",
+			Alias:         "personal",
+			Kind:          "subscription",
+			Plan:          "Pro",
+			Windows: []quota.Window{{
+				Name: "5h", Used: 42, Remaining: 58,
+				ResetsAt: "2026-10-29T10:00:00Z", Display: "42% used",
+			}},
+			ReadAt: "2026-10-29T07:59:00Z",
+		}},
+	}}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/quotas", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", status)
+	}
+	status, _, _ = client.request(t, http.MethodPost, "/api/quotas/refresh", map[string]any{}, server.URL)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated refresh status=%d", status)
+	}
+
+	client.login(t, password)
+	status, _, result := client.request(t, http.MethodGet, "/api/quotas", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("status=%d result=%v", status, result)
+	}
+	if result["configured"] != true || result["source"] != "magpie" || result["error"] != "" {
+		t.Fatalf("result=%v", result)
+	}
+	cards, ok := result["cards"].([]any)
+	if !ok || len(cards) != 1 {
+		t.Fatalf("cards=%v", result["cards"])
+	}
+	card := cards[0].(map[string]any)
+	if card["provider"] != "codex" || card["alias"] != "personal" || card["plan"] != "Pro" {
+		t.Fatalf("card=%v", card)
+	}
+	windows := card["windows"].([]any)
+	window := windows[0].(map[string]any)
+	if window["used"] != float64(42) || window["resets_at"] != "2026-10-29T10:00:00Z" {
+		t.Fatalf("window=%v", window)
+	}
+	encoded, _ := json.Marshal(result)
+	if strings.Contains(string(encoded), "quota-key") || strings.Contains(string(encoded), "Authorization") {
+		t.Fatalf("quota response leaked a credential: %s", encoded)
+	}
+	backend.mu.Lock()
+	calls := append([]bool(nil), backend.quotaCalls...)
+	backend.mu.Unlock()
+	if len(calls) != 1 || calls[0] {
+		t.Fatalf("quota calls=%v", calls)
+	}
+}
+
+func TestQuotaRefreshMapsThrottleAndSuccess(t *testing.T) {
+	backend := &testBackend{quotaValue: quota.Snapshot{
+		Configured:        true,
+		Error:             quota.ErrRefreshLimited,
+		RetryAfterSeconds: 30,
+		Cards:             []quota.Card{},
+	}}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+	client.login(t, password)
+
+	status, headers, result := client.request(t, http.MethodPost, "/api/quotas/refresh", map[string]any{}, server.URL)
+	if status != http.StatusTooManyRequests || result["error"] != quota.ErrRefreshLimited {
+		t.Fatalf("status=%d result=%v", status, result)
+	}
+	if headers.Get("Retry-After") != "30" || result["retry_after_seconds"] != float64(30) {
+		t.Fatalf("retry headers=%v result=%v", headers, result)
+	}
+
+	backend.mu.Lock()
+	backend.quotaValue = quota.Snapshot{
+		Configured: true,
+		Source:     "magpie",
+		Cards:      []quota.Card{{Provider: "codex", ProviderLabel: "Codex", Kind: "subscription", Windows: []quota.Window{}}},
+	}
+	backend.mu.Unlock()
+	status, _, result = client.request(t, http.MethodPost, "/api/quotas/refresh", map[string]any{}, server.URL)
+	if status != http.StatusOK || result["configured"] != true {
+		t.Fatalf("status=%d result=%v", status, result)
+	}
+	backend.mu.Lock()
+	calls := append([]bool(nil), backend.quotaCalls...)
+	backend.mu.Unlock()
+	if len(calls) != 2 || !calls[0] || !calls[1] {
+		t.Fatalf("quota calls=%v", calls)
 	}
 }
