@@ -26,6 +26,23 @@ const maintenance = () => ({
   needs_review: [{ source: 'inbox/observation.md', reason: 'candidate_requires_owner_review' }],
   edits: [{ target: 'core/overview.md', reason: 'Synthetic structural edit', diff: '+## Example\n', action: 'update' }],
 });
+const quotaSnapshot = () => {
+  const now = Date.now();
+  return {
+    configured: true, source: 'magpie', fetched_at: new Date(now).toISOString(),
+    stale: false, error: '', retry_after_seconds: 0,
+    cards: [{
+      provider: 'synthetic', provider_label: 'Synthetic Provider', account: 'owner@example',
+      alias: 'Primary', kind: 'subscription', plan: 'Pro',
+      windows: [{
+        name: 'Weekly', used: 42, remaining: 58,
+        resets_at: new Date(now + 86400000).toISOString(), display: '', unlimited: false,
+        text: false, amount: 0, limit: 0, unit: '', balance: null,
+      }],
+      balance: '$12.50', read_at: new Date(now).toISOString(), error: '', stale: false,
+    }],
+  };
+};
 const visible = async (page, selector) => page.locator(selector).waitFor({ state: 'visible' });
 async function main() {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -39,7 +56,7 @@ async function main() {
       page.on('console', e => { if (e.type() === 'warning' && e.text().includes('missing elements')) errors.push(e.text()); });
       let authenticated = false, authorized = false, connected = false, paused = false;
       let usageError = false, stateError = false, expired = false, jobFailed = false;
-      let run = maintenance(), reviewRun = null, runRequests = [], jobRequests = 0;
+      let run = maintenance(), reviewRun = null, runRequests = [], jobRequests = 0, quotaRefreshes = 0;
       let tasks = [];
       const taskListing = () => ({ tasks, paused, counts: {}, policy: { defer: { P2: true }, in_window: false, window_start: '00:30', window_end: '07:30' } });
       await page.route('**/api/**', async route => {
@@ -92,6 +109,8 @@ async function main() {
         else if (endpoint === '/api/tasks') body = taskListing();
         else if (endpoint === '/api/channels') body = { bark: { configured: false }, deliveries: [] };
         else if (endpoint === '/api/hooks') body = { hooks: [] };
+        else if (endpoint === '/api/quotas') body = quotaSnapshot();
+        else if (endpoint === '/api/quotas/refresh') { quotaRefreshes++; body = quotaSnapshot(); }
         else throw new Error('Unexpected synthetic endpoint: ' + endpoint);
         await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
       });
@@ -117,6 +136,12 @@ async function main() {
       assert.equal(await page.locator('#settings-view').isVisible(), true, 'setup must not disappear after connecting');
       await page.locator('#setup-finish').click();
       await visible(page, '#dashboard-view');
+      await visible(page, '#quotas-cards .quota-card');
+      assert.equal(await page.locator('.quota-card-provider').textContent(), 'Synthetic Provider');
+      assert.equal(await page.locator('.quota-window .quota-bar').count(), 1);
+      await page.locator('#quotas-refresh').click();
+      await page.waitForFunction(() => !document.getElementById('quotas-refresh').disabled);
+      assert.equal(quotaRefreshes, 1);
       assert.equal(await page.locator('#repository-section').isVisible(), false);
       assert.equal(await page.locator('#channels-section').isVisible(), false);
       assert.equal(await page.locator('#usage-total').textContent(), '12,345');

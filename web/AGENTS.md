@@ -90,7 +90,8 @@ calls with synthetic data; it performs no real GitHub authorization, model call,
 repository write, or delivery. It covers fresh/restored sessions, pending auth,
 keyboard repository selection, default routes, optional settings, board grouping,
 search/priority filters, attempt drawer and keyboard return, pause/resume,
-review snapshots and safe links, recheck success/failure, usage errors/recovery,
-both languages, mobile overflow, state-load failure and session expiry. Set
+review snapshots and safe links, recheck success/failure, subscription-quota
+cards and refresh, usage errors/recovery, both languages, mobile overflow,
+state-load failure and session expiry. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed
 provider authorization and external manual review still need runtime acceptance.
