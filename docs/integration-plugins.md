@@ -1,5 +1,9 @@
 # Integration plugins
 
+Status: current hook contract. [agent-architecture.md](agent-architecture.md)
+proposes a general event router that will generalize this API; until that
+ships, the contract below is authoritative.
+
 Folio has two kinds of plugin, and the difference is the dependency direction.
 
 | Class | Lives in | Direction | May do |

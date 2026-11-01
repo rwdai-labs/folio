@@ -744,10 +744,11 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 		run    map[string]any
 		runErr error
 	)
-	if definition.Action == kindActionReport {
-		run, runErr = s.runReportTask(definition, snapshot)
+	plan, planErr := actionPlanForKind(definition)
+	if planErr != nil {
+		runErr = planErr
 	} else {
-		run, runErr = s.runAutomation("task", "codex", "", taskID)
+		run, runErr = s.runAction(plan, snapshot, "task")
 	}
 	result := map[string]any{"dispatched": 1, "task_id": taskID}
 

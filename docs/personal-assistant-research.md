@@ -4,6 +4,10 @@
 范围：哪些现成东西可以直接当基础、哪些只能借鉴设计、哪些必须自己写。
 内容只含公开信息，不含任何私有上下文。
 
+运行时选择已在 [agent-architecture.md](agent-architecture.md) 重新评估：计划中的
+main agent 使用 pi，DSH 保留为维护/报告 runner；本文 §3 的 DSH 结论只保留为历史
+调研。
+
 ## 结论先说
 
 1. **不要 fork 或内嵌另一个助手产品。** OpenClaw、Hermes Agent、Khoj、LocalAGI

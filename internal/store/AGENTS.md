@@ -7,7 +7,7 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `store.go`, `storage.go`, `executor.go`, `git.go`, `lifecycle.go` | Layout, remote integration, safe processes and repository lifecycle |
 | `automation.go`, `review.go` | Validated automatic edits and owner-reviewed changes |
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
-| `tasks.go`, `kinds.go`, `hooks.go` | Durable queue, data-defined actions, signed events |
+| `tasks.go`, `kinds.go`, `hooks.go`, `actions.go`, `events.go` | Durable queue, data-defined actions, internal action plans, signed events and the event/route seam |
 | `report.go`, `usage.go`, `channels.go`, `models.go`, `quota.go` | Reports, usage, notifications, runner catalogs and the optional quota snapshot |
 | `inbound.go`, `weixin_push.go` | Explicit Weixin owner authorization, bounded read-only answers and the optional outbound push |
 
@@ -19,6 +19,10 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   like report runs; each retry keeps the task identity and creates a new run.
 - Kinds are configuration mapped to implemented actions. Reject unknown kinds
   both at hook setup and dispatch. A `report` action has no repository writes.
+  The dispatcher must go through `actionPlanForKind` and `runAction`; an action
+  plan is internal and currently one step. Event route targets come from
+  trusted ingress configuration or the built-in route table, never a request
+  body; unknown targets fail closed.
 - Inbound Weixin uses an explicitly configured account/owner/direct-peer match
   before any capability, including cached reply delivery. Text reuses the
   ephemeral read-only report worker with a fresh per-call directory; never pass

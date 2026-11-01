@@ -4,6 +4,10 @@ Status: design note. Snapshot date: 2026-10-23. Supersedes the sequencing in
 [personal-assistant-research.md](personal-assistant-research.md) §6.
 No secrets or private context belong in this file.
 
+Target architecture: [agent-architecture.md](agent-architecture.md). This note
+remains the implemented task/usage/plugin background; its "owner decisions"
+section predates runtime actions and the main agent.
+
 Current first-scenario implementation is documented in
 [automatic context organization](context-maintenance.md). That contract takes
 precedence for maintenance edit limits, incremental state and continuation

@@ -145,9 +145,24 @@ func normalizeRunner(runner string) (string, error) {
 
 // SchedulerTick runs one serialized automatic maintenance pass: sync the
 // checkout, ask the review runner for bounded edits, validate them, commit,
-// and push. The full result is persisted as an automation run.
+// and push. It enters through the same event/route/action seam as other
+// triggers; the built-in scheduler.tick route selects maintenance.
 func (s *Store) SchedulerTick() (map[string]any, error) {
-	return s.RunAutomation("scheduler", "", "codex")
+	e := event{
+		Source:     "scheduler",
+		Type:       "tick",
+		Trust:      eventTrustSystem,
+		OccurredAt: time.Now(),
+	}
+	target, ok := resolveEventRoute(e)
+	if !ok {
+		return nil, errStore("route_unknown")
+	}
+	plan, err := s.planForTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	return s.runAction(plan, taskRecord{}, "scheduler")
 }
 
 func (s *Store) runMaintenanceLocked(mode, model, runner string) (map[string]any, error) {
