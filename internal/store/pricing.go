@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -145,7 +146,14 @@ func (s *Store) RefreshPricing(ctx context.Context) (map[string]any, error) {
 	}
 	s.pricingLastAttempt = time.Now()
 	url := s.pricingURL
+	allowHTTP := s.pricingAllowHTTP
 	s.pricingMu.Unlock()
+	parsed, parseErr := parsePricingURL(url, allowHTTP)
+	if parseErr != nil {
+		s.setPricingError("pricing_url_invalid")
+		return s.PricingStatus(), nil
+	}
+	url = parsed
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -203,6 +211,17 @@ func (s *Store) RefreshPricing(ctx context.Context) (map[string]any, error) {
 	status := s.pricingStatusLocked()
 	s.pricingMu.Unlock()
 	return status, nil
+}
+
+func parsePricingURL(raw string, allowHTTP bool) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errStore("pricing_url_invalid")
+	}
+	if parsed.Scheme != "https" && !(allowHTTP && parsed.Scheme == "http") {
+		return "", errStore("pricing_url_invalid")
+	}
+	return parsed.String(), nil
 }
 
 func (s *Store) setPricingError(code string) {

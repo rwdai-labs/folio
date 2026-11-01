@@ -515,6 +515,7 @@
     "pricing.error.pricing_unavailable": "The price source could not be reached.",
     "pricing.error.pricing_invalid": "The price source returned invalid data.",
     "pricing.error.pricing_cache_failed": "The catalog was downloaded but could not be cached.",
+    "pricing.error.pricing_url_invalid": "The configured price source URL is invalid; HTTPS without credentials is required.",
 
     // Subscription quota
     "nav.quotas": "Subscriptions",
@@ -1147,6 +1148,7 @@
     "pricing.error.pricing_unavailable": "无法连接价格源。",
     "pricing.error.pricing_invalid": "价格源返回的数据无效。",
     "pricing.error.pricing_cache_failed": "价格目录已下载，但缓存失败。",
+    "pricing.error.pricing_url_invalid": "价格源 URL 无效；必须是 HTTPS 且不能包含凭据。",
 
     // 订阅额度
     "nav.quotas": "订阅额度",

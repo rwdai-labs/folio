@@ -142,6 +142,7 @@ type Store struct {
 	pricingURL         string
 	pricingError       string
 	pricingLastAttempt time.Time
+	pricingAllowHTTP   bool
 
 	// Tests may use a temporary local bare Git repository. Production callers
 	// never set this flag, so normal GitHub remote validation stays strict.

@@ -61,6 +61,7 @@ func TestPricingRefreshCachesAndReloads(t *testing.T) {
 	}))
 	defer server.Close()
 	store.pricingURL = server.URL
+	store.pricingAllowHTTP = true
 	status, err := store.RefreshPricing(context.Background())
 	if err != nil || status["configured"] != true || status["models"] != 3 {
 		t.Fatalf("refresh status=%v err=%v", status, err)
@@ -102,5 +103,21 @@ func TestRunCostAttachesToAutomationRun(t *testing.T) {
 	raw, _ := json.Marshal(run)
 	if len(raw) == 0 {
 		t.Fatal("run marshal failed")
+	}
+}
+
+func TestPricingURLRejectsCredentialsAndPlainHTTP(t *testing.T) {
+	for _, raw := range []string{
+		"http://models.dev/api.json",
+		"https://user:pass@models.dev/api.json",
+		"https://models.dev/api.json?secret=1",
+		"ftp://models.dev/api.json",
+	} {
+		if _, err := parsePricingURL(raw, false); err == nil {
+			t.Fatalf("accepted unsafe pricing URL %q", raw)
+		}
+	}
+	if _, err := parsePricingURL("https://models.dev/api.json", false); err != nil {
+		t.Fatalf("valid URL rejected: %v", err)
 	}
 }
