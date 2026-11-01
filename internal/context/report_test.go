@@ -117,6 +117,7 @@ func TestRunnerFailuresCarryOnlyAClass(t *testing.T) {
 		want    string
 	}{
 		{"auth", "#!/bin/sh\ncat > /dev/null\necho 'ERROR: unexpected status 401 Unauthorized: Incorrect API key provided' >&2\nexit 1\n", 10 * time.Second, RunnerAuth},
+		{"auth on stdout", "#!/bin/sh\ncat > /dev/null\necho '{\"type\":\"turn.failed\",\"error\":{\"message\":\"unexpected status 401 Unauthorized: Invalid API key\"}}'\nexit 1\n", 10 * time.Second, RunnerAuth},
 		{"network", "#!/bin/sh\ncat > /dev/null\necho 'ERROR: dial tcp: lookup api.invalid: no such host' >&2\nexit 1\n", 10 * time.Second, RunnerNetwork},
 		{"failed", "#!/bin/sh\ncat > /dev/null\nexit 1\n", 10 * time.Second, RunnerFailed},
 		{"timeout", "#!/bin/sh\ncat > /dev/null\nsleep 30\n", 300 * time.Millisecond, RunnerTimeout},

@@ -36,13 +36,20 @@ func (e *RunnerFailure) Error() string { return "model runner failed: " + e.Clas
 // FailureClass exposes the fixed label without the underlying output.
 func (e *RunnerFailure) FailureClass() string { return e.Class }
 
-// runnerClass maps a terminated runner to one stable label. Only a fixed set of
-// markers is inspected; nothing from the buffer is retained.
-func runnerClass(runErr error, stderr []byte) string {
+// runnerClass maps a terminated runner to one stable label. Codex reports a
+// rejected credential on stdout in `--json` mode and on stderr otherwise, so
+// every captured stream is inspected. Only a fixed set of markers is read;
+// nothing from the buffers is retained or returned.
+func runnerClass(runErr error, streams ...[]byte) string {
 	if errors.Is(runErr, errRunnerTimeout) {
 		return RunnerTimeout
 	}
-	text := strings.ToLower(string(stderr))
+	var builder strings.Builder
+	for _, stream := range streams {
+		builder.Write(stream)
+		builder.WriteByte('\n')
+	}
+	text := strings.ToLower(builder.String())
 	authMarkers := []string{"invalid_api_key", "incorrect api key", "unauthorized", "authentication failed", "401", "403"}
 	if containsAny(text, authMarkers) {
 		return RunnerAuth
@@ -143,7 +150,7 @@ func (r *Router) runCodexReport(options AgentOptions, work, runtime string, prom
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if runErr := runWithTimeout(cmd, options.Timeout); runErr != nil {
-		return "", nil, &RunnerFailure{Class: runnerClass(runErr, stderr.Bytes())}
+		return "", nil, &RunnerFailure{Class: runnerClass(runErr, stderr.Bytes(), stdout.buffer.Bytes())}
 	}
 	info, statErr := os.Lstat(outputPath)
 	if statErr != nil || !info.Mode().IsRegular() || info.Size() > maxReportTextBytes {
@@ -194,7 +201,7 @@ func (r *Router) runDSHReport(options AgentOptions, work, runtime string, prompt
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if runErr := runWithTimeout(cmd, options.Timeout); runErr != nil {
-		return "", nil, &RunnerFailure{Class: runnerClass(runErr, stderr.Bytes())}
+		return "", nil, &RunnerFailure{Class: runnerClass(runErr, stderr.Bytes(), stdout.buffer.Bytes())}
 	}
 	text, ok := extractDSHFinal(stdout.buffer.Bytes())
 	if !ok {
