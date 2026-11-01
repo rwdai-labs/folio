@@ -21,6 +21,8 @@ const maintenance = () => ({
   run_id: '20261026T010000.000000000Z-abcdef12', status: 'pushed', trigger: 'manual',
   started_at: '2026-10-26T01:00:00Z', finished_at: '2026-10-26T01:01:00Z',
   runner: 'codex', model: 'synthetic-model', stage: 'done', summary: 'Synthetic raw model summary.',
+  usage: { input_tokens: 10000, cached_tokens: 0, output_tokens: 2345, total_tokens: 12345, source: 'reported' },
+  cost: { estimated: true, currency: 'USD', total_cost: 0.0123, source: 'models.dev' },
   repository: { plugin: 'github', full_name: 'example/context', branch: 'main' },
   pull: { head: sha, status: 'pulled' }, commit: 'b'.repeat(40), remaining: 17, continuation_queued: true,
   needs_review: [{ source: 'inbox/observation.md', reason: 'candidate_requires_owner_review' }],
@@ -104,7 +106,7 @@ async function main() {
         }
         else if (endpoint === '/api/usage') {
           if (usageError) { status = 503; body = { error: 'usage_unavailable' }; }
-          else body = { totals: { total_tokens: 12345, input_tokens: 10000, output_tokens: 2345, runs: 1, reported_runs: 1 }, days: [], models: [] };
+          else body = { totals: { total_tokens: 12345, input_tokens: 10000, output_tokens: 2345, runs: 1, reported_runs: 1, estimated_cost_usd: 0.0123, priced_runs: 1, unpriced_cost_runs: 0 }, days: [], models: [] };
         }
         else if (endpoint === '/api/tasks/pause') { paused = req.postDataJSON().paused; body = taskListing(); }
         else if (/^\/api\/tasks\/[^/]+\/(update|run|cancel)$/.test(endpoint)) {
@@ -118,6 +120,12 @@ async function main() {
         else if (endpoint === '/api/tasks') body = taskListing();
         else if (endpoint === '/api/channels') body = { bark: { configured: false }, deliveries: [] };
         else if (endpoint === '/api/hooks') body = { hooks: [] };
+        else if (endpoint === '/api/agent/config') {
+          if (req.method() === 'POST') body = { configured: true, available: true, kind: 'openai', provider: 'deepseek', base_url: 'https://api.deepseek.com/v1', model: 'synthetic-model', key_present: true, timeout_seconds: 120 };
+          else body = { configured: false, available: false, kind: 'command', command: '/data/agent/runtime', key_present: false, timeout_seconds: 120 };
+        }
+        else if (endpoint === '/api/pricing') body = { configured: true, stale: false, source: 'models.dev', models: 3, providers: 2, fetched_at: new Date().toISOString(), currency: 'USD' };
+        else if (endpoint === '/api/pricing/refresh') body = { configured: true, stale: false, source: 'models.dev', models: 3, providers: 2, fetched_at: new Date().toISOString(), currency: 'USD' };
         else if (endpoint === '/api/quotas') body = quotaSnapshot();
         else if (endpoint === '/api/quotas/refresh') { quotaRefreshes++; body = quotaSnapshot(); }
         else if (endpoint === '/api/weixin') body = weixinStatus({ configured: weixinConfigured, enabled: weixinRunning, running: weixinRunning, owner_id: weixinOwner, login: weixinLogin, diagnostics: weixinDiagnostics });
@@ -163,6 +171,20 @@ async function main() {
       await page.locator('#gh-connect').click();
       await page.waitForFunction(() => !document.getElementById('run-now-button').disabled);
       assert.equal(await page.locator('#settings-view').isVisible(), true, 'setup must not disappear after connecting');
+      // The main-agent runtime is configurable from Settings; saving a key
+      // switches the assistant from unavailable to available without a restart.
+      await visible(page, '#agent-settings');
+      assert.equal(await page.locator('#agent-badge').getAttribute('data-state'), 'disabled');
+      await page.locator('#agent-kind').selectOption('openai');
+      await page.locator('#agent-provider').selectOption('deepseek');
+      await page.locator('#agent-model').fill('synthetic-model');
+      await page.locator('#agent-api-key').fill('synthetic-key');
+      await page.locator('#agent-save').click();
+      await page.waitForFunction(() => document.getElementById('agent-badge').dataset.state === 'enabled');
+      assert.equal(await page.locator('#agent-key-hint').textContent(), language === 'zh' ? '已保存 key。留空则保持不变。' : 'A key is stored. Leave the field blank to keep it.');
+      await page.locator('#pricing-refresh').click();
+      await page.waitForFunction(() => !document.getElementById('pricing-refresh').disabled);
+      assert.equal(await page.locator('#pricing-badge').getAttribute('data-state'), 'enabled');
       // WeChat: the QR renders, the phone asks for digits, the owner decides, then
       // the channel starts without a restart.
       await visible(page, '#weixin-section');
@@ -203,6 +225,7 @@ async function main() {
       assert.equal(await page.locator('#repository-section').isVisible(), false);
       assert.equal(await page.locator('#channels-section').isVisible(), false);
       assert.equal(await page.locator('#usage-total').textContent(), '12,345');
+      assert.match(await page.locator('#usage-cost').textContent(), /\$0\.0123/);
       await page.locator('#tasks-pause').click();
       assert.equal(paused, true);
       await page.locator('#tasks-pause').click();
@@ -234,6 +257,7 @@ async function main() {
       await page.locator('[data-task-inspect="t-000000000002"]').click();
       await visible(page, '#task-detail');
       await visible(page, '#task-detail-body .run-head');
+      assert.match(await page.locator('#task-detail-body .run-meta').innerText(), /\$0\.0123/);
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-task-drawer-${language}.png`, fullPage: true });
       assert.equal(await page.locator('#dashboard-view').isVisible(), true);
       run = { ...run, status: 'no_changes', stage: 'done' };

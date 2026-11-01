@@ -8,8 +8,8 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `automation.go`, `review.go` | Validated automatic edits and owner-reviewed changes |
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
 | `tasks.go`, `kinds.go`, `hooks.go`, `actions.go`, `events.go`, `routes.go`, `action_config.go`, `action_pipeline.go` | Durable queue, data-defined actions, internal action plans, signed events, event routes and the runtime action registry/pipeline |
-| `agent.go`, `agent_tools.go` | Main-agent runtime boundary, bounded sessions, owner/observer tool grants and agent run audit |
-| `report.go`, `usage.go`, `channels.go`, `models.go`, `quota.go` | Reports, usage, notifications, runner catalogs and the optional quota snapshot |
+| `agent.go`, `agent_config.go`, `agent_openai.go`, `agent_tools.go` | Main-agent runtime boundary, validated owner configuration, OpenAI-compatible and command adapters, bounded sessions, owner/observer tool grants and agent run audit |
+| `report.go`, `usage.go`, `channels.go`, `models.go`, `quota.go`, `pricing.go` | Reports, usage and estimated cost, notifications, runner catalogs, the optional quota snapshot and the cached model price catalog |
 | `inbound.go`, `weixin_push.go` | Explicit Weixin owner authorization, bounded read-only answers and the optional outbound push |
 
 - A task is durable intent; a run is one attempt. Preserve single-writer
@@ -36,8 +36,19 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   tool against the trust class, executes it, and audits names/status without
   arguments or secrets. Owner sessions get control tools; integration observers
   get read-only tools. Sessions are bounded and keyed by authenticated identity.
-  The `/data/agent/runtime` command adapter is the pi boundary; a real pi wrapper
-  is unverified, so tests use a fake.
+  Runtime configuration is owner data at `data/agent/config.json`; validate the
+  whole shape, reject plain HTTP or malformed URLs, store a supplied API key
+  only at `data/secrets/agent-api-key` with mode 0600, and never return it.
+  The built-in OpenAI-compatible adapter and the optional command adapter at
+  `/data/agent/runtime` share the same gateway and bounds. Tool-call ids must
+  pair the assistant message with each tool result; a real pi wrapper remains
+  unverified, so tests use a synthetic endpoint or executable.
+- Model prices are an optional external estimate, never billing truth. Fetch the
+  models.dev JSON over HTTPS with bounded size/time, cache a compact projection
+  under `data/runtime`, and keep the last good catalog on failure. Price only
+  reported usage whose provider/model matches; unknown pairs return
+  `estimated:false`/`price_unavailable`, not zero or a guess. State that list
+  prices exclude cache writes, context tiers and subscriptions.
 - `routes.json` is the single source for event targets; an action target must
   resolve through the validated registry and a disabled route fails closed.
 - Inbound Weixin uses an explicitly configured account/owner/direct-peer match

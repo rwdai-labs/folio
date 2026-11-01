@@ -23,6 +23,13 @@ entrypoint and optional read-only host-config mounts.
   runs interactively as the service user against the same private volume while
   the poller is stopped. The runtime must include the Weixin/QR dependency
   license notice; no Weixin sidecar is needed.
+- Main-agent configuration is owner data in `/data`, not Compose state. The
+  settings form may write `/data/agent/config.json` and
+  `/data/secrets/agent-api-key`; headless deployments may set
+  `FOLIO_AGENT_KIND`, `FOLIO_AGENT_PROVIDER`, `FOLIO_AGENT_BASE_URL`,
+  `FOLIO_AGENT_MODEL` and `FOLIO_AGENT_API_KEY_FILE`. Never put the key itself
+  in Compose, the image or logs. The price catalog (`FOLIO_PRICING_URL`) is an
+  optional external read and must not block startup or runs.
 - Changes to environment/defaults, paths, dependencies or security settings
   require this file, deployment README, Compose examples, CLI wiring and CI
   expectations to be reviewed and updated together where affected.

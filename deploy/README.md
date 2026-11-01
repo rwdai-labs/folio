@@ -80,6 +80,61 @@ Alternatively provision the supported provider configuration and credentials
 inside `/data/codex` through your secret manager. Do not put secrets in Compose,
 the context repository or chat. Inspect the Web model status after setup.
 
+## Main agent and price estimates
+
+The Assistant view uses a configurable main-agent runtime. Open **Settings →
+Main agent runtime** and choose one of two modes:
+
+- **OpenAI-compatible API (recommended).** Pick a provider preset (DeepSeek,
+  OpenAI or OpenRouter), or enter a custom HTTPS base URL. Folio
+  appends `/chat/completions`. Set the model id and API key. The key is written
+  to `/data/secrets/agent-api-key` with mode `0600` and is never returned to the
+  browser. A common DeepSeek setup is:
+  `https://api.deepseek.com/v1` + the exact model id from your provider
+  (for example `deepseek-chat`, or the id shown in your provider console).
+- **Installed command adapter.** Point at an absolute executable. It receives
+  one JSON `AgentRequest` on stdin and returns one JSON `AgentResponse` on
+  stdout; this is the boundary for a pi wrapper. The legacy path is
+  `/data/agent/runtime`.
+
+Saving the form swaps the runtime immediately; no restart is needed. The
+Assistant reports unavailable until the adapter is complete and its key file
+exists. A key is write-only in the UI: leave the field blank to keep the saved
+key.
+
+For a headless deployment, set the same values in the private `.env` next to
+`compose.yaml` instead of using the form:
+
+```bash
+FOLIO_AGENT_KIND=openai
+FOLIO_AGENT_PROVIDER=deepseek
+FOLIO_AGENT_BASE_URL=https://api.deepseek.com/v1
+FOLIO_AGENT_MODEL=deepseek-chat
+# Write the key to this file with mode 0600, never to Compose or chat.
+FOLIO_AGENT_API_KEY_FILE=/data/secrets/agent-api-key
+```
+
+The environment is read only when `/data/agent/config.json` does not exist; a
+saved Settings configuration wins. A malformed config file fails closed. The
+OpenAI-compatible adapter has no shell, filesystem, or source-edit tools; it can
+only call the bounded Folio tools granted to the owner session. Integration
+events still receive observer tools only.
+
+Token counts come from the runner. Estimated cost additionally needs a price
+catalog. Folio downloads the public [models.dev](https://models.dev) catalog from
+`https://models.dev/api.json` at startup when the cache is missing or older than
+24 hours, and caches a compact copy at
+`/data/runtime/model-prices.json` (mode `0600`). **Settings → Model price
+catalog** shows the source, age and model count and has a manual refresh button
+(limited to once every 30 seconds). Set `FOLIO_PRICING_URL` only when the
+deployment must use an internal mirror; the same JSON shape is required.
+
+Prices are list prices in USD per million tokens. The estimate covers uncached
+input, cached input and output. It does not model cache writes, context-length
+tiers, subscription plans, discounts or taxes, and unknown model/provider pairs
+show “price unavailable” instead of a guess. Task details include the per-run
+estimate; the dashboard includes an estimated total and per-model column.
+
 ## Weixin channel
 
 The optional Weixin text channel uses native Go/iLink; it adds no OpenClaw

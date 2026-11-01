@@ -688,6 +688,7 @@ func (s *Store) ListAutomation() (map[string]any, error) {
 		if !ok {
 			continue
 		}
+		s.attachRunCost(run)
 		if index == 0 {
 			latest = run
 		}
@@ -717,6 +718,7 @@ func (s *Store) AutomationRun(runID string) (map[string]any, error) {
 	if !ok || responseString(run, "run_id") != runID {
 		return nil, errStore("automation run is unavailable")
 	}
+	s.attachRunCost(run)
 	return run, nil
 }
 
@@ -760,6 +762,7 @@ func automationSummary(run map[string]any) map[string]any {
 	}
 	return map[string]any{
 		"run_id": publicText(run["run_id"], 64), "trigger": publicText(run["trigger"], 16),
+		"usage": run["usage"], "cost": run["cost"],
 		"status": publicText(run["status"], 32), "stage": publicText(run["stage"], 32),
 		"runner": publicText(run["runner"], 16), "model": publicText(run["model"], 200),
 		"started_at": publicText(run["started_at"], 64), "finished_at": publicText(run["finished_at"], 64),

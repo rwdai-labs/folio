@@ -124,12 +124,18 @@ runtime is configured.
 Source code and deployment remain outside the agent's write surface.
 
 Token usage is recorded per run from what the runner itself reported: Codex via
-its `turn.completed` JSON event, DSH via its per-request `usage` chunks. The
-record separates uncached, cached, and output tokens, and a run that never
-called a model carries no usage at all — the dashboard shows how many runs
-reported and how many did not instead of estimating the difference. Cost is not
-shown yet: it needs a price table the owner maintains, and a wrong price is
-worse than no price. The window is `GET /api/usage?days=7|30|90`.
+its `turn.completed` JSON event, DSH via its per-request `usage` chunks, and the
+OpenAI-compatible agent via the API's `usage` object. The record separates
+uncached, cached, and output tokens, and a run that never called a model carries
+no usage at all — the dashboard shows how many runs reported and how many did
+not instead of estimating the difference. Task details also show an estimated
+cost when the model and provider match the public [models.dev](https://models.dev)
+catalog (`https://models.dev/api.json`); the catalog is cached under the private
+runtime and can be refreshed under Settings. The estimate uses list prices per
+million tokens and excludes cache writes, context-length tiers and subscription
+discounts, so it is explicitly labelled estimated. Unknown models keep token
+counts and show “price unavailable” rather than a guessed number. The window is
+`GET /api/usage?days=7|30|90`.
 
 The Web UI can also show subscription allowances from an optional
 [magpie](https://github.com/yetone/magpie) gateway. `data/quotas.json` names the
@@ -219,11 +225,16 @@ notifications and triggers are optional. Runner installation is reported
 separately from provider authentication, which the first model run checks.
 
 The console also has an Assistant chat and an Actions registry. Chat goes to the
-main-agent adapter at `/data/agent/runtime`; if no adapter is installed the view
-reports unavailable and Weixin keeps its bounded read-only answer. The agent's
-tool surface is queue/action/route/policy/channel/context/audit control, not
-source or deploy. Actions can be validated, published, disabled, and restored
-from retained versions; the same operations are exposed as agent tools.
+main-agent runtime configured under Settings → Main agent runtime. The built-in
+adapter speaks the OpenAI-compatible chat-completions API (base URL, model,
+provider, key), so DeepSeek, OpenAI, OpenRouter and compatible gateways work
+without an extra sidecar; an installed command adapter at `/data/agent/runtime`
+remains available for a pi wrapper. The key is stored in the private volume and
+never returned to the browser. Until a runtime is configured the view reports
+unavailable and Weixin keeps its bounded read-only answer. The agent's tool
+surface is queue/action/route/policy/channel/context/audit control, not source
+or deploy. Actions can be validated, published, disabled, and restored from
+retained versions; the same operations are exposed as agent tools.
 
 Owner review shows the findings from the most recent retained successful
 maintenance, with a timestamp. It is a historical snapshot, not a live approval

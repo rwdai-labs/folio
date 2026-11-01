@@ -174,6 +174,20 @@ type AgentBackend interface {
 	AgentHistory(session string) (map[string]any, error)
 }
 
+// AgentConfigBackend is the optional owner configuration surface for the main
+// agent. Responses never carry the API key or its file path.
+type AgentConfigBackend interface {
+	AgentConfig() map[string]any
+	PutAgentConfig(payload map[string]any) (map[string]any, error)
+}
+
+// PricingBackend is the optional model-price catalog. The source is external
+// and cached; a missing catalog leaves token counts intact and cost unknown.
+type PricingBackend interface {
+	PricingStatus() map[string]any
+	RefreshPricing(ctx context.Context) (map[string]any, error)
+}
+
 // Options configures the local web boundary.
 type Options struct {
 	DataDir string
@@ -1101,6 +1115,16 @@ func (s *Server) agentBackend() (AgentBackend, bool) {
 	return backend, ok
 }
 
+func (s *Server) agentConfigBackend() (AgentConfigBackend, bool) {
+	backend, ok := s.store.(AgentConfigBackend)
+	return backend, ok
+}
+
+func (s *Server) pricingBackend() (PricingBackend, bool) {
+	backend, ok := s.store.(PricingBackend)
+	return backend, ok
+}
+
 // hookBackend reports whether the configured store exposes inbound hooks.
 func (s *Server) hookBackend() (HookBackend, bool) {
 	backend, ok := s.store.(HookBackend)
@@ -1788,6 +1812,20 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 		state = safeMap(state)
 		state["service"] = map[string]any{"scheduler_enabled": s.opts.SchedulerEnabled, "scheduler_interval_seconds": int(s.opts.SchedulerInterval / time.Second), "scheduler_next_at": s.schedulerNextAt(), "dispatcher_interval_seconds": int(s.opts.DispatcherInterval / time.Second), "jobs": s.jobs.summary()}
 		s.writeJSON(w, http.StatusOK, state, nil)
+	case "/api/agent/config":
+		backend, ok := s.agentConfigBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "agent_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(backend.AgentConfig()), nil)
+	case "/api/pricing":
+		backend, ok := s.pricingBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "pricing_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, backend.PricingStatus(), nil)
 	case "/api/usage":
 		days := 30
 		if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
@@ -1968,6 +2006,26 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/agent/config":
+		backend, ok := s.agentConfigBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "agent_unavailable")
+			return
+		}
+		value, callErr := backend.PutAgentConfig(payload)
+		if callErr != nil {
+			code := callErr.Error()
+			switch code {
+			case "agent_config_invalid", "agent_key_invalid":
+				s.writeError(w, http.StatusBadRequest, code)
+			case "agent_config_unavailable", "agent_key_unavailable":
+				s.writeError(w, http.StatusInternalServerError, code)
+			default:
+				s.writeError(w, http.StatusInternalServerError, "agent_config_unavailable")
+			}
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/agent/turns":
 		backend, ok := s.agentBackend()
 		if !ok || !backend.AgentAvailable() {
@@ -2116,6 +2174,23 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusAccepted, map[string]any{"job_id": id, "started": started, "mode": mode, "runner": runner, "status": jobStatus(started)}, nil)
+	case "/api/pricing/refresh":
+		backend, ok := s.pricingBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "pricing_unavailable")
+			return
+		}
+		value, callErr := backend.RefreshPricing(r.Context())
+		if callErr != nil && callErr.Error() == "pricing_refresh_limited" {
+			headers := http.Header{}
+			if retry, ok := value["retry_after_seconds"].(int); ok && retry > 0 {
+				headers.Set("Retry-After", strconv.Itoa(retry))
+			}
+			value["error"] = "pricing_refresh_limited"
+			s.writeJSON(w, http.StatusTooManyRequests, value, headers)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, value, nil)
 	case "/api/quotas/refresh":
 		backend, ok := s.quotaBackend()
 		if !ok {

@@ -20,7 +20,16 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   `POST /api/agent/turns` (`text/event-stream`) and session-protected
   `GET /api/agent/sessions/{id}`. The store checks the event route and runtime
   availability first; events carry bounded text/tool status, never raw runtime
-  errors or secrets. A disconnected request cancels the turn.
+  errors or secrets. A disconnected request cancels the turn. The optional
+  `AgentConfigBackend` adds session-protected `GET /api/agent/config` and
+  CSRF-protected `POST /api/agent/config`; responses may expose availability,
+  kind, provider, base URL, model and key presence, never the key or key path.
+  Map validation failures to fixed `agent_config_invalid`/`agent_key_invalid`
+  codes.
+- The optional `PricingBackend` serves session-protected `GET /api/pricing` and
+  CSRF-protected `POST /api/pricing/refresh`. Status is bounded metadata;
+  refresh is rate limited and returns 429 with `Retry-After`, otherwise 200 with
+  a fixed error code and the last good catalog.
 - The optional `ActionBackend` contract serves session-protected
   `GET /api/actions` and `GET /api/actions/versions`, and CSRF-protected
   `POST /api/actions`, `POST /api/actions/validate`, `POST /api/actions/restore`,

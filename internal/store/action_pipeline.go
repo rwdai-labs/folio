@@ -31,6 +31,9 @@ type pipelineStepResult struct {
 	Output   string
 	Usage    map[string]any
 	ExitCode int
+	Runner   string
+	Model    string
+	Provider string
 }
 
 // runPipeline executes one configured action and records a single run with
@@ -89,6 +92,7 @@ func (s *Store) runPipeline(plan actionPlan, task taskRecord) (map[string]any, e
 
 	outputs := map[string]string{}
 	steps := make([]any, 0, len(plan.Steps))
+	modelUsage := make([]any, 0, len(plan.Steps))
 	usage := map[string]int64{}
 	totalOutput := 0
 	lastOutput := ""
@@ -135,6 +139,20 @@ func (s *Store) runPipeline(plan actionPlan, task taskRecord) (map[string]any, e
 		}
 		if result.Usage != nil {
 			mergePipelineUsage(usage, result.Usage)
+			run["usage"] = pipelineUsageMap(usage)
+			record["usage"] = result.Usage
+			entry := map[string]any{"usage": result.Usage}
+			if result.Runner != "" {
+				entry["runner"] = result.Runner
+			}
+			if result.Model != "" {
+				entry["model"] = result.Model
+			}
+			if result.Provider != "" {
+				entry["provider"] = result.Provider
+			}
+			modelUsage = append(modelUsage, entry)
+			run["model_usage"] = modelUsage
 		}
 		steps = append(steps, record)
 		run["steps"] = steps
@@ -142,6 +160,9 @@ func (s *Store) runPipeline(plan actionPlan, task taskRecord) (map[string]any, e
 	}
 	if len(usage) > 0 {
 		run["usage"] = pipelineUsageMap(usage)
+	}
+	if len(modelUsage) > 0 {
+		run["model_usage"] = modelUsage
 	}
 	if plan.ReportFrom != "" {
 		text := strings.TrimSpace(outputs[plan.ReportFrom])
@@ -446,7 +467,15 @@ func (s *Store) runPipelineAgent(prompt string, spec *pipelineStep, limit int) (
 	if normalized := reportUsage(parsed.Usage); normalized != nil {
 		usage = normalized
 	}
-	return pipelineStepResult{Output: text, Usage: usage}, nil
+	provider := spec.Provider
+	if provider == "" {
+		if runner == "codex" {
+			provider = "openai"
+		} else if runner == "dsh" {
+			provider = dshProviderForModel(spec.Model)
+		}
+	}
+	return pipelineStepResult{Output: text, Usage: usage, Runner: runner, Model: spec.Model, Provider: provider}, nil
 }
 
 func (s *Store) runPipelineScript(spec *pipelineStep, plan actionPlan, task taskRecord, values map[string]string, runID string, limit int) (pipelineStepResult, error) {

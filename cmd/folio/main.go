@@ -114,6 +114,7 @@ func serve(args []string) error {
 	if err := weixin.Start(ctx); err != nil {
 		return err
 	}
+	backend.StartPricingRefresh(ctx)
 	application.StartScheduler(ctx)
 	application.StartDispatcher(ctx)
 	server := &http.Server{

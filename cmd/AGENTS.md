@@ -26,7 +26,10 @@ Applies to `cmd/`; inherit `../AGENTS.md`.
 - Context CLI `agent --auto` accepts `--maintenance-state` only in automatic
   mode and only within the external runtime. The service owns checkpoint writes;
   CLI workers emit validated structural proposals and optional review findings.
-- Changes to flags, environment variables, startup or tool paths require
+- Startup wires the main-agent runtime from validated private configuration and
+  starts a background, non-blocking price-catalog refresh. Agent configuration
+  failures must not prevent the service from starting; the Assistant fails
+  closed. Changes to flags, environment variables, startup or tool paths require
   corresponding updates to `../deploy/README.md` and configuration examples.
   Synchronize this file whenever these responsibilities or checks change.
 

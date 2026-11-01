@@ -119,6 +119,10 @@
               <span class="usage-label" data-i18n="usage.output">Output</span>
             </div>
             <div class="usage-tile">
+              <span class="usage-value" id="usage-cost">—</span>
+              <span class="usage-label" data-i18n="usage.cost">Estimated cost</span>
+            </div>
+            <div class="usage-tile">
               <span class="usage-value" id="usage-runs">—</span>
               <span class="usage-label" data-i18n="usage.runs">Runs</span>
             </div>
@@ -134,6 +138,7 @@
                 <tr>
                   <th scope="col" data-i18n="usage.model">Runner / model</th>
                   <th scope="col" data-i18n="usage.col_total">Total</th>
+                  <th scope="col" data-i18n="usage.col_cost">Est. cost</th>
                   <th scope="col" data-i18n="usage.col_input">Input</th>
                   <th scope="col" data-i18n="usage.col_cached">Cached</th>
                   <th scope="col" data-i18n="usage.col_output">Output</th>
@@ -299,6 +304,7 @@
             <p class="lede" data-i18n="chat.lead">Ask the main agent to inspect or change Folio configuration.</p></div></header>
           <section class="card">
             <div id="chat-log" class="chat-log" aria-live="polite"></div>
+            <p id="chat-config-hint" class="hint" hidden><a href="#agent-settings" data-i18n="chat.configure">Configure the main agent runtime in Settings.</a></p>
             <p id="chat-message" class="form-message" role="status" aria-live="polite"></p>
             <form id="chat-form" class="chat-form">
               <label class="hint" for="chat-input" data-i18n="chat.input">Message</label>
@@ -390,6 +396,91 @@
             <p id="setup-runner-detail" class="lede"></p>
             <p class="hint" data-i18n="setup.runner_hint">Runner installation and provider credentials are configured on the host. Availability does not verify provider login. The dashboard lets you select a runner and model; your first run checks the connection.</p>
           </section>
+        <section id="agent-settings" class="card" aria-labelledby="agent-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="agent.kicker">Control plane</p>
+              <h2 id="agent-heading" data-i18n="agent.title">Main agent runtime</h2>
+            </div>
+            <span id="agent-badge" class="badge" data-state="disabled" data-i18n="agent.badge.unconfigured">Not configured</span>
+          </header>
+          <p id="agent-status" class="lede"></p>
+          <p id="agent-detail" class="hint"></p>
+          <form id="agent-form" class="form" novalidate>
+            <div class="field">
+              <label for="agent-kind" data-i18n="agent.kind">Runtime</label>
+              <select id="agent-kind">
+                <option value="openai" data-i18n="agent.kind.openai">OpenAI-compatible API (recommended)</option>
+                <option value="command" data-i18n="agent.kind.command">Installed command adapter</option>
+              </select>
+            </div>
+            <div id="agent-openai-fields">
+              <div class="field">
+                <label for="agent-provider" data-i18n="agent.provider">Provider</label>
+                <select id="agent-provider">
+                  <option value="" data-i18n="agent.provider.custom">Custom / OpenAI-compatible</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="openrouter">OpenRouter</option>
+                </select>
+                <p class="hint" data-i18n="agent.provider_hint">Used to match model prices; it does not change the API request format.</p>
+              </div>
+              <div class="field">
+                <label for="agent-base-url" data-i18n="agent.base_url">Base URL</label>
+                <input id="agent-base-url" type="url" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com/v1">
+                <p class="hint" data-i18n="agent.base_url_hint">HTTPS only. Folio appends /chat/completions; a /v1 suffix is usually required.</p>
+              </div>
+              <div class="field">
+                <label for="agent-model" data-i18n="agent.model">Model</label>
+                <input id="agent-model" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="deepseek-chat">
+                <p class="hint" data-i18n="agent.model_hint">Use the provider's exact model id; it is also matched against the price catalog.</p>
+              </div>
+              <div class="field">
+                <label for="agent-api-key" data-i18n="agent.api_key">API key</label>
+                <input id="agent-api-key" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false">
+                <p id="agent-key-hint" class="hint" data-i18n="agent.api_key_hint">Stored in the private volume, never returned to the browser. Leave blank to keep the saved key.</p>
+              </div>
+              <div class="field">
+                <label for="agent-timeout" data-i18n="agent.timeout">Turn timeout (seconds)</label>
+                <input id="agent-timeout" type="number" min="10" max="600" step="1" value="120">
+              </div>
+            </div>
+            <div id="agent-command-fields" hidden>
+              <div class="field">
+                <label for="agent-command" data-i18n="agent.command">Executable</label>
+                <input id="agent-command" type="text" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="/data/agent/runtime">
+                <p class="hint" data-i18n="agent.command_hint">Absolute path to an installed executable. It receives one JSON request on stdin and returns one JSON response on stdout.</p>
+              </div>
+              <div class="field">
+                <label for="agent-args" data-i18n="agent.args">Arguments (one per line)</label>
+                <textarea id="agent-args" rows="2" maxlength="4096" spellcheck="false"></textarea>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="agent-save" class="btn primary" type="submit">
+                <span class="btn-label" data-i18n="agent.save">Save agent runtime</span>
+              </button>
+            </div>
+          </form>
+          <p id="agent-message" class="form-message" role="status" aria-live="polite"></p>
+        </section>
+        <section id="pricing-settings" class="card" aria-labelledby="pricing-heading">
+          <header class="card-head">
+            <div>
+              <p class="eyebrow" data-i18n="pricing.kicker">Estimation</p>
+              <h2 id="pricing-heading" data-i18n="pricing.title">Model price catalog</h2>
+            </div>
+            <span id="pricing-badge" class="badge" data-state="disabled" data-i18n="pricing.badge.missing">Not loaded</span>
+          </header>
+          <p id="pricing-status" class="lede"></p>
+          <p id="pricing-detail" class="hint"></p>
+          <div class="actions">
+            <button id="pricing-refresh" class="btn ghost small" type="button">
+              <span class="btn-label" data-i18n="pricing.refresh">Refresh prices</span>
+            </button>
+          </div>
+          <p id="pricing-message" class="form-message" role="status" aria-live="polite"></p>
+        </section>
         <section id="channels-section" class="card" aria-labelledby="channels-heading">
           <header class="card-head">
             <div>

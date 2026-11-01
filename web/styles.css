@@ -594,6 +594,11 @@ main.shell {
   color: var(--accent-ink);
 }
 
+.badge[data-state="stale"] {
+  border-color: rgba(176, 116, 0, .35);
+  background: rgba(176, 116, 0, .1);
+  color: #8a5a00;
+}
 .badge[data-state="reported"] {
   color: var(--accent-strong);
   background: var(--accent-soft);
@@ -2243,7 +2248,7 @@ textarea {
 #dashboard-view > * { grid-column: 1; }
 #usage-section { padding: 18px 22px; }
 #usage-section .lede { display: none; }
-#usage-section .usage-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 14px; }
+#usage-section .usage-tiles { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 14px; }
 #usage-section .usage-tile { background: transparent; }
 .usage-breakdown { margin-top: 10px; }
 .usage-breakdown summary { cursor: pointer; color: var(--muted); font-size: .8rem; }

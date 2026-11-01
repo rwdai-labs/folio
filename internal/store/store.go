@@ -116,18 +116,32 @@ type Store struct {
 	actionMu   sync.Mutex
 
 	// The main-agent turn loop serializes one interactive turn and stores
-	// bounded history. The runtime is an injected adapter; the default command
-	// adapter is unavailable until an executable exists at data/agent/runtime.
-	agentMu       sync.Mutex
-	agentRuntime  AgentRuntime
-	agentSessions string
-	tasksCache    *tasksFile
-	tasksPath     string
-	policyPath    string
+	// bounded history. The runtime is injected from validated owner
+	// configuration; the default command adapter is unavailable until an
+	// executable exists at data/agent/runtime.
+	agentMu          sync.Mutex
+	agentRuntime     AgentRuntime
+	agentConfig      *agentConfig
+	agentConfigError string
+	agentConfigPath  string
+	agentKeyPath     string
+	agentSessions    string
+	tasksCache       *tasksFile
+	tasksPath        string
+	policyPath       string
 
 	modelCatalogMu   sync.Mutex
 	modelCatalogAt   time.Time
 	modelCatalogData map[string]any
+
+	// Model prices are an optional external catalog. The cache is read at
+	// startup; refreshes never hold the repository/task locks.
+	pricingMu          sync.Mutex
+	pricingCatalog     *pricingCatalog
+	pricingPath        string
+	pricingURL         string
+	pricingError       string
+	pricingLastAttempt time.Time
 
 	// Tests may use a temporary local bare Git repository. Production callers
 	// never set this flag, so normal GitHub remote validation stays strict.
@@ -150,37 +164,55 @@ func New(dataDir, toolRoot string, remote storage.Remote) (*Store, error) {
 		return nil, errStore("runtime data must be outside the tool root")
 	}
 	s := &Store{
-		dataDir:        data,
-		toolRoot:       tools,
-		repositoryDir:  filepath.Join(data, "repository"),
-		runtimeDir:     filepath.Join(data, "runtime"),
-		runsDir:        filepath.Join(data, "runtime", "runs"),
-		reviewsDir:     filepath.Join(data, "runtime", "reviews"),
-		pendingDir:     filepath.Join(data, "runtime", "pending-reviews"),
-		reportsDir:     filepath.Join(data, "runtime", "reports"),
-		codexDir:       filepath.Join(data, "codex"),
-		dshDir:         filepath.Join(data, "dsh"),
-		secretsDir:     filepath.Join(data, "secrets"),
-		ghConfigDir:    filepath.Join(data, "secrets", "gh"),
-		homeDir:        filepath.Join(data, "home"),
-		hooksDir:       filepath.Join(data, "git-hooks"),
-		statePath:      filepath.Join(data, "state.json"),
-		lockPath:       filepath.Join(data, "store.lock"),
-		channelsPath:   filepath.Join(data, "secrets", "channels.json"),
-		deliveriesPath: filepath.Join(data, "runtime", "notifications.jsonl"),
-		hooksPath:      filepath.Join(data, "secrets", "hooks.json"),
-		tasksPath:      filepath.Join(data, "runtime", "tasks.json"),
-		policyPath:     policyPathFor(data),
-		agentSessions:  filepath.Join(data, "runtime", "agent", "sessions"),
-		replayPath:     filepath.Join(data, "runtime", "hook-replay.json"),
-		remote:         remote,
-		quotaService:   quota.New(data),
-		notifyLast:     map[string]time.Time{},
-		hookCalls:      map[string][]time.Time{},
+		dataDir:         data,
+		toolRoot:        tools,
+		repositoryDir:   filepath.Join(data, "repository"),
+		runtimeDir:      filepath.Join(data, "runtime"),
+		runsDir:         filepath.Join(data, "runtime", "runs"),
+		reviewsDir:      filepath.Join(data, "runtime", "reviews"),
+		pendingDir:      filepath.Join(data, "runtime", "pending-reviews"),
+		reportsDir:      filepath.Join(data, "runtime", "reports"),
+		codexDir:        filepath.Join(data, "codex"),
+		dshDir:          filepath.Join(data, "dsh"),
+		secretsDir:      filepath.Join(data, "secrets"),
+		ghConfigDir:     filepath.Join(data, "secrets", "gh"),
+		homeDir:         filepath.Join(data, "home"),
+		hooksDir:        filepath.Join(data, "git-hooks"),
+		statePath:       filepath.Join(data, "state.json"),
+		lockPath:        filepath.Join(data, "store.lock"),
+		channelsPath:    filepath.Join(data, "secrets", "channels.json"),
+		deliveriesPath:  filepath.Join(data, "runtime", "notifications.jsonl"),
+		hooksPath:       filepath.Join(data, "secrets", "hooks.json"),
+		tasksPath:       filepath.Join(data, "runtime", "tasks.json"),
+		policyPath:      policyPathFor(data),
+		agentConfigPath: filepath.Join(data, "agent", "config.json"),
+		pricingPath:     filepath.Join(data, "runtime", "model-prices.json"),
+		pricingURL:      defaultPricingURL,
+		agentKeyPath:    filepath.Join(data, "secrets", "agent-api-key"),
+		agentSessions:   filepath.Join(data, "runtime", "agent", "sessions"),
+		replayPath:      filepath.Join(data, "runtime", "hook-replay.json"),
+		remote:          remote,
+		quotaService:    quota.New(data),
+		notifyLast:      map[string]time.Time{},
+		hookCalls:       map[string][]time.Time{},
 	}
-	s.agentRuntime = &commandAgentRuntime{store: s, path: filepath.Join(data, "agent", "runtime")}
 	if err := s.ensureDirs(); err != nil {
 		return nil, err
+	}
+	if pricingURL := strings.TrimSpace(os.Getenv("FOLIO_PRICING_URL")); pricingURL != "" {
+		s.pricingURL = pricingURL
+	}
+	s.loadPricingCache()
+	if keyPath := strings.TrimSpace(os.Getenv("FOLIO_AGENT_API_KEY_FILE")); filepath.IsAbs(keyPath) {
+		s.agentKeyPath = keyPath
+	}
+	cfg, configErr := s.loadAgentConfig()
+	s.agentConfig = cfg
+	s.agentConfigError = configErr
+	if configErr == "" {
+		if err := s.applyAgentConfig(cfg); err != nil {
+			s.agentConfigError = err.Error()
+		}
 	}
 	// A task left running by a previous process never finished; say so instead
 	// of showing a phantom job forever.

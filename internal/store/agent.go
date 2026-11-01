@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,9 +46,11 @@ type AgentRequest struct {
 }
 
 type AgentMessage struct {
-	Role    string `json:"role"`
-	Name    string `json:"name,omitempty"`
-	Content string `json:"content"`
+	Role       string          `json:"role"`
+	Name       string          `json:"name,omitempty"`
+	Content    string          `json:"content"`
+	ToolCalls  []AgentToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 }
 
 type AgentTool struct {
@@ -220,6 +223,11 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 		"summary":     "",
 		"duration_ms": 0,
 	}
+	if s.agentConfig != nil {
+		run["model"] = s.agentConfig.Model
+		run["provider"] = s.agentConfig.Provider
+		run["agent_kind"] = s.agentConfig.Kind
+	}
 	finish := func(status, reason, final string) (AgentTurnResult, error) {
 		run["status"] = status
 		run["stage"] = "done"
@@ -237,12 +245,14 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 		if len(toolAudit) > 0 {
 			run["tool_calls"] = toolAudit
 		}
+		var usageMap map[string]any
 		if len(usage) > 0 {
-			run["usage"] = pipelineUsageMap(usage)
+			usageMap = pipelineUsageMap(usage)
+			run["usage"] = usageMap
 		}
 		_ = s.saveAutomationRun(run)
 		send(AgentEvent{Type: "turn.finished", Status: status, Code: reason, RunID: runID})
-		return AgentTurnResult{Text: final, RunID: runID}, nil
+		return AgentTurnResult{Text: final, RunID: runID, Usage: usageMap}, nil
 	}
 	for round := 0; round < maxAgentRounds; round++ {
 		if ctx.Err() != nil {
@@ -286,6 +296,14 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 		if len(response.ToolCalls) > maxAgentToolCalls {
 			return finish("failed", "agent_tool_limit", "")
 		}
+		for index := range response.ToolCalls {
+			if response.ToolCalls[index].ID == "" {
+				response.ToolCalls[index].ID = fmt.Sprintf("call_%d_%d", round, index)
+			}
+		}
+		// Keep the assistant tool-call message in history: OpenAI-compatible
+		// runtimes require it to be paired with each tool result by id.
+		history = append(history, AgentMessage{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
 		for _, call := range response.ToolCalls {
 			args, _ := json.Marshal(call.Arguments)
 			if len(args) > maxAgentToolArgs {
@@ -312,7 +330,7 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 			})
 			send(AgentEvent{Type: "tool.result", Tool: call.Name, Status: status,
 				Summary: publicText(toolResultSummary(result), 200)})
-			history = append(history, AgentMessage{Role: "tool", Name: call.Name, Content: string(resultText)})
+			history = append(history, AgentMessage{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: string(resultText)})
 		}
 	}
 	return finish("failed", "agent_tool_limit", "")
@@ -396,6 +414,7 @@ func agentSessionID(channel, account, conversation string) string {
 type commandAgentRuntime struct {
 	store *Store
 	path  string
+	args  []string
 }
 
 func (r *commandAgentRuntime) Available() bool {
@@ -420,7 +439,8 @@ func (r *commandAgentRuntime) Turn(ctx context.Context, request AgentRequest) (A
 		"CODEX_HOME":         r.store.codexDir,
 		"DSH_HOME":           r.store.dshDir,
 	}
-	result, err := r.store.runCommandContext(ctx, []string{r.path}, r.store.dataDir, string(raw), agentRuntimeTimeout, false, env)
+	command := append([]string{r.path}, r.args...)
+	result, err := r.store.runCommandContext(ctx, command, r.store.dataDir, string(raw), agentRuntimeTimeout, false, env)
 	if err != nil {
 		if strings.Contains(err.Error(), "timed out") {
 			return AgentResponse{}, errStore("agent runtime timed out")

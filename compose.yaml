@@ -19,6 +19,17 @@ services:
       # WEIXIN_ENABLED=false as a hard kill switch.
       WEIXIN_ENABLED: "${WEIXIN_ENABLED:-}"
       WEIXIN_OWNER_ID: "${WEIXIN_OWNER_ID:-}"
+      # Main-agent runtime. Leave FOLIO_AGENT_KIND empty to configure it from
+      # Settings; set all three values for a headless deployment. The API key
+      # file stays in the private volume and is never placed in Compose.
+      FOLIO_AGENT_KIND: "${FOLIO_AGENT_KIND:-}"
+      FOLIO_AGENT_PROVIDER: "${FOLIO_AGENT_PROVIDER:-}"
+      FOLIO_AGENT_BASE_URL: "${FOLIO_AGENT_BASE_URL:-}"
+      FOLIO_AGENT_MODEL: "${FOLIO_AGENT_MODEL:-}"
+      FOLIO_AGENT_API_KEY_FILE: "${FOLIO_AGENT_API_KEY_FILE:-/data/secrets/agent-api-key}"
+      FOLIO_AGENT_TIMEOUT_SECONDS: "${FOLIO_AGENT_TIMEOUT_SECONDS:-120}"
+      # Optional model-price catalog override; defaults to models.dev.
+      FOLIO_PRICING_URL: "${FOLIO_PRICING_URL:-https://models.dev/api.json}"
       MAINTENANCE_SCHEDULER_ENABLED: "true"
       MAINTENANCE_INTERVAL_SECONDS: "86400"
       HTTP_PROXY: "${HTTP_PROXY:-${http_proxy:-}}"

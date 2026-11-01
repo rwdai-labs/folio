@@ -102,3 +102,28 @@ func TestUsageSummaryDefaultsTheWindow(t *testing.T) {
 		t.Fatalf("days=%v", days)
 	}
 }
+
+func TestUsageSummaryAddsEstimatedCost(t *testing.T) {
+	store := newTestStore(t)
+	catalog, err := parseModelsDevPricing([]byte(syntheticPricing), "https://models.dev/api.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.pricingCatalog = catalog
+	now := time.Now()
+	writeRunFixture(t, store, "20260101T000000.000000000Z-ffffffff", now, map[string]any{
+		"usage": usageFixture(1_000_000, 0, 1_000_000), "model": "gpt-test", "provider": "openai",
+	})
+	summary, err := store.UsageSummary(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	totals := summary["totals"].(map[string]any)
+	if totals["estimated_cost_usd"] != 12.0 || totals["priced_runs"] != 1 {
+		t.Fatalf("totals=%v", totals)
+	}
+	models := summary["models"].([]any)
+	if len(models) != 1 || models[0].(map[string]any)["estimated_cost_usd"] != 12.0 {
+		t.Fatalf("models=%v", models)
+	}
+}

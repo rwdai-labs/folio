@@ -65,6 +65,10 @@
     tasks: null,
     kinds: null,
     tasksBusy: "",
+    agent: null,
+    agentBusy: false,
+    pricing: null,
+    pricingBusy: false,
     modelValues: { codex: "", dsh: "" },
     modelMenuOpen: false,
     modelActive: -1,
@@ -94,6 +98,8 @@
     weixin: { element: "weixin-message", data: null },
     tasks: { element: "tasks-message", data: null },
     chat: { element: "chat-message", data: null },
+    agent: { element: "agent-message", data: null },
+    pricing: { element: "pricing-message", data: null },
     actions: { element: "actions-message", data: null },
     review: { element: "review-message", data: null },
     app: { element: "app-message", data: null },
@@ -767,7 +773,7 @@
   const views = ["dashboard", "chat", "actions", "runs", "review", "settings"];
   const sectionViews = {
     "repository-section": "settings", "runner-settings": "settings",
-    "channels-section": "settings", "hooks-section": "settings",
+    "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings", "pricing-settings": "settings",
     "automation-section": "runs", "tasks-section": "dashboard", "usage-section": "dashboard", "run-options": "dashboard",
   };
 
@@ -994,7 +1000,7 @@
     refreshQuotas();
     await Promise.allSettled([
       loadTaskKinds(), refreshAutomation({ silent: true }), refreshChannels(),
-      refreshHooks(), refreshUsage(), refreshTasks(), loadWeixin(),
+      refreshHooks(), refreshUsage(), refreshTasks(), loadWeixin(), loadAgentConfig(), loadPricing(),
     ]);
     renderHooks({ hooks: state.hooks });
   }
@@ -1433,6 +1439,92 @@
     }, 2000);
   }
 
+  /* ----------------------------------------------------------------- cost */
+
+  function costValue(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0) return "";
+    try {
+      return new Intl.NumberFormat(usageLocale(), {
+        style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 6,
+      }).format(number);
+    } catch (_) {
+      return `$${number.toFixed(6)}`;
+    }
+  }
+
+  function costText(cost) {
+    if (!cost) return t("cost.unavailable");
+    const known = cost.estimated === true || (cost.partial === true && Number(cost.total_cost) > 0);
+    if (!known) return t("cost.unavailable");
+    const value = costValue(cost.total_cost);
+    if (!value) return t("cost.unavailable");
+    return cost.partial ? t("cost.partial", { value }) : value;
+  }
+
+  function renderPricing(data) {
+    state.pricing = data || null;
+    const badge = $("pricing-badge");
+    const status = $("pricing-status");
+    const detail = $("pricing-detail");
+    if (badge) {
+      if (!data || !data.configured) {
+        badge.dataset.state = "disabled";
+        badge.textContent = t("pricing.badge.missing");
+      } else if (data.stale) {
+        badge.dataset.state = "stale";
+        badge.textContent = t("pricing.badge.stale");
+      } else {
+        badge.dataset.state = "enabled";
+        badge.textContent = t("pricing.badge.loaded");
+      }
+    }
+    if (status) {
+      if (!data || !data.configured) status.textContent = t("pricing.status.missing");
+      else status.textContent = t("pricing.status.loaded", {
+        models: usageNumber(data.models), providers: usageNumber(data.providers),
+        time: data.fetched_at ? formatTime(data.fetched_at) || data.fetched_at : "—",
+      });
+    }
+    if (detail) {
+      const parts = [];
+      if (data && data.source) parts.push(t("pricing.source", { source: data.source }));
+      if (data && data.stale) parts.push(t("pricing.stale"));
+      if (data && data.error) parts.push(t(`pricing.error.${data.error}`) === `pricing.error.${data.error}` ? t("pricing.failed") : t(`pricing.error.${data.error}`));
+      detail.textContent = parts.join(" · ");
+    }
+  }
+
+  async function loadPricing() {
+    try {
+      const data = await api("/api/pricing");
+      renderPricing(data);
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      renderPricing(null);
+      setMessage("pricing", "pricing.failed", { error: true });
+    }
+  }
+
+  async function refreshPricing() {
+    if (state.pricingBusy) return;
+    state.pricingBusy = true;
+    const button = $("pricing-refresh");
+    setBusy(button, "pricing.refreshing");
+    setMessage("pricing", null);
+    try {
+      const data = await api("/api/pricing/refresh", { method: "POST", body: {} });
+      renderPricing(data);
+      setMessage("pricing", data && data.error ? "pricing.failed" : "pricing.refreshed", { error: Boolean(data && data.error) });
+    } catch (error) {
+      if (error.code === "pricing_refresh_limited") setMessage("pricing", "pricing.limited", { error: true });
+      else setMessage("pricing", "pricing.failed", { error: true });
+    } finally {
+      state.pricingBusy = false;
+      clearBusy(button);
+    }
+  }
+
   /* ----------------------------------------------------------------- usage */
 
   function usageLocale() {
@@ -1513,6 +1605,7 @@
       const cells = [
         name ? `${runner} / ${name}` : runner,
         usageNumber(model.total_tokens),
+        Number(model.priced_runs) > 0 ? costText({ estimated: true, total_cost: model.estimated_cost_usd, partial: Number(model.unpriced_cost_runs) > 0 }) : "—",
         usageNumber(model.input_tokens),
         usageNumber(model.cached_tokens),
         usageNumber(model.output_tokens),
@@ -1529,7 +1622,7 @@
     if (!models.length) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 6;
+      cell.colSpan = 7;
       cell.className = "hint";
       cell.textContent = t("usage.empty");
       row.appendChild(cell);
@@ -1544,6 +1637,9 @@
     setUsageText("usage-input", data ? usageNumber(totals.input_tokens) : "—");
     setUsageText("usage-output", data ? usageNumber(totals.output_tokens) : "—");
     setUsageText("usage-runs", data ? usageNumber(totals.runs) : "—");
+    setUsageText("usage-cost", data && Number(totals.priced_runs) > 0
+      ? costText({ estimated: true, total_cost: totals.estimated_cost_usd, partial: Number(totals.unpriced_cost_runs) > 0 })
+      : "—");
     const note = $("usage-note");
     if (note) {
       note.textContent = data
@@ -1551,7 +1647,7 @@
             reported: usageNumber(totals.reported_runs),
             runs: usageNumber(totals.runs),
             missing: usageNumber(totals.unreported_runs),
-          })
+          }) + " " + t("usage.cost_note")
         : "";
     }
     renderUsageDays(Array.isArray(data && data.days) ? data.days : []);
@@ -2740,6 +2836,144 @@
     }
   }
 
+  /* ----------------------------------------------------------- main agent */
+
+  const AGENT_PRESETS = {
+    deepseek: "https://api.deepseek.com/v1",
+    openai: "https://api.openai.com/v1",
+    openrouter: "https://openrouter.ai/api/v1",
+  };
+
+  function renderAgentBadge(data) {
+    const badge = $("agent-badge");
+    if (!badge) return;
+    if (data && data.available) {
+      badge.dataset.state = "enabled";
+      badge.textContent = t("agent.badge.available");
+    } else if (data && data.configured && data.kind === "openai" && !data.key_present) {
+      badge.dataset.state = "disabled";
+      badge.textContent = t("agent.badge.key_missing");
+    } else if (data && data.configured && data.error) {
+      badge.dataset.state = "failed";
+      badge.textContent = t("agent.badge.invalid");
+    } else {
+      badge.dataset.state = "disabled";
+      badge.textContent = t("agent.badge.unconfigured");
+    }
+  }
+
+  function renderAgentText(data) {
+    renderAgentBadge(data);
+    const status = $("agent-status");
+    const detail = $("agent-detail");
+    if (status) {
+      if (!data || !data.configured) status.textContent = t("agent.status.unconfigured");
+      else if (data.available) status.textContent = t("agent.status.available", {
+        kind: data.kind === "openai" ? (data.model || "openai") : (data.command || "command"),
+        provider: data.provider || "custom",
+      });
+      else if (data.kind === "openai" && !data.key_present) status.textContent = t("agent.status.key_missing");
+      else if (data.error) status.textContent = t("agent.status.invalid");
+      else status.textContent = t("agent.status.not_available");
+    }
+    if (detail) {
+      const parts = [];
+      if (data && data.source) parts.push(t("agent.source", { source: data.source }));
+      if (data && data.kind === "openai" && data.base_url) parts.push(data.base_url);
+      if (data && data.kind === "command" && data.command) parts.push(data.command);
+      detail.textContent = parts.filter(Boolean).join(" · ");
+    }
+    const keyHint = $("agent-key-hint");
+    if (keyHint) keyHint.textContent = t(data && data.key_present ? "agent.api_key_saved" : "agent.api_key_hint");
+    updateChatAgentHint();
+  }
+
+  function agentKindChanged() {
+    const kind = $("agent-kind") ? $("agent-kind").value : "openai";
+    if ($("agent-openai-fields")) $("agent-openai-fields").hidden = kind !== "openai";
+    if ($("agent-command-fields")) $("agent-command-fields").hidden = kind !== "command";
+  }
+
+  function agentProviderChanged() {
+    const provider = $("agent-provider") ? $("agent-provider").value : "";
+    const input = $("agent-base-url");
+    if (!input) return;
+    const preset = AGENT_PRESETS[provider] || "";
+    const current = input.value.trim();
+    if (!current || Object.values(AGENT_PRESETS).includes(current)) input.value = preset;
+  }
+
+  function renderAgentConfig(data, { fill = false } = {}) {
+    state.agent = data || null;
+    renderAgentText(state.agent);
+    if (!fill || !data) return;
+    if ($("agent-kind")) $("agent-kind").value = data.kind === "command" ? "command" : "openai";
+    if ($("agent-provider")) $("agent-provider").value = AGENT_PRESETS[data.provider] ? data.provider : "";
+    if ($("agent-base-url")) $("agent-base-url").value = typeof data.base_url === "string" ? data.base_url : "";
+    if ($("agent-model")) $("agent-model").value = typeof data.model === "string" ? data.model : "";
+    if ($("agent-timeout")) $("agent-timeout").value = String(data.timeout_seconds || 120);
+    if ($("agent-command")) $("agent-command").value = typeof data.command === "string" ? data.command : "";
+    if ($("agent-args")) $("agent-args").value = Array.isArray(data.args) ? data.args.join("\n") : "";
+    if ($("agent-api-key")) $("agent-api-key").value = "";
+    agentKindChanged();
+  }
+
+  function updateChatAgentHint() {
+    const hint = $("chat-config-hint");
+    if (!hint) return;
+    hint.hidden = Boolean(state.agent && state.agent.available);
+  }
+
+  async function loadAgentConfig(options = {}) {
+    try {
+      const data = await api("/api/agent/config");
+      renderAgentConfig(data, { fill: options.fill === true || !state.agent });
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      renderAgentConfig(null);
+      setMessage("agent", "agent.failed", { error: true });
+    }
+  }
+
+  async function saveAgentConfig(event) {
+    if (event) event.preventDefault();
+    if (state.agentBusy) return;
+    const kind = $("agent-kind") ? $("agent-kind").value : "openai";
+    const body = {
+      kind,
+      timeout_seconds: Number.parseInt($("agent-timeout").value, 10) || 120,
+    };
+    if (kind === "openai") {
+      body.provider = $("agent-provider").value;
+      body.base_url = $("agent-base-url").value.trim();
+      body.model = $("agent-model").value.trim();
+      const key = $("agent-api-key").value.trim();
+      if (key) body.api_key = key;
+    } else {
+      body.command = $("agent-command").value.trim();
+      body.args = $("agent-args").value.split("\n").map((item) => item.trim()).filter(Boolean);
+    }
+    state.agentBusy = true;
+    const button = $("agent-save");
+    setBusy(button, "agent.saving");
+    setMessage("agent", null);
+    try {
+      const data = await api("/api/agent/config", { method: "POST", body });
+      renderAgentConfig(data, { fill: true });
+      setMessage("agent", "agent.saved");
+      if (state.agent && !state.agent.available && state.agent.error) {
+        setMessage("agent", "agent.saved_unavailable", { error: true });
+      }
+    } catch (error) {
+      const key = error.code === "agent_key_invalid" ? "agent.key_invalid"
+        : error.code === "agent_config_invalid" ? "agent.invalid" : "agent.failed";
+      setMessage("agent", key, { error: true });
+    } finally {
+      state.agentBusy = false;
+      clearBusy(button);
+    }
+  }
+
   /* ------------------------------------------------------------- assistant */
 
   function renderChat() {
@@ -2786,6 +3020,7 @@
   }
 
   async function loadChat() {
+    updateChatAgentHint();
     try {
       const data = await api("/api/agent/sessions/console-main");
       state.chat = Array.isArray(data.messages) ? data.messages : [];
@@ -3068,6 +3303,7 @@
     addRunMeta(meta, t("automation.duration"), run.status === "running" ? "—" : formatDuration(run.duration_ms));
     addRunMeta(meta, t("board.run_tokens"), run.usage && Number.isFinite(run.usage.total_tokens)
       ? usageNumber(run.usage.total_tokens) : t("board.no_usage"));
+    addRunMeta(meta, t("board.run_cost"), run.cost ? costText(run.cost) : "—");
     addRunMeta(meta, t("automation.input"), shortHash(run.input_digest));
     container.appendChild(meta);
 
@@ -3416,6 +3652,10 @@
 
   on("hook-form", "submit", createHook);
   on("chat-form", "submit", sendChat);
+  on("agent-kind", "change", agentKindChanged);
+  on("agent-provider", "change", agentProviderChanged);
+  on("agent-form", "submit", saveAgentConfig);
+  on("pricing-refresh", "click", refreshPricing);
   on("actions-refresh", "click", loadActions);
   on("action-validate", "click", validateAction);
   on("action-save", "click", saveAction);
@@ -3519,6 +3759,8 @@
     state.usage = null;
     state.tasks = null;
     state.channels = null;
+    state.agent = null;
+    state.pricing = null;
     state.weixin = null;
     stopWeixinPoll();
     if ($("weixin-section")) $("weixin-section").hidden = true;

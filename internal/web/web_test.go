@@ -35,6 +35,9 @@ type testBackend struct {
 	syncDone     chan struct{}
 	channelSaves []map[string]any
 	weixinPush   bool
+	agentConfig  map[string]any
+	pricing      map[string]any
+	pricingCalls int
 	quotaCalls   []bool
 	quotaValue   quota.Snapshot
 }
@@ -192,6 +195,48 @@ func (b *testBackend) AcceptHook(id string, timestamp int64, eventID, signature 
 }
 
 func (b *testBackend) AgentAvailable() bool { return true }
+
+func (b *testBackend) PricingStatus() map[string]any {
+	if b.pricing == nil {
+		return map[string]any{"configured": false, "stale": true, "currency": "USD", "models": 0}
+	}
+	return b.pricing
+}
+
+func (b *testBackend) RefreshPricing(ctx context.Context) (map[string]any, error) {
+	b.mu.Lock()
+	b.pricingCalls++
+	b.pricing = map[string]any{"configured": true, "stale": false, "currency": "USD", "models": 3, "fetched_at": "2026-11-01T00:00:00Z"}
+	b.mu.Unlock()
+	return b.pricing, nil
+}
+
+func (b *testBackend) AgentConfig() map[string]any {
+	if b.agentConfig == nil {
+		return map[string]any{"configured": false, "available": false, "kind": "custom", "key_present": false}
+	}
+	return b.agentConfig
+}
+
+func (b *testBackend) PutAgentConfig(payload map[string]any) (map[string]any, error) {
+	if payload["kind"] != "openai" && payload["kind"] != "command" {
+		return nil, errors.New("agent_config_invalid")
+	}
+	if base, _ := payload["base_url"].(string); base != "" && !strings.HasPrefix(base, "https://") {
+		return nil, errors.New("agent_config_invalid")
+	}
+	if _, ok := payload["api_key"]; ok && payload["api_key"] == "bad key" {
+		return nil, errors.New("agent_key_invalid")
+	}
+	b.mu.Lock()
+	b.agentConfig = map[string]any{
+		"configured": true, "available": true, "kind": payload["kind"],
+		"provider": payload["provider"], "model": payload["model"],
+		"key_present": true, "timeout_seconds": 120,
+	}
+	b.mu.Unlock()
+	return b.agentConfig, nil
+}
 
 func (b *testBackend) AgentRoute(source, typ string) (string, bool, error) {
 	return "agent:main", true, nil
@@ -1155,6 +1200,65 @@ func TestActionRegistryAPI(t *testing.T) {
 	}, server.URL)
 	if status != http.StatusOK {
 		t.Fatalf("restore status=%d", status)
+	}
+}
+
+func TestAgentConfigAPI(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/agent/config", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", status)
+	}
+	client.login(t, password)
+	status, _, config := client.request(t, http.MethodGet, "/api/agent/config", nil, "")
+	if status != http.StatusOK || config["configured"] != false {
+		t.Fatalf("config status=%d value=%v", status, config)
+	}
+
+	status, _, saved := client.request(t, http.MethodPost, "/api/agent/config", map[string]any{
+		"kind": "openai", "provider": "deepseek", "base_url": "https://api.deepseek.com/v1",
+		"model": "deepseek-chat", "api_key": "synthetic-key",
+	}, server.URL)
+	if status != http.StatusOK || saved["available"] != true || saved["key_present"] != true {
+		t.Fatalf("save status=%d value=%v", status, saved)
+	}
+	if _, leaked := saved["api_key"]; leaked {
+		t.Fatalf("API key was returned: %v", saved)
+	}
+
+	status, _, result := client.request(t, http.MethodPost, "/api/agent/config", map[string]any{
+		"kind": "openai", "base_url": "http://example.com", "model": "x",
+	}, server.URL)
+	if status != http.StatusBadRequest || result["error"] != "agent_config_invalid" {
+		t.Fatalf("invalid status=%d value=%v", status, result)
+	}
+}
+
+func TestPricingAPI(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/pricing", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", status)
+	}
+	client.login(t, password)
+	status, _, value := client.request(t, http.MethodGet, "/api/pricing", nil, "")
+	if status != http.StatusOK || value["configured"] != false {
+		t.Fatalf("status=%d value=%v", status, value)
+	}
+	status, _, value = client.request(t, http.MethodPost, "/api/pricing/refresh", map[string]any{}, server.URL)
+	if status != http.StatusOK || value["configured"] != true || value["models"] != float64(3) {
+		t.Fatalf("refresh status=%d value=%v", status, value)
+	}
+	if backend.pricingCalls != 1 {
+		t.Fatalf("calls=%d", backend.pricingCalls)
 	}
 }
 

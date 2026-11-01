@@ -345,13 +345,26 @@ Rules:
 - The channel reply is the turn result. Proactive messages use `push.send` and
   the delivery ledger.
 
-The runtime adapter is a command boundary. The executable at
-`/data/agent/runtime` receives one JSON `AgentRequest` on stdin and returns one
-JSON `AgentResponse` on stdout: `text`, optional `tool_calls` (`name`,
-`arguments`) and optional `usage`. Folio validates names, arguments, output
-bounds and grants, executes the tools, appends tool results, and calls the
-runtime again. A pi-backed wrapper belongs behind this protocol; the real pi
-package is not installed or verified in this environment.
+Two adapters implement the boundary:
+
+- **OpenAI-compatible HTTP (built in).** Settings → Main agent runtime stores
+  `/data/agent/config.json` and a write-only key at
+  `/data/secrets/agent-api-key`. The adapter sends bounded chat-completions
+  requests with the same tool schemas and `tool_choice: auto`, parses text,
+  `tool_calls` and `usage`, and never exposes the key or base URL to a tool.
+  HTTPS only; redirects are rejected. A saved file wins over the environment
+  fallback (`FOLIO_AGENT_KIND`, `FOLIO_AGENT_PROVIDER`,
+  `FOLIO_AGENT_BASE_URL`, `FOLIO_AGENT_MODEL`,
+  `FOLIO_AGENT_API_KEY_FILE`, `FOLIO_AGENT_TIMEOUT_SECONDS`).
+- **Command adapter.** An absolute executable (legacy path
+  `/data/agent/runtime`) receives one JSON `AgentRequest` on stdin and returns
+  one JSON `AgentResponse` on stdout: `text`, optional `tool_calls` (`name`,
+  `arguments`) and optional `usage`. A pi-backed wrapper belongs here; the real
+  pi package is still not installed or verified in this environment.
+
+Folio validates names, arguments, output bounds and grants, executes the tools,
+appends tool results, and calls the runtime again. Assistant messages carry the
+tool-call ids so an OpenAI-compatible second request can pair each result.
 
 ### 4.5 Lanes (target; admission not enforced yet)
 
@@ -410,8 +423,11 @@ Planned private layout:
 ```text
 /data/actions.json              action definitions (0600)
 /data/routes.json               event routes (0600)
-/data/agent/runtime             agent adapter executable (unverified pi wrapper)
+/data/agent/config.json         owner-selected agent runtime (0600)
+/data/secrets/agent-api-key     write-only provider key (0600)
+/data/agent/runtime             optional command adapter (unverified pi wrapper)
 /data/agent/sessions/           bounded session state
+/data/runtime/model-prices.json cached models.dev price projection (0600)
 /data/scripts/                  owner scripts (0700)
 /data/policies.json             queue priority/window policy
 /data/runtime/action-versions/  published versions and diffs
@@ -419,7 +435,7 @@ Planned private layout:
 /data/runtime/reports/          existing reports
 ```
 
-Planned session-protected endpoints:
+Session-protected endpoints:
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -428,14 +444,34 @@ Planned session-protected endpoints:
 | `POST /api/actions/{id}/disable` | kill switch |
 | `GET /api/actions/versions`, `POST /api/actions/restore` | registry history and rollback |
 | `POST /api/actions/hosts` | HTTP host allowlist |
+| `GET /api/agent/config`, `POST /api/agent/config` | safe runtime status and validated write-only configuration |
 | `POST /api/agent/turns` | owner chat turn, SSE |
 | `GET /api/agent/sessions/{id}` | bounded transcript |
+| `GET /api/pricing`, `POST /api/pricing/refresh` | cached model price catalog and bounded refresh |
 
 Routes and policy are edited through the main-agent tools; a dedicated Web
 route editor is not implemented. A chat turn is canceled by closing the SSE
 connection.
 
 Existing task, run, usage, channel, and repository APIs keep their contracts.
+
+### 4.7 Token prices
+
+`internal/store/pricing.go` downloads the public
+[`models.dev`](https://models.dev) catalog from `https://models.dev/api.json`,
+projects provider/model/cost entries into a compact bounded cache, and computes
+US-dollar list-price estimates per run. The catalog is refreshed in the
+background at startup when missing or older than 24 hours; the settings card can
+refresh it manually at most once every 30 seconds. `FOLIO_PRICING_URL` can point
+at an internal mirror with the same shape.
+
+The estimate uses uncached input, cached input and output rates per million
+tokens. Cache writes, context-tier overrides, subscriptions and taxes are not
+modeled. A model/provider pair absent from the catalog keeps its token counts
+and returns `estimated: false` with `price_unavailable`; it is never guessed.
+Agent, maintenance, report and pipeline runs carry the model/provider needed for
+the lookup. A pipeline that calls several models records `model_usage` and
+aggregates a partial total.
 
 ## 7. Migration
 
@@ -491,9 +527,9 @@ retention policy remain planned.
 - Runtime actions are step chains, and **scripts are allowed** as an
   owner-authored primitive.
 - `action.put` takes effect **immediately**; no confirmation step.
-- The main agent runs behind a **command adapter**; a pi wrapper is the intended
-  deployment. DSH remains a maintenance/report runner, not the main-agent
-  contract.
+- The main agent runs behind an **OpenAI-compatible or command adapter**; a pi
+  wrapper remains supported through the command protocol. DSH remains a
+  maintenance/report runner, not the main-agent contract.
 - The console gets a first-class **chat window** to the main agent; Weixin is
   the remote surface.
 - The owner session may **modify Folio's runtime configuration only**: actions,
@@ -523,15 +559,18 @@ retention policy remain planned.
   per-step audit records, usage aggregation and optional report persistence.
 - `internal/store/agent.go` and `agent_tools.go` implement the runtime adapter,
   bounded sessions, the tool loop, owner/observer grants and an agent run audit.
-  The command adapter at `/data/agent/runtime` is the pi boundary; it is tested
-  with a fake executable, not with a real pi installation.
+  The built-in OpenAI-compatible adapter and the command adapter at
+  `/data/agent/runtime` are both tested with synthetic endpoints/executables;
+  a real pi installation remains unverified.
+- `internal/store/pricing.go` caches the models.dev catalog, estimates run cost
+  from reported usage, and leaves unknown prices explicitly unavailable.
 - `internal/store/inbound.go` sends authorized Weixin owner text through the
   agent when the route and runtime are available, and keeps the bounded
   read-only answer as a fallback.
-- `internal/web` exposes the action registry API, the SSE chat endpoint and
-  session history. The console has `#chat` and `#actions` views; the editor
-  supports validate, publish, disable, version restore and the HTTP host
-  allowlist.
+- `internal/web` exposes the action registry API, agent configuration, the SSE
+  chat endpoint, session history and the price catalog. The console has `#chat`
+  and `#actions` views; Settings includes the agent runtime and price catalog
+  cards; task details and usage show estimated cost.
 - Hooks, task creation and dispatch accept runtime action IDs; the legacy
   `task-kinds.json` path still works.
 - Not verified / not implemented: a real pi package wrapper, lane admission and

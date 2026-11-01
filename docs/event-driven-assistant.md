@@ -215,8 +215,8 @@ Folio or the plugin being rebuilt — and without the plugin choosing the prompt
 
 
 The window is the **owner's** schedule, not a provider price window. "When I am
-asleep" is a human fact expressed in local time; provider peak hours belong to
-the price table and will be a second, independent gate once that exists.
+asleep" is a human fact expressed in local time; provider peak hours are a
+separate price/availability concern and are not part of the current window.
 
 ### Provider profile
 
@@ -311,11 +311,13 @@ Dashboard (`GET /api/usage?days=N`, 1–365, default 30): total in/cached/out,
 per-day series, per runner/model table, and the reported/unreported split. The
 window only counts runs whose `started_at` falls inside it.
 
-**Deferred, deliberately:**
+**Cost (implemented 2026-11-01):** the dashboard and task details show an
+estimated USD cost when the run's provider/model matches the cached
+[models.dev](https://models.dev) catalog. The catalog is downloaded as JSON,
+cached privately and refreshed on demand; unknown models stay explicitly
+unpriced. See `agent-architecture.md` §4.7.
 
-- **Cost.** Requires a price table and currency; the provider catalog changes
-  too fast to hard-code, and the owner asked for it to be runtime-editable
-  data. Until that data exists, the dashboard shows tokens, not money.
+**Deferred, deliberately:**
 - **Priority, peak windows, budget policy.** They need the same policy data
   plus a router; nothing consumes them yet, so building the matrix first would
   be speculative.
@@ -376,8 +378,8 @@ locks.
 3. **External watcher** (implemented as scripts): `ls-remote` probe, SHA as
    event id. Replaces the nightly schedule for the context repository.
 4. **Usage capture and dashboard** (implemented): runner-reported per-run
-   usage, `/api/usage`, Web UI over 7/30/90 days. Cost waits for a maintained
-   price table.
+   usage, `/api/usage`, Web UI over 7/30/90 days; estimated cost from the
+   models.dev catalog with unknown prices left unavailable.
 5. **Task queue** (implemented): durable tasks, priorities, off-peak window,
    global and per-task pause, run-now, single-task dispatcher, data-defined
    kinds (`maintenance`, `report`).

@@ -9,12 +9,29 @@ import (
 // usageBucket is one aggregation cell: either a calendar day or a
 // runner/model pair.
 type usageBucket struct {
-	Input    int64 `json:"input_tokens"`
-	Cached   int64 `json:"cached_tokens"`
-	Output   int64 `json:"output_tokens"`
-	Total    int64 `json:"total_tokens"`
-	Runs     int   `json:"runs"`
-	Reported int   `json:"reported_runs"`
+	Input    int64   `json:"input_tokens"`
+	Cached   int64   `json:"cached_tokens"`
+	Output   int64   `json:"output_tokens"`
+	Total    int64   `json:"total_tokens"`
+	Runs     int     `json:"runs"`
+	Reported int     `json:"reported_runs"`
+	Cost     float64 `json:"estimated_cost_usd"`
+	Priced   int     `json:"priced_runs"`
+	Unpriced int     `json:"unpriced_cost_runs"`
+}
+
+func (b *usageBucket) addCost(cost map[string]any) {
+	if cost == nil {
+		return
+	}
+	if cost["estimated"] == true {
+		if value, ok := cost["total_cost"].(float64); ok {
+			b.Cost += value
+		}
+		b.Priced++
+		return
+	}
+	b.Unpriced++
 }
 
 func (b *usageBucket) add(usage map[string]any) {
@@ -85,8 +102,11 @@ func (s *Store) UsageSummary(days int) (map[string]any, error) {
 			bucket = &usageBucket{}
 			byDay[day] = bucket
 		}
+		cost := s.runCost(run)
 		bucket.add(usage)
+		bucket.addCost(cost)
 		totals.add(usage)
+		totals.addCost(cost)
 
 		// The model table only lists runners that actually reported tokens; a
 		// skipped run has no model to attribute and would add a zero row.
@@ -101,6 +121,9 @@ func (s *Store) UsageSummary(days int) (map[string]any, error) {
 				modelNames[key] = [2]string{runner, model}
 			}
 			entry.add(usage)
+			if len(s.runModelUsage(run)) <= 1 {
+				entry.addCost(cost)
+			}
 		}
 	}
 
@@ -116,6 +139,8 @@ func (s *Store) UsageSummary(days int) (map[string]any, error) {
 			"date": key, "input_tokens": bucket.Input, "cached_tokens": bucket.Cached,
 			"output_tokens": bucket.Output, "total_tokens": bucket.Total,
 			"runs": bucket.Runs, "reported_runs": bucket.Reported,
+			"estimated_cost_usd": roundCost(bucket.Cost), "priced_runs": bucket.Priced,
+			"unpriced_cost_runs": bucket.Unpriced,
 		})
 	}
 
@@ -139,6 +164,8 @@ func (s *Store) UsageSummary(days int) (map[string]any, error) {
 			"input_tokens": bucket.Input, "cached_tokens": bucket.Cached,
 			"output_tokens": bucket.Output, "total_tokens": bucket.Total,
 			"runs": bucket.Runs, "reported_runs": bucket.Reported,
+			"estimated_cost_usd": roundCost(bucket.Cost), "priced_runs": bucket.Priced,
+			"unpriced_cost_runs": bucket.Unpriced,
 		})
 	}
 
@@ -150,7 +177,9 @@ func (s *Store) UsageSummary(days int) (map[string]any, error) {
 			"input_tokens": totals.Input, "cached_tokens": totals.Cached,
 			"output_tokens": totals.Output, "total_tokens": totals.Total,
 			"runs": totals.Runs, "reported_runs": totals.Reported,
-			"unreported_runs": totals.Runs - totals.Reported,
+			"unreported_runs":    totals.Runs - totals.Reported,
+			"estimated_cost_usd": roundCost(totals.Cost), "priced_runs": totals.Priced,
+			"unpriced_cost_runs": totals.Unpriced, "currency": "USD",
 		},
 		"days":   daysOut,
 		"models": modelsOut,

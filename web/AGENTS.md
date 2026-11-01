@@ -23,10 +23,18 @@ Inherit `../AGENTS.md`.
   the dashboard. Runner availability is not provider credential verification.
 - The assistant view renders only server text/tool events as text nodes. Keep
   the SSE reader bounded, show unavailable/error states, and never put raw model
-  output or tool arguments into the page as HTML. The actions view edits one
-  owner action as JSON; validate/publish/disable/restore and the HTTP host
-  allowlist are explicit controls, and version names are rendered as text. Do not add a second agent or a
-  background poller for these views.
+  output or tool arguments into the page as HTML. Settings includes the
+  main-agent runtime form: OpenAI-compatible or command mode, provider preset,
+  base URL, model, write-only API key and timeout. Never prefill the key from a
+  response; show key presence only. The actions view edits one owner action as
+  JSON; validate/publish/disable/restore and the HTTP host allowlist are explicit
+  controls, and version names are rendered as text. Do not add a second agent or
+  a background poller for these views.
+- Task/run details show reported tokens and, when available, an estimated cost;
+  the usage dashboard adds a cost tile and column. Label cost as an estimate,
+  keep unknown prices visibly unavailable, and never derive token counts from
+  cost. The settings price card shows source/age/model count and a manual
+  refresh; render errors as translated text, not raw upstream bodies.
 - The dashboard board groups queued/running/failed/finished records into four
   columns, with a separately labelled human-review snapshot in Needs attention.
   Preserve backend priorities and wait/pause semantics; no drag-to-complete or
