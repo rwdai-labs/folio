@@ -154,6 +154,7 @@ async function main() {
       const origin = `http://127.0.0.1:${server.address().port}`;
       await page.goto(origin);
       await visible(page, '#login-view');
+      await page.locator('#login-username').fill('owner');
       await page.locator('#password').fill('synthetic-password');
       await page.locator('#login-submit').click();
       await visible(page, '#settings-view');

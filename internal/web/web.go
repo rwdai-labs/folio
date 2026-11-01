@@ -48,18 +48,14 @@ const (
 	maxPathBytes        = 2048
 	maxStringBytes      = 256 * 1024
 
-	sessionTTL       = 30 * time.Minute
-	jobTTL           = 24 * time.Hour
-	previewTTL       = 10 * time.Minute
-	loginWindow      = time.Minute
-	loginMaxAttempts = 5
-	maxSessions      = 1024
-	maxJobs          = 256
-	maxPreviews      = 64
+	jobTTL      = 24 * time.Hour
+	previewTTL  = 10 * time.Minute
+	maxJobs     = 256
+	maxPreviews = 64
 
 	pbkdf2Rounds = 240_000
 	pbkdf2Bytes  = 32
-	cookieName   = "pc_session"
+	cookieName   = "folio_session"
 )
 
 var (
@@ -207,49 +203,14 @@ type Options struct {
 	// independent of the scheduler: deferred work must start even when
 	// interval maintenance is disabled.
 	DispatcherInterval time.Duration
-
-	// PasswordNotice, when set, receives the administrator password and its
-	// file path exactly once, on the start that creates the password. Starts
-	// that reuse an existing file never call it. The callback exists so the
-	// process entrypoint can surface the bootstrap credential in its own log;
-	// keep that log private because it now contains a credential.
-	PasswordNotice func(password, path string)
-}
-
-type passwordAuth struct {
-	hashPath string
-	salt     []byte
-	digest   []byte
 }
 
 type session struct {
-	csrf     string
-	expires  time.Time
-	previews map[string]preview
-}
-
-type preview struct {
-	target    string
-	content   string
-	digest    string
-	reviewID  string
-	createdAt time.Time
-}
-
-type sessionStore struct {
-	mu       sync.Mutex
-	items    map[string]*session
-	maxItems int
-}
-
-type loginAttempt struct {
-	stamps []time.Time
-}
-
-type loginLimiter struct {
-	mu       sync.Mutex
-	items    map[string]loginAttempt
-	maxItems int
+	csrf        string
+	expires     time.Time
+	userID      int
+	username    string
+	authVersion int
 }
 
 type job struct {
@@ -292,11 +253,9 @@ func (j job) public() map[string]any {
 type Server struct {
 	store Backend
 	opts  Options
-	auth  passwordAuth
+	auth  *authStore
 
-	sessions *sessionStore
-	logins   *loginLimiter
-	jobs     *jobStore
+	jobs *jobStore
 
 	schedulerMu   sync.Mutex
 	scheduler     bool
@@ -335,20 +294,15 @@ func New(store Backend, opts Options) (*Server, error) {
 	}
 	opts.TrustedHosts = sortedKeys(hosts)
 	opts.TrustedOrigins = normalizeOrigins(opts.TrustedOrigins)
-	auth, generatedPassword, err := loadPassword(opts.DataDir, opts.PasswordFile)
+	auth, err := openAuthStore(opts.DataDir, opts.PasswordFile)
 	if err != nil {
 		return nil, err
 	}
-	if generatedPassword != "" && opts.PasswordNotice != nil {
-		opts.PasswordNotice(generatedPassword, filepath.Clean(opts.PasswordFile))
-	}
 	return &Server{
-		store:    store,
-		opts:     opts,
-		auth:     auth,
-		sessions: &sessionStore{items: make(map[string]*session), maxItems: maxSessions},
-		logins:   &loginLimiter{items: make(map[string]loginAttempt), maxItems: maxSessions},
-		jobs:     &jobStore{items: make(map[string]*job), active: make(map[string]string), maxItems: maxJobs},
+		store: store,
+		opts:  opts,
+		auth:  auth,
+		jobs:  &jobStore{items: make(map[string]*job), active: make(map[string]string), maxItems: maxJobs},
 	}, nil
 }
 
@@ -431,111 +385,15 @@ func (s *Server) schedulerNextAt() any {
 	return s.schedulerNext.UTC().Format(time.RFC3339Nano)
 }
 
-// loadPassword returns the verifier plus the plaintext password only when this
-// call created the password file. The second result is empty for every later
-// start, so callers can announce the bootstrap credential exactly once.
-func loadPassword(dataDir, passwordFile string) (passwordAuth, string, error) {
-	passwordPath := filepath.Clean(passwordFile)
-	if err := ensurePasswordParent(filepath.Dir(passwordPath)); err != nil {
-		return passwordAuth{}, "", errors.New("admin password directory unavailable")
-	}
-	if info, statErr := os.Lstat(passwordPath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return passwordAuth{}, "", errors.New("admin password unavailable")
-	}
-	var generatedPassword string
-	password, err := os.ReadFile(passwordPath)
-	if errors.Is(err, os.ErrNotExist) {
-		generated := make([]byte, 32)
-		if _, err := rand.Read(generated); err != nil {
-			return passwordAuth{}, "", errors.New("admin password unavailable")
-		}
-		password = []byte(encodePassword(generated))
-		if err := writePrivateFile(passwordPath, append(password, '\n')); err != nil {
-			return passwordAuth{}, "", errors.New("admin password unavailable")
-		}
-		generatedPassword = string(password)
-	} else if err != nil {
-		return passwordAuth{}, "", errors.New("admin password unavailable")
-	}
-	password = []byte(strings.TrimSpace(string(password)))
-	if len(password) == 0 || len(password) > 4096 {
-		return passwordAuth{}, "", errors.New("admin password unavailable")
-	}
-	_ = os.Chmod(passwordPath, 0o600)
-
-	hashPath := filepath.Join(dataDir, "secrets", "admin-password.hash")
-	if err := ensurePrivateDir(filepath.Dir(hashPath)); err != nil {
-		return passwordAuth{}, "", errors.New("admin password hash unavailable")
-	}
-	var salt, digest []byte
-	// A verifier cached for an earlier password must not shadow a password that
-	// this start just generated; the plaintext file is authoritative.
-	if generatedPassword == "" {
-		if raw, readErr := os.ReadFile(hashPath); readErr == nil {
-			var saved struct {
-				Salt   string `json:"salt"`
-				Digest string `json:"digest"`
-			}
-			if json.Unmarshal(raw, &saved) == nil {
-				salt, _ = hex.DecodeString(saved.Salt)
-				digest, _ = hex.DecodeString(saved.Digest)
-			}
-		}
-	}
-	if len(salt) < 16 || len(digest) != pbkdf2Bytes {
-		salt = make([]byte, 16)
-		if _, err := rand.Read(salt); err != nil {
-			return passwordAuth{}, "", errors.New("admin password hash unavailable")
-		}
-		digest, err = derivePassword(string(password), salt)
-		if err != nil {
-			return passwordAuth{}, "", errors.New("admin password hash unavailable")
-		}
-		encoded, _ := json.Marshal(map[string]string{"salt": hex.EncodeToString(salt), "digest": hex.EncodeToString(digest)})
-		if err := writePrivateFile(hashPath, append(encoded, '\n')); err != nil {
-			return passwordAuth{}, "", errors.New("admin password hash unavailable")
-		}
-	}
-	_ = os.Chmod(hashPath, 0o600)
-	return passwordAuth{hashPath: hashPath, salt: salt, digest: digest}, generatedPassword, nil
-}
-
 func derivePassword(password string, salt []byte) ([]byte, error) {
 	return pbkdf2.Key(sha256.New, password, salt, pbkdf2Rounds, pbkdf2Bytes)
 }
-
-func (p passwordAuth) verify(candidate string) bool {
-	if len(candidate) > 4096 {
-		return false
-	}
-	derived, err := derivePassword(candidate, p.salt)
-	if err != nil || len(derived) != len(p.digest) {
-		return false
-	}
-	return subtle.ConstantTimeCompare(derived, p.digest) == 1
-}
-
-func encodePassword(raw []byte) string { return strings.TrimRight(hex.EncodeToString(raw), "\n") }
 
 func ensurePrivateDir(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0o700)
-}
-
-// External secret mounts can be read-only and may reject chmod. Existing
-// password files remain authoritative; generated passwords still require a
-// writable parent and are checked by writePrivateFile.
-func ensurePasswordParent(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(path); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("password directory is invalid")
-	}
-	_ = os.Chmod(path, 0o700)
-	return nil
 }
 
 func writePrivateFile(path string, data []byte) error {
@@ -705,92 +563,6 @@ func newToken(size int) (string, error) {
 func digestChange(target, content string) string {
 	hash := sha256.Sum256([]byte(target + "\x00" + content))
 	return hex.EncodeToString(hash[:])
-}
-
-func (s *sessionStore) pruneLocked(now time.Time) {
-	for token, item := range s.items {
-		if !item.expires.After(now) {
-			delete(s.items, token)
-		}
-	}
-}
-
-func (s *sessionStore) create() (string, string, error) {
-	token, err := newToken(32)
-	if err != nil {
-		return "", "", err
-	}
-	csrf, err := newToken(24)
-	if err != nil {
-		return "", "", err
-	}
-	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked(now)
-	if len(s.items) >= s.maxItems {
-		return "", "", errors.New("session capacity reached")
-	}
-	s.items[token] = &session{csrf: csrf, expires: now.Add(sessionTTL), previews: make(map[string]preview)}
-	return token, csrf, nil
-}
-
-func (s *sessionStore) get(token string) (*session, bool) {
-	if token == "" {
-		return nil, false
-	}
-	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	item, ok := s.items[token]
-	if !ok || !item.expires.After(now) {
-		delete(s.items, token)
-		return nil, false
-	}
-	item.expires = now.Add(sessionTTL)
-	return item, true
-}
-
-func (s *sessionStore) remove(token string) {
-	s.mu.Lock()
-	delete(s.items, token)
-	s.mu.Unlock()
-}
-
-func (l *loginLimiter) allowed(address string) (bool, time.Duration) {
-	now := time.Now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.items) >= l.maxItems {
-		for key, item := range l.items {
-			if len(item.stamps) == 0 || now.Sub(item.stamps[len(item.stamps)-1]) >= loginWindow {
-				delete(l.items, key)
-			}
-		}
-		if len(l.items) >= l.maxItems {
-			return false, loginWindow
-		}
-	}
-	item := l.items[address]
-	kept := item.stamps[:0]
-	for _, stamp := range item.stamps {
-		if now.Sub(stamp) < loginWindow {
-			kept = append(kept, stamp)
-		}
-	}
-	item.stamps = kept
-	if len(item.stamps) >= loginMaxAttempts {
-		return false, time.Until(item.stamps[0].Add(loginWindow))
-	}
-	item.stamps = append(item.stamps, now)
-	l.items[address] = item
-	return true, 0
-}
-
-func (l *loginLimiter) clear(address string) {
-	l.mu.Lock()
-	delete(l.items, address)
-	l.mu.Unlock()
 }
 
 func (j *jobStore) pruneLocked() {
@@ -1482,7 +1254,7 @@ func parseSessionCookie(r *http.Request) string {
 
 func (s *Server) session(r *http.Request) (string, *session, bool) {
 	token := parseSessionCookie(r)
-	item, ok := s.sessions.get(token)
+	item, ok := s.auth.GetSession(token)
 	if !ok {
 		return token, nil, false
 	}
@@ -1652,11 +1424,11 @@ func (s *Server) writeStatic(w http.ResponseWriter, name string) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request, payload map[string]any) {
-	address, _, splitErr := net.SplitHostPort(r.RemoteAddr)
-	if splitErr != nil || address == "" {
-		address = r.RemoteAddr
-	}
-	allowed, retry := s.logins.allowed(address)
+	username, _ := payload["username"].(string)
+	password, _ := payload["password"].(string)
+	username = strings.TrimSpace(username)
+	key := loginAttemptKey(r, username)
+	allowed, retry := s.auth.AllowLogin(key)
 	if !allowed {
 		if retry < time.Second {
 			retry = time.Second
@@ -1664,23 +1436,110 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, payload map[strin
 		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "login_rate_limited"}, http.Header{"Retry-After": []string{strconv.Itoa(int(retry / time.Second))}})
 		return
 	}
-	password, passwordOK := payload["password"].(string)
-	if !passwordOK || !s.auth.verify(password) {
+	setupRequired, setupErr := s.auth.SetupRequired()
+	if setupErr != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "auth_unavailable")
+		return
+	}
+	if setupRequired {
+		s.writeError(w, http.StatusConflict, "setup_required")
+		return
+	}
+	user, ok, err := s.auth.Authenticate(username, password)
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "auth_unavailable")
+		return
+	}
+	if !ok {
+		s.auth.RecordLoginFailure(key)
 		s.writeError(w, http.StatusUnauthorized, "invalid_credentials")
 		return
 	}
-	s.logins.clear(address)
-	token, csrf, err := s.sessions.create()
+	s.auth.ClearLoginFailures(key)
+	token, csrf, expires, err := s.auth.CreateSession(user, r.UserAgent())
 	if err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "session_unavailable")
 		return
 	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"csrf_token":    csrf,
+		"username":      user.Username,
+		"expires_at":    expires.UTC().Format(time.RFC3339Nano),
+	}, http.Header{"Set-Cookie": []string{s.sessionCookie(token)}})
+}
+
+func (s *Server) setup(w http.ResponseWriter, r *http.Request, payload map[string]any) {
+	if !setupAddressAllowed(r) {
+		s.writeError(w, http.StatusForbidden, "setup_private_only")
+		return
+	}
+	key := setupAttemptKey(r)
+	allowed, retry := s.auth.AllowLogin(key)
+	if !allowed {
+		if retry < time.Second {
+			retry = time.Second
+		}
+		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "login_rate_limited"}, http.Header{"Retry-After": []string{strconv.Itoa(int(retry / time.Second))}})
+		return
+	}
+	required, err := s.auth.SetupRequired()
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "auth_unavailable")
+		return
+	}
+	if !required {
+		s.writeError(w, http.StatusConflict, "auth_setup_complete")
+		return
+	}
+	username, _ := payload["username"].(string)
+	password, _ := payload["password"].(string)
+	username = strings.TrimSpace(username)
+	if err := s.auth.CreateUser(username, password); err != nil {
+		s.auth.RecordLoginFailure(key)
+		switch err.Error() {
+		case "auth_username_invalid":
+			s.writeError(w, http.StatusBadRequest, "auth_username_invalid")
+		case "auth_password_invalid":
+			s.writeError(w, http.StatusBadRequest, "auth_password_invalid")
+		default:
+			s.writeError(w, http.StatusServiceUnavailable, "auth_unavailable")
+		}
+		return
+	}
+	s.auth.ClearLoginFailures(key)
+	user, ok, err := s.auth.Authenticate(username, password)
+	if err != nil || !ok {
+		s.writeError(w, http.StatusServiceUnavailable, "auth_unavailable")
+		return
+	}
+	token, csrf, expires, err := s.auth.CreateSession(user, r.UserAgent())
+	if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "session_unavailable")
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, map[string]any{
+		"authenticated": true,
+		"csrf_token":    csrf,
+		"username":      user.Username,
+		"expires_at":    expires.UTC().Format(time.RFC3339Nano),
+	}, http.Header{"Set-Cookie": []string{s.sessionCookie(token)}})
+}
+
+func (s *Server) sessionCookie(token string) string {
 	secure := ""
 	if s.opts.CookieSecure {
 		secure = "; Secure"
 	}
-	cookie := fmt.Sprintf("%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict%s", cookieName, token, int(sessionTTL/time.Second), secure)
-	s.writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "csrf_token": csrf}, http.Header{"Set-Cookie": []string{cookie}})
+	return fmt.Sprintf("%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict%s", cookieName, token, int(sessionAbsoluteTTL/time.Second), secure)
+}
+
+func (s *Server) clearSessionCookie() string {
+	secure := ""
+	if s.opts.CookieSecure {
+		secure = "; Secure"
+	}
+	return fmt.Sprintf("%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict%s", cookieName, secure)
 }
 
 func (s *Server) requireSession(w http.ResponseWriter, r *http.Request) (string, *session, bool) {
@@ -1724,9 +1583,16 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "/api/session" {
 		_, item, ok := s.session(r)
-		payload := map[string]any{"authenticated": ok}
+		setupRequired, setupErr := s.auth.SetupRequired()
+		if setupErr != nil {
+			s.writeError(w, http.StatusServiceUnavailable, "auth_unavailable")
+			return
+		}
+		payload := map[string]any{"authenticated": ok, "setup_required": setupRequired}
 		if ok {
 			payload["csrf_token"] = item.csrf
+			payload["username"] = item.username
+			payload["expires_at"] = item.expires.UTC().Format(time.RFC3339Nano)
 		}
 		s.writeJSON(w, http.StatusOK, payload, nil)
 		return
@@ -1984,6 +1850,10 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, status, strings.ReplaceAll(err.Error(), " ", "_"))
 		return
 	}
+	if r.URL.Path == "/api/setup" {
+		s.setup(w, r, payload)
+		return
+	}
 	if r.URL.Path == "/api/login" {
 		s.login(w, r, payload)
 		return
@@ -2108,12 +1978,8 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		value, _ := backend.ListActions()
 		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/logout":
-		s.sessions.remove(token)
-		secure := ""
-		if s.opts.CookieSecure {
-			secure = "; Secure"
-		}
-		s.writeJSON(w, http.StatusOK, map[string]any{"authenticated": false}, http.Header{"Set-Cookie": []string{fmt.Sprintf("%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict%s", cookieName, secure)}})
+		s.auth.DeleteSession(token)
+		s.writeJSON(w, http.StatusOK, map[string]any{"authenticated": false}, http.Header{"Set-Cookie": []string{s.clearSessionCookie()}})
 	case "/api/repository/connect", "/api/connect":
 		owner, ownerOK := payload["owner"].(string)
 		name, nameOK := payload["name"].(string)

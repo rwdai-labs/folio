@@ -42,18 +42,41 @@
       <div class="login-card">
         <p class="eyebrow" data-i18n="login.eyebrow">Local owner</p>
         <h1 id="login-heading" data-i18n="login.title">Sign in to Folio</h1>
-        <p class="lede" data-i18n="login.lead">This console is bound to this host. Use the administrator password from the private data volume.</p>
+        <p id="login-lead" class="lede" data-i18n="login.lead">Sign in with the local owner account. Sessions last 30 days of activity.</p>
         <form id="login-form" class="form" novalidate>
           <div class="field">
-            <label for="password" data-i18n="login.password">Administrator password</label>
-            <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096" placeholder="Enter the administrator password" data-i18n-placeholder="login.placeholder">
+            <label for="login-username" data-i18n="login.username">Username</label>
+            <input id="login-username" name="username" type="text" autocomplete="username" required maxlength="64" placeholder="owner" data-i18n-placeholder="login.username_placeholder">
+          </div>
+          <div class="field">
+            <label for="password" data-i18n="login.password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="200" placeholder="Enter the account password" data-i18n-placeholder="login.placeholder">
           </div>
           <button id="login-submit" class="btn primary block" type="submit">
             <span class="btn-label" data-i18n="login.submit">Sign in to Folio</span>
           </button>
           <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
         </form>
-        <p class="hint" data-i18n="login.hint">Stored at secrets/admin-password in the service data volume.</p>
+        <form id="setup-form" class="form" novalidate hidden>
+          <p class="hint" data-i18n="setup.first_run">First run: create the single owner account. The setup form is available only from the local or private network.</p>
+          <div class="field">
+            <label for="setup-username" data-i18n="setup.username">Username</label>
+            <input id="setup-username" name="username" type="text" autocomplete="username" required maxlength="64" placeholder="owner" data-i18n-placeholder="login.username_placeholder">
+          </div>
+          <div class="field">
+            <label for="setup-password" data-i18n="setup.password">Password</label>
+            <input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="200">
+          </div>
+          <div class="field">
+            <label for="setup-confirm" data-i18n="setup.confirm">Confirm password</label>
+            <input id="setup-confirm" name="confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="200">
+          </div>
+          <button id="setup-submit" class="btn primary block" type="submit">
+            <span class="btn-label" data-i18n="setup.submit">Create owner account</span>
+          </button>
+          <p id="setup-message" class="form-message" role="status" aria-live="polite"></p>
+        </form>
+        <p class="hint" data-i18n="login.hint">The owner account and long-lived sessions live in the private SQLite database.</p>
       </div>
     </section>
 

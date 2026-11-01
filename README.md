@@ -176,13 +176,17 @@ A maintenance runtime sandbox is not an OS boundary against every readable file.
 unrelated secrets off the service account and volume, and expose the Web UI only
 through loopback, an SSH tunnel, or an authenticated HTTPS reverse proxy.
 
-On the first start that has no administrator password, the service generates a
-random 256-bit password, stores it in the private volume with mode 0600, and
-prints it once to stderr so the operator can sign in without exec access. Later
-starts reuse the file and print nothing. Container logs therefore hold a
-credential from the first start onward: keep them private, and provide the
-password file yourself (or mount it via `ADMIN_PASSWORD_FILE`) when logs leave
-the host.
+On the first start that has no owner account, the console shows a setup form
+from the local or private network. The owner chooses a username and password;
+only the PBKDF2 hash is stored in the private SQLite database at
+`/data/folio.db` (mode 0600). There is no default password, generated password,
+or printed setup code. Sessions last 30 days of activity with a 90-day absolute
+limit, and survive service restarts.
+
+An existing `/data/secrets/admin-password` or `admin-password.hash` from an
+older deployment is imported once as the `admin` account (the plaintext file is
+removed); `ADMIN_PASSWORD_FILE` can seed that legacy import for an unattended
+deployment. After setup the database is authoritative.
 
 ## Credentials and integrations
 

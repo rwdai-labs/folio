@@ -10,9 +10,12 @@ Inherit `../AGENTS.md`.
 - Preserve same-origin requests, CSRF headers for mutations, session-expiry
   cleanup, bounded polling, and busy/error/empty states. Show task, run,
   deferred and paused states according to backend data.
-- Name Folio explicitly in session/login/logout labels. Repository selection
-  and storage authorization are separate: a saved checkout with missing
-  credentials needs authorization, and must not show a green connected badge.
+- Name Folio explicitly in session/login/logout labels. The login form has a
+  username and password; on first run the setup form creates the single owner
+  account and is only expected to work from a local/private address. There is
+  no printed setup code. Repository selection and storage authorization are
+  separate: a saved checkout with missing credentials needs authorization, and
+  must not show a green connected badge.
   A configured deployment token does not prove live repository access.
 - Daily navigation is dashboard (tasks and usage), assistant chat, actions,
   run history, owner review, and settings. With no ready repository/

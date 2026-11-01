@@ -437,7 +437,7 @@ func (c *testClient) request(t *testing.T, method, path string, payload any, ori
 
 func (c *testClient) login(t *testing.T, password string) {
 	t.Helper()
-	status, _, result := c.request(t, http.MethodPost, "/api/login", map[string]any{"password": password}, c.server.URL)
+	status, _, result := c.request(t, http.MethodPost, "/api/login", map[string]any{"username": "admin", "password": password}, c.server.URL)
 	if status != http.StatusOK {
 		t.Fatalf("login status=%d result=%v", status, result)
 	}
@@ -500,104 +500,107 @@ func TestLegacyPasswordHashLayoutRemainsCompatible(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dataDir, "secrets", "admin-password.hash"), []byte(legacyHash+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	auth, generated, err := loadPassword(dataDir, passwordFile)
-	if err != nil || !auth.verify("correct horse") || auth.verify("wrong") {
-		t.Fatalf("legacy password hash was not accepted: err=%v", err)
+	store, err := openAuthStore(dataDir, passwordFile)
+	if err != nil {
+		t.Fatalf("open auth: %v", err)
 	}
-	if generated != "" {
-		t.Fatalf("existing password was reported as generated: %q", generated)
+	defer store.Close()
+	if _, ok, err := store.Authenticate("admin", "correct horse"); err != nil || !ok {
+		t.Fatalf("legacy password hash was not accepted: ok=%v err=%v", ok, err)
+	}
+	if _, ok, _ := store.Authenticate("admin", "wrong"); ok {
+		t.Fatal("wrong password authenticated")
+	}
+	if _, err := os.Stat(passwordFile); !os.IsNotExist(err) {
+		t.Fatalf("plaintext bootstrap file still exists: %v", err)
 	}
 }
 
-func TestGeneratedPasswordIsAnnouncedOnceThenReused(t *testing.T) {
+func TestFirstRunSetupAndLongSession(t *testing.T) {
+	dataDir := t.TempDir()
+	passwordFile := filepath.Join(dataDir, "secrets", "admin-password")
+	store, err := openAuthStore(dataDir, passwordFile)
+	if err != nil {
+		t.Fatalf("open auth: %v", err)
+	}
+	required, err := store.SetupRequired()
+	if err != nil || !required {
+		t.Fatalf("setup required=%v err=%v", required, err)
+	}
+	if err := store.CreateUser("owner", "correct horse battery"); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	user, ok, err := store.Authenticate("owner", "correct horse battery")
+	if err != nil || !ok {
+		t.Fatalf("authenticate: ok=%v err=%v", ok, err)
+	}
+	token, csrf, expires, err := store.CreateSession(user, "synthetic browser")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if csrf == "" || time.Until(expires) < 29*24*time.Hour {
+		t.Fatalf("session expiry=%v csrf=%q", expires, csrf)
+	}
+	store.Close()
+
+	reopened, err := openAuthStore(dataDir, passwordFile)
+	if err != nil {
+		t.Fatalf("reopen auth: %v", err)
+	}
+	defer reopened.Close()
+	item, ok := reopened.GetSession(token)
+	if !ok || item.username != "owner" || item.csrf != csrf {
+		t.Fatalf("session did not survive restart: ok=%v item=%+v", ok, item)
+	}
+	reopened.DeleteSession(token)
+	if _, ok := reopened.GetSession(token); ok {
+		t.Fatal("deleted session still authenticates")
+	}
+}
+
+func TestSetupAPIRequiresPrivateAddressAndCreatesOneOwner(t *testing.T) {
 	root := t.TempDir()
-	dataDir := filepath.Join(root, "data")
-	passwordFile := filepath.Join(root, "secrets", "admin-password")
 	assets := filepath.Join(root, "assets")
 	if err := os.MkdirAll(assets, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	var notices []struct{ password, path string }
-	notice := func(password, path string) {
-		notices = append(notices, struct{ password, path string }{password, path})
+	for name, body := range map[string]string{"index.html": "index", "app.js": "script", "i18n.js": "i18n", "styles.css": "style"} {
+		if err := os.WriteFile(filepath.Join(assets, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	options := Options{DataDir: dataDir, PasswordFile: passwordFile, AssetsDir: assets, PasswordNotice: notice}
-
+	options := Options{
+		DataDir:      filepath.Join(root, "data"),
+		PasswordFile: filepath.Join(root, "missing-password"),
+		AssetsDir:    assets,
+		TrustedHosts: []string{"127.0.0.1"},
+	}
 	server, err := New(&testBackend{}, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(notices) != 1 {
-		t.Fatalf("first start notices=%d, want 1", len(notices))
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := &testClient{server: httpServer}
+	status, _, session := client.request(t, http.MethodGet, "/api/session", nil, "")
+	if status != http.StatusOK || session["setup_required"] != true {
+		t.Fatalf("setup session status=%d value=%v", status, session)
 	}
-	password := notices[0].password
-	if len(password) != 64 || strings.Trim(password, "0123456789abcdef") != "" {
-		t.Fatalf("announced password is not 64 hex characters: %d bytes", len(password))
+	status, _, setup := client.request(t, http.MethodPost, "/api/setup", map[string]any{
+		"username": "owner", "password": "correct horse battery",
+	}, httpServer.URL)
+	if status != http.StatusCreated || setup["authenticated"] != true {
+		t.Fatalf("setup status=%d value=%v", status, setup)
 	}
-	if notices[0].path != passwordFile {
-		t.Fatalf("notice path=%q, want %q", notices[0].path, passwordFile)
+	status, _, session = client.request(t, http.MethodGet, "/api/session", nil, "")
+	if status != http.StatusOK || session["authenticated"] != true || session["username"] != "owner" {
+		t.Fatalf("authenticated session status=%d value=%v", status, session)
 	}
-	stored, err := os.ReadFile(passwordFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.TrimSpace(string(stored)) != password {
-		t.Fatal("announced password does not match the stored file")
-	}
-	info, err := os.Stat(passwordFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("password file mode=%v, want 0600", info.Mode().Perm())
-	}
-	if !server.auth.verify(password) {
-		t.Fatal("announced password does not authenticate")
-	}
-
-	restarted, err := New(&testBackend{}, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(notices) != 1 {
-		t.Fatalf("second start notices=%d, want 1", len(notices))
-	}
-	if !restarted.auth.verify(password) {
-		t.Fatal("second start does not accept the stored password")
-	}
-
-	// An operator-provided password file is authoritative and never announced.
-	provided := filepath.Join(root, "provided", "admin-password")
-	if err := os.MkdirAll(filepath.Dir(provided), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(provided, []byte("correct horse\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := New(&testBackend{}, Options{DataDir: filepath.Join(root, "other-data"), PasswordFile: provided, AssetsDir: assets, PasswordNotice: notice}); err != nil {
-		t.Fatal(err)
-	}
-	if len(notices) != 1 {
-		t.Fatalf("provided password notices=%d, want 1", len(notices))
-	}
-
-	// Deleting the password file regenerates the credential. The cached
-	// verifier for the old password must not shadow the announced one.
-	if err := os.Remove(passwordFile); err != nil {
-		t.Fatal(err)
-	}
-	regenerated, err := New(&testBackend{}, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(notices) != 2 {
-		t.Fatalf("reset start notices=%d, want 2", len(notices))
-	}
-	if !regenerated.auth.verify(notices[1].password) {
-		t.Fatal("regenerated password does not authenticate")
-	}
-	if regenerated.auth.verify(password) {
-		t.Fatal("replaced password still authenticates")
+	status, _, _ = client.request(t, http.MethodPost, "/api/setup", map[string]any{
+		"username": "other", "password": "another password 123",
+	}, httpServer.URL)
+	if status != http.StatusConflict {
+		t.Fatalf("second setup status=%d", status)
 	}
 }
 
@@ -1308,5 +1311,26 @@ func TestAgentChatAPI(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("SSE missing %q: %s", want, text)
 		}
+	}
+}
+
+func TestLoginRateLimitStopsPasswordGuessing(t *testing.T) {
+	backend := &testBackend{}
+	server, _ := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+	for attempt := 0; attempt < 5; attempt++ {
+		status, _, _ := client.request(t, http.MethodPost, "/api/login", map[string]any{
+			"username": "admin", "password": "wrong password",
+		}, server.URL)
+		if status != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status=%d", attempt, status)
+		}
+	}
+	status, headers, result := client.request(t, http.MethodPost, "/api/login", map[string]any{
+		"username": "admin", "password": "wrong password",
+	}, server.URL)
+	if status != http.StatusTooManyRequests || result["error"] != "login_rate_limited" || headers.Get("Retry-After") == "" {
+		t.Fatalf("rate limit status=%d headers=%v result=%v", status, headers, result)
 	}
 }

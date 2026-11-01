@@ -23,27 +23,22 @@ Compose binds only `127.0.0.1:8080` on the NAS. From your workstation:
 ssh -L 8080:127.0.0.1:8080 <nas>
 ```
 
-Open `http://localhost:8080`. On the first start, when no administrator password
-exists, the service generates one and prints it once to its log. Read it in your
-own NAS terminal, never through chat or model tools:
+Open `http://localhost:8080`. On the first start with no owner account, the
+console shows a setup form. It is accepted only from loopback or a private
+network; choose a username and a password (12–200 characters). Only the PBKDF2
+hash is stored in `/data/folio.db` (mode 0600); there is no default password,
+generated password, or printed setup code.
 
-```bash
-docker compose logs folio
-```
+If you need unattended bootstrap, mount an `ADMIN_PASSWORD_FILE` before the
+first start; it is imported once as the `admin` account and then removed. The
+same one-time import applies when upgrading a volume that already contains
+`secrets/admin-password` or `secrets/admin-password.hash`.
 
-Look for the `administrator password:` line. It is emitted only on the start that
-creates the password and is not repeated on later starts, but it stays in the
-existing container log. The password is also stored in the private volume:
-
-```bash
-docker compose exec -u context folio cat /data/secrets/admin-password
-```
-
-Container logs are a credential source from that first start onward. Do not ship
-them to a shared aggregator, and keep `docker compose logs` output private. To
-keep the credential out of the log entirely, provide the password yourself
-before the first start, for example with a secret manager file mounted and
-`ADMIN_PASSWORD_FILE` set; the service then reuses that file and prints nothing.
+The database is the auth source of truth. Back it up privately with SQLite's
+backup command, for example `sqlite3 /data/folio.db "VACUUM INTO '/data/backup.db'"`,
+instead of copying the WAL files while the service is writing. Keep the SQLite
+file on a local volume, not on NFS/SMB. Sessions last 30 days of activity with a
+90-day absolute limit and survive restarts.
 
 The service needs one credential for the private repository. There are two
 first-class paths:

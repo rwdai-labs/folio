@@ -79,6 +79,7 @@
     viewInitialized: false,
     rechecking: false,
     selectedRun: null,
+    setupRequired: false,
     chat: [],
     chatBusy: false,
     actions: [],
@@ -89,6 +90,7 @@
 
   const messageRegions = {
     login: { element: "login-message", data: null },
+    setup: { element: "setup-message", data: null },
     repository: { element: "repository-message", data: null },
     automation: { element: "automation-message", data: null },
     channels: { element: "channels-message", data: null },
@@ -299,6 +301,29 @@
     $("app-view").hidden = true;
     $("logout-button").hidden = true;
     setConnection(false);
+    showAuthMode();
+  }
+
+  function showAuthMode() {
+    const setup = Boolean(state.setupRequired);
+    const loginForm = $("login-form");
+    const setupForm = $("setup-form");
+    if (loginForm) loginForm.hidden = setup;
+    if (setupForm) setupForm.hidden = !setup;
+    const heading = $("login-heading");
+    const lead = $("login-lead");
+    if (heading) heading.textContent = t(setup ? "setup.title" : "login.title");
+    if (lead) lead.textContent = t(setup ? "setup.title_lead" : "login.lead");
+    const focus = setup ? $("setup-username") : $("login-username");
+    if (focus) focus.focus();
+  }
+
+  function finishAuthentication(result) {
+    state.csrf = typeof result.csrf_token === "string" ? result.csrf_token : "";
+    state.authenticated = true;
+    state.setupRequired = false;
+    showApp();
+    return Promise.resolve();
   }
 
   function showApp() {
@@ -379,11 +404,13 @@
   async function login(event) {
     event.preventDefault();
     if (state.loggingIn) return;
-    const input = $("password");
-    const password = input.value;
-    if (!password) {
+    const usernameInput = $("login-username");
+    const passwordInput = $("password");
+    const username = usernameInput ? usernameInput.value.trim() : "";
+    const password = passwordInput ? passwordInput.value : "";
+    if (!username || !password) {
       setMessage("login", "login.required", { error: true });
-      input.focus();
+      (username ? passwordInput : usernameInput).focus();
       return;
     }
     state.loggingIn = true;
@@ -391,14 +418,17 @@
     setBusy(button, "login.submitting");
     setMessage("login", null);
     try {
-      const result = await api("/api/login", { method: "POST", body: { password } });
-      state.csrf = typeof result.csrf_token === "string" ? result.csrf_token : "";
-      state.authenticated = true;
-      input.value = "";
-      showApp();
+      const result = await api("/api/login", { method: "POST", body: { username, password } });
+      if (passwordInput) passwordInput.value = "";
+      await finishAuthentication(result);
       await refreshAll();
       await enterSession();
     } catch (error) {
+      if (error.code === "setup_required") {
+        state.setupRequired = true;
+        showLogin();
+        return;
+      }
       const key =
         error.code === "login_rate_limited" || error.status === 429
           ? "login.rate_limited"
@@ -408,6 +438,51 @@
               ? "error.network"
               : "login.failed";
       setMessage("login", key, { error: true });
+    } finally {
+      state.loggingIn = false;
+      clearBusy(button);
+    }
+  }
+
+  async function setup(event) {
+    event.preventDefault();
+    if (state.loggingIn) return;
+    const username = $("setup-username").value.trim();
+    const password = $("setup-password").value;
+    const confirm = $("setup-confirm").value;
+    if (!username || !password) {
+      setMessage("setup", "setup.fields_required", { error: true });
+      return;
+    }
+    if (password.length < 12) {
+      setMessage("setup", "setup.password_short", { error: true });
+      return;
+    }
+    if (password !== confirm) {
+      setMessage("setup", "setup.password_mismatch", { error: true });
+      return;
+    }
+    state.loggingIn = true;
+    const button = $("setup-submit");
+    setBusy(button, "setup.submitting");
+    setMessage("setup", null);
+    try {
+      const result = await api("/api/setup", { method: "POST", body: { username, password } });
+      $("setup-password").value = "";
+      $("setup-confirm").value = "";
+      await finishAuthentication(result);
+      await refreshAll();
+      await enterSession();
+    } catch (error) {
+      const key =
+        error.code === "setup_private_only"
+          ? "setup.private_only"
+          : error.code === "auth_setup_complete"
+            ? "setup.complete"
+            : error.code === "auth_username_invalid" || error.code === "auth_password_invalid"
+              ? "setup.invalid"
+              : "setup.failed";
+      setMessage("setup", key, { error: true });
     } finally {
       state.loggingIn = false;
       clearBusy(button);
@@ -3522,6 +3597,7 @@
   /* --------------------------------------------------------------- events */
 
   on("login-form", "submit", login);
+  on("setup-form", "submit", setup);
   window.addEventListener("hashchange", () => navigate(true));
   on("review-refresh", "click", async () => {
     const button = $("review-refresh");
@@ -3703,6 +3779,7 @@
   });
 
   document.addEventListener("folio:languagechange", () => {
+    if (!state.authenticated) showAuthMode();
     renderMessages();
     setConnection(state.authenticated);
     if (state.lastState) renderState(state.lastState);
@@ -3725,6 +3802,7 @@
   async function boot() {
     try {
       const session = await api("/api/session");
+      state.setupRequired = Boolean(session.setup_required);
       if (session.authenticated) {
         state.authenticated = true;
         state.csrf = typeof session.csrf_token === "string" ? session.csrf_token : "";
@@ -3733,6 +3811,7 @@
         await enterSession();
       } else {
         showLogin();
+        showAuthMode();
       }
     } catch (error) {
       showLogin();

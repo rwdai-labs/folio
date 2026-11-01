@@ -11,6 +11,13 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - Keep browser mutations behind session/CSRF checks. Signed inbound hooks are
   a separate authentication path; preserve host checks, raw-body signature
   semantics, body bounds and rejection before side effects.
+- Auth is a single owner account (username + PBKDF2 password) in
+  `/data/folio.db`. First-run setup is available only from loopback/private
+  addresses; there is no default or generated password and no setup code. The
+  DB stores only salt/digest; legacy plaintext/hash files are imported once and
+  removed. Sessions are durable rows (30-day idle, 90-day absolute, sliding),
+  with hashed tokens and CSRF checks; logout removes the row. Keep tokens,
+  passwords and the SQLite file out of responses and logs.
 - Never expose raw process errors, credential files or arbitrary runtime files.
   Static assets must come only from their configured bounded asset roots.
 - API changes require matching `Backend` implementations, fake backends, UI
