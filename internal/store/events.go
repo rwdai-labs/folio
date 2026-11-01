@@ -29,15 +29,9 @@ type event struct {
 }
 
 type eventRoute struct {
-	Source string
-	Type   string
-	Target string
-}
-
-// defaultEventRoutes are the internal Phase 1 routes. Hook actions still come
-// from the hook record; a routes file arrives with the owner/chat ingress.
-var defaultEventRoutes = []eventRoute{
-	{Source: "scheduler", Type: "tick", Target: "action:" + taskKindMaintenance},
+	Source string `json:"source"`
+	Type   string `json:"type"`
+	Target string `json:"target"`
 }
 
 // resolveEventRoute returns an action target for one authenticated event. The
@@ -49,7 +43,7 @@ func resolveEventRoute(e event) (string, bool) {
 	if e.route != "" {
 		return e.route, validActionTarget(e.route)
 	}
-	for _, route := range defaultEventRoutes {
+	for _, route := range defaultRoutesFile().Routes {
 		if route.Source == e.Source && route.Type == e.Type {
 			return route.Target, validActionTarget(route.Target)
 		}

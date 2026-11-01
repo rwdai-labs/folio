@@ -648,3 +648,30 @@ func pipelineStepMap(step pipelineStep) map[string]any {
 	}
 	return value
 }
+
+// PutActionHostsJSON replaces the HTTP host allowlist. Existing actions are
+// revalidated so a host removal cannot silently leave an unroutable step.
+func (s *Store) PutActionHostsJSON(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 || len(raw) > maxPipelineFileBytes {
+		return nil, errStore("action_invalid")
+	}
+	var value struct {
+		Hosts []string `json:"hosts"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, errStore("action_invalid")
+	}
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	file, err := s.loadPipelines()
+	if err != nil {
+		return nil, err
+	}
+	file.HTTPHosts = value.Hosts
+	if err := s.writePipelines(file); err != nil {
+		return nil, err
+	}
+	return s.ListActions()
+}

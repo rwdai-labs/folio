@@ -57,8 +57,20 @@ func (h *weixinHandler) HandleMessage(ctx context.Context, m channel.Message) (s
 		}
 		return "Folio 在线，Context 仓库尚未连接。微信入口仅支持只读回答。", nil
 	default:
-		// Each message is a fresh read-only report invocation. Never resume
-		// a shared CLI conversation using a transport-supplied session ID.
+		// The owner gets the main agent when a runtime is configured. The
+		// session key comes from the authenticated identity, never from the
+		// transport session ID. Without a runtime, keep the existing bounded
+		// read-only answer so a deployment does not lose its channel.
+		target, routed, routeErr := h.store.eventRouteFor(event{
+			Source: "weixin", Type: "owner.message", Trust: eventTrustOwner,
+		})
+		if routeErr == nil && routed && target == "agent:main" && h.store.AgentAvailable() {
+			session := agentSessionID("weixin", m.AccountID, m.ConversationID)
+			result, err := h.store.AgentTurn(ctx, session, m.Text, eventTrustOwner, nil)
+			if err == nil && strings.TrimSpace(result.Text) != "" {
+				return result.Text, nil
+			}
+		}
 		return h.store.channelReport(ctx, m.Text)
 	}
 }

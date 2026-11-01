@@ -1,10 +1,11 @@
 # Runtime actions and the main agent
 
-Status: target architecture. Snapshot date: 2026-11-01. Phases 1 and 2 are
-implemented (internal action-plan/event seam, runtime action registry and
-pipeline); the main agent/chat and the editor remain planned. Current
-user-visible behaviour remains [README](../README.md) and the package
-instructions. No private context, credentials, or host details belong here.
+Status: target architecture. Snapshot date: 2026-11-01. Phases 1–4 are
+implemented at the adapter boundary: runtime actions, event routes, the main
+agent loop with an in-process tool gateway, console chat, Weixin owner turns,
+and the action editor/version restore. The real pi wrapper, lane admission and
+live push/remote acceptance remain unverified; see §10. No private context,
+credentials, or host details belong here.
 
 Scope decision: the main agent may change runtime configuration; editing Go
 source, running a shell, and deploying a binary are out of scope.
@@ -18,8 +19,9 @@ channels, and the console. Two things change:
    steps over a fixed primitive set. Adding a task is a JSON edit; adding a new
    primitive is still a code change. Scripts are allowed as an owner-authored
    primitive, never as event-supplied code.
-2. **A main agent becomes the control-plane interface.** It runs on pi, receives
-   owner messages from Weixin and a new console chat, and calls Folio tools to
+2. **A main agent becomes the control-plane interface.** It runs behind a
+   narrow runtime adapter (a pi wrapper is the intended deployment), receives
+   owner messages from Weixin and the console chat, and calls Folio tools to
    create tasks, edit actions and routes, push messages, and inspect runs.
    "Modifying Folio" means runtime configuration only; source code and deploy
    stay owner/CI work. Integration events never reach write tools.
@@ -136,8 +138,9 @@ watcher becomes `hook.repo.changed`; the scheduler currently runs maintenance
 directly and will instead emit `scheduler.tick`; Weixin inbound is currently a
 one-shot answer and becomes `weixin.owner.message` in Phase 3.
 
-Run-level detail stays in the run ledger; `task.completed` and `task.failed`
-are the routed events in v1.
+Run-level detail stays in the run ledger. Task completion currently uses the
+existing notification path; routing `task.completed` and `task.failed` through
+`routes.json` is planned.
 
 Console chat example:
 
@@ -285,12 +288,13 @@ owner/CI artifacts.
 
 ### 4.4 Main agent
 
-Runtime: pi, through its SDK or RPC mode. Folio keeps a narrow Go interface so
-the runtime can be replaced:
+Runtime: an injected adapter; a pi wrapper is the intended deployment. Folio
+keeps a narrow Go interface so the runtime can be replaced:
 
 ```go
 type AgentRuntime interface {
-    Turn(context.Context, TurnRequest) (TurnResult, error)
+    Available() bool
+    Turn(context.Context, AgentRequest) (AgentResponse, error)
 }
 ```
 
@@ -298,22 +302,25 @@ DSH remains a worker runner. Its SDK/ACP is not the control-plane contract: its
 agent loop is downstream of pi and may change independently. The
 `AgentRuntime` boundary keeps that swap cheap.
 
-`TurnRequest` carries the session, the event envelope, the trust class, the
-granted tools, the tool-gateway URL and token, and turn limits.
+`AgentRequest` carries the session, input, bounded history, the granted tool
+specs, and the event trust class. Folio executes the tools; the runtime never
+receives ambient authority.
 
 The owner session has one write surface: runtime configuration and queue
 control. An observer session has read tools only.
 
 | Class | Tools | Effect |
 | --- | --- | --- |
-| control | `task.*`, `action.*`, `route.*`, `policy.get` / `policy.put`, `push.send`, `context.search`, `run.*`, `status`, `folio.reload` | queue, definitions, routes, policy, channel, context, audit |
+| control | `task.*`, `action.*`, `route.*`, `policy.get` / `policy.put`, `push.send`, `context.search`, `run.*`, `status` | queue, definitions, routes, policy, channel, context, audit |
 | observer | `context.search`, `run.get`, `status` | read-only |
 
 "Modify Folio" means:
 
 - create, update, disable, and version actions (`action.put`, `action.disable`);
-- change event routes (`route.put`) and the main-agent policy;
-- reload the configuration (`folio.reload`).
+- change event routes (`route.put`) and the queue policy (`policy.put`).
+
+Writes are read from the private files on every resolution, so no reload tool is
+required.
 
 It does not mean editing Go source, running a shell, or replacing the binary.
 Those remain owner/CI work and need a separate design.
@@ -328,8 +335,8 @@ Rules:
 - `action.put` takes effect immediately after schema validation. It is
   versioned, attributed, and audited; `action.disable` is the kill switch.
   There is no confirmation step.
-- `route.put` and `folio.reload` follow the same pattern; a bad route is
-  rejected before it is saved.
+- `route.put` and `policy.put` follow the same pattern; invalid routes or
+  policy values are rejected before they are saved.
 - A turn is a run (`trigger: agent`), not a durable task. Work that outlives the
   turn becomes `task.create`.
 - Session keys are `(channel, account, conversation)`. Transcripts are bounded
@@ -338,7 +345,15 @@ Rules:
 - The channel reply is the turn result. Proactive messages use `push.send` and
   the delivery ledger.
 
-### 4.5 Lanes
+The runtime adapter is a command boundary. The executable at
+`/data/agent/runtime` receives one JSON `AgentRequest` on stdin and returns one
+JSON `AgentResponse` on stdout: `text`, optional `tool_calls` (`name`,
+`arguments`) and optional `usage`. Folio validates names, arguments, output
+bounds and grants, executes the tools, appends tool results, and calls the
+runtime again. A pi-backed wrapper belongs behind this protocol; the real pi
+package is not installed or verified in this environment.
+
+### 4.5 Lanes (target; admission not enforced yet)
 
 | Lane | Work | Concurrency | Window |
 | --- | --- | --- | --- |
@@ -346,17 +361,14 @@ Rules:
 | `interactive` | owner chat | 1 reserved model slot | immediate |
 | `batch` | reports, scheduled actions | remaining model slots | owner policy |
 
-Lanes are admission control, not OS threads. The checkout stays single-writer
-because `repo` has one slot; a long maintenance run no longer blocks Weixin
-because `interactive` has a reserved slot. The default is two model slots: one
-reserved for `interactive`, one for `batch`. If the owner configures a single
-slot, `interactive` wins and `batch` waits. When no slot is free, an interactive
-turn waits for a bounded time and then answers "busy" instead of queueing
-without limit.
+Lanes are the target admission model, not OS threads. The current build still
+uses the existing single dispatcher and one model mutex; lane admission is not
+enforced yet. Until it is, an interactive turn can wait behind a maintenance
+run, and the queue remains single-writer.
 
-### 4.6 Console chat
+### 4.6 Console chat (implemented)
 
-The console gets an `Assistant` view. It is an owner event source, not a second
+The console has an `Assistant` view. It is an owner event source, not a second
 agent:
 
 - `#chat` view in the existing hash navigation; owner-only like the rest of the
@@ -398,9 +410,10 @@ Planned private layout:
 ```text
 /data/actions.json              action definitions (0600)
 /data/routes.json               event routes (0600)
-/data/agent/policy.md           main-agent system policy
+/data/agent/runtime             agent adapter executable (unverified pi wrapper)
 /data/agent/sessions/           bounded session state
 /data/scripts/                  owner scripts (0700)
+/data/policies.json             queue priority/window policy
 /data/runtime/action-versions/  published versions and diffs
 /data/runtime/runs/             existing run ledger
 /data/runtime/reports/          existing reports
@@ -413,11 +426,14 @@ Planned session-protected endpoints:
 | `GET /api/actions`, `POST /api/actions/validate` | inspect and dry-run |
 | `POST /api/actions` | publish (CSRF, audited, direct) |
 | `POST /api/actions/{id}/disable` | kill switch |
-| `GET /api/actions/{id}/versions` | history and rollback |
-| `GET/POST /api/routes` | event routing |
+| `GET /api/actions/versions`, `POST /api/actions/restore` | registry history and rollback |
+| `POST /api/actions/hosts` | HTTP host allowlist |
 | `POST /api/agent/turns` | owner chat turn, SSE |
 | `GET /api/agent/sessions/{id}` | bounded transcript |
-| `POST /api/agent/turns/{id}/cancel` | cancel a running turn |
+
+Routes and policy are edited through the main-agent tools; a dedicated Web
+route editor is not implemented. A chat turn is canceled by closing the SSE
+connection.
 
 Existing task, run, usage, channel, and repository APIs keep their contracts.
 
@@ -440,24 +456,27 @@ script action runs from `/data/scripts` with argv/stdin and bounded output; a
 failed step is audited. The registry API is implemented; the visual editor is
 deferred to Phase 4.
 
-Phase 3 — main agent and chat. Add the pi runtime, tool gateway, sessions,
-console chat, and Weixin owner turns. Acceptance: owner asks for a task in
-Weixin or chat, the agent creates it, and the run is audited; the chat streams
-tool calls; an integration event cannot reach write tools.
+Phase 3 — main agent and chat (implemented at the adapter boundary,
+2026-11-01). Add the runtime boundary, in-process tool gateway, sessions,
+console chat, Weixin owner turns, and `routes.json`. Acceptance: owner asks for
+a task in Weixin or chat, the agent creates it, and the run is audited; the chat
+streams tool calls; an integration event cannot reach write tools. The real pi
+wrapper is not installed or verified; tests use a fake and the command adapter.
+Lane admission remains planned.
 
-Phase 4 — editor and operations. Action editor, rollback, metrics, second
-channel, and retention policy.
+Phase 4 — editor and operations (core implemented 2026-11-01). Action editor,
+rollback, and version restore are implemented. Metrics, a second channel, and a
+retention policy remain planned.
 
 ## 8. Open questions
 
-- Chat transport: SSE (planned) versus WebSocket, and whether a disconnect
-  cancels the turn.
-- pi SDK versus RPC, and whether a persistent Node sidecar or a per-turn child
-  is simpler to operate. This is the Phase 0 decision.
-- Can pi run with only the Folio tool gateway and no built-in shell? If not, use
-  the minimal SDK session rather than the coding-agent profile.
-- Should action and route writes hot-reload automatically, or require an
-  explicit `folio.reload`?
+- The real pi adapter: SDK versus RPC, and whether a persistent Node sidecar or
+  a per-turn child is simpler to operate. This is the unverified Phase 0 work.
+- Lane admission and the reserved interactive model slot; the current build
+  still uses one dispatcher and one model mutex.
+- Can a real pi wrapper speak the stdin/stdout adapter protocol and avoid
+  built-in shell/filesystem tools? If not, use a minimal pi SDK session rather
+  than the coding-agent profile.
 - Scripts root: only `/data/scripts`, or an owner-configured allowlist?
 - Session compaction and retention: who owns the canonical transcript, pi or
   Folio?
@@ -472,8 +491,9 @@ channel, and retention policy.
 - Runtime actions are step chains, and **scripts are allowed** as an
   owner-authored primitive.
 - `action.put` takes effect **immediately**; no confirmation step.
-- The main agent runs on **pi**; DSH remains a maintenance/report runner, not
-  the main-agent contract.
+- The main agent runs behind a **command adapter**; a pi wrapper is the intended
+  deployment. DSH remains a maintenance/report runner, not the main-agent
+  contract.
 - The console gets a first-class **chat window** to the main agent; Weixin is
   the remote surface.
 - The owner session may **modify Folio's runtime configuration only**: actions,
@@ -485,14 +505,15 @@ channel, and retention policy.
 
 ## 10. Implementation status
 
-2026-11-01 — Phase 1 and the Phase 2 core landed:
+2026-11-01 — Phases 1–4 landed at the adapter boundary:
 
 - `internal/store/actions.go` defines the internal `actionPlan`/`actionStep`
   shape and routes both legacy kinds and runtime actions through `runAction`.
   Legacy kinds remain one-step and keep their previous behavior.
-- `internal/store/events.go` defines the internal event envelope, trust
-  classes, a built-in route table and action-target validation.
-  `SchedulerTick` enters through `scheduler.tick` → `action:maintenance`.
+- `internal/store/events.go` and `routes.go` define the event envelope, trust
+  classes, defaults and `/data/routes.json`. `SchedulerTick` enters through
+  `scheduler.tick`; console and Weixin owner messages resolve through the same
+  route table.
 - `internal/store/action_config.go` loads and validates `/data/actions.json`
   (version 2), snapshots versions before writes, and exposes list/validate/
   put/disable/restore operations. Unknown fields and unsafe definitions fail
@@ -500,14 +521,26 @@ channel, and retention policy.
 - `internal/store/action_pipeline.go` executes ordered `context`, `agent`,
   `script`, `push`, `http` and `task` steps with bounded output, templates,
   per-step audit records, usage aggregation and optional report persistence.
-- `internal/web` exposes session/CSRF-protected action registry routes.
+- `internal/store/agent.go` and `agent_tools.go` implement the runtime adapter,
+  bounded sessions, the tool loop, owner/observer grants and an agent run audit.
+  The command adapter at `/data/agent/runtime` is the pi boundary; it is tested
+  with a fake executable, not with a real pi installation.
+- `internal/store/inbound.go` sends authorized Weixin owner text through the
+  agent when the route and runtime are available, and keeps the bounded
+  read-only answer as a fallback.
+- `internal/web` exposes the action registry API, the SSE chat endpoint and
+  session history. The console has `#chat` and `#actions` views; the editor
+  supports validate, publish, disable, version restore and the HTTP host
+  allowlist.
 - Hooks, task creation and dispatch accept runtime action IDs; the legacy
   `task-kinds.json` path still works.
-- Not implemented yet: the pi main agent, tool gateway, console chat, Weixin
-  owner turns, `routes.json`, lane admission, and the visual action editor.
-  `lane` is accepted and validated but not enforced until Phase 3.
+- Not verified / not implemented: a real pi package wrapper, lane admission and
+  the reserved interactive model slot, task lifecycle events routed through
+  `routes.json`, live Weixin/push delivery, metrics, a second channel, and the
+  git remote push. `lane` is validated but not enforced.
 - Tests cover action validation/versioning, pipeline steps, runtime dispatch,
-  route targets, the registry API and the unchanged legacy paths.
+  routes, the agent turn/tool loop, Weixin routing, the chat SSE API, the action
+  registry API, the editor contracts and the unchanged legacy paths.
 
 ## References
 

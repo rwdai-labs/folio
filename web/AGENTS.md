@@ -14,13 +14,19 @@ Inherit `../AGENTS.md`.
   and storage authorization are separate: a saved checkout with missing
   credentials needs authorization, and must not show a green connected badge.
   A configured deployment token does not prove live repository access.
-- Daily navigation is dashboard (tasks and usage), run history, owner review,
-  and settings. With no ready repository/authorization/installed runner, default
-  to settings; configured sessions default to the dashboard. Setup state is
-  derived from server data, not a persistent browser completion flag. Keep the
-  GitHub plugin mounts, repository picker, notifications and hooks in settings;
-  optional integrations never block the dashboard. Runner availability is not
-  provider credential verification.
+- Daily navigation is dashboard (tasks and usage), assistant chat, actions,
+  run history, owner review, and settings. With no ready repository/
+  authorization/installed runner, default to settings; configured sessions
+  default to the dashboard. Setup state is derived from server data, not a
+  persistent browser completion flag. Keep the GitHub plugin mounts, repository
+  picker, notifications and hooks in settings; optional integrations never block
+  the dashboard. Runner availability is not provider credential verification.
+- The assistant view renders only server text/tool events as text nodes. Keep
+  the SSE reader bounded, show unavailable/error states, and never put raw model
+  output or tool arguments into the page as HTML. The actions view edits one
+  owner action as JSON; validate/publish/disable/restore and the HTTP host
+  allowlist are explicit controls, and version names are rendered as text. Do not add a second agent or a
+  background poller for these views.
 - The dashboard board groups queued/running/failed/finished records into four
   columns, with a separately labelled human-review snapshot in Needs attention.
   Preserve backend priorities and wait/pause semantics; no drag-to-complete or

@@ -7,9 +7,10 @@ Inherit `../AGENTS.md`.
   `personal-assistant-research.md` contain design/research context; verify any
   proposal against code before treating it as shipped behaviour.
 - `agent-architecture.md` is the target architecture for runtime actions, the
-  main agent, event routing and execution lanes. Phases 1 and 2 are implemented;
-  the main agent/chat and editor remain planned. Keep its status block and
-  decision log accurate, and do not cite planned phases as current behaviour.
+  main agent, event routing and execution lanes. Phases 1–4 are implemented at
+  the adapter boundary; the real pi wrapper, lane admission and live push/remote
+  acceptance remain unverified. Keep its status block and decision log accurate,
+  and do not cite unverified behaviour as accepted.
 - `subscription-quota.md` covers subscription allowance/quota management: what
   to borrow from magpie, the implemented read-only panel, and the unshipped
   gateway/deferral phases. Keep its status block accurate as phases land.

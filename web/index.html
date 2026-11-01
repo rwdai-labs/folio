@@ -61,6 +61,8 @@
       <aside class="sidebar">
         <nav class="section-nav" aria-label="Sections" data-i18n-aria-label="nav.aria">
           <a href="#dashboard" data-view="dashboard" data-i18n="nav.dashboard">Dashboard</a>
+          <a href="#chat" data-view="chat" data-i18n="nav.chat">Assistant</a>
+          <a href="#actions" data-view="actions" data-i18n="nav.actions">Actions</a>
           <a href="#runs" data-view="runs" data-i18n="nav.runs">Run history</a>
           <a href="#review" data-view="review" data-i18n="nav.review">Owner review</a>
           <a href="#settings" data-view="settings" data-i18n="nav.settings">Settings</a>
@@ -289,6 +291,44 @@
           <section class="card"><h2 data-i18n="review.snapshot">Findings at the last successful maintenance</h2>
             <p id="review-snapshot" class="hint"></p>
             <div id="review-list" class="run-edit-list" aria-live="polite"></div>
+          </section>
+        </section>
+        <section id="chat-view" class="page-view" aria-labelledby="chat-heading" hidden>
+          <header class="page-heading"><div><p class="eyebrow" data-i18n="chat.kicker">Assistant</p>
+            <h1 id="chat-heading" tabindex="-1" data-i18n="chat.title">Chat</h1>
+            <p class="lede" data-i18n="chat.lead">Ask the main agent to inspect or change Folio configuration.</p></div></header>
+          <section class="card">
+            <div id="chat-log" class="chat-log" aria-live="polite"></div>
+            <p id="chat-message" class="form-message" role="status" aria-live="polite"></p>
+            <form id="chat-form" class="chat-form">
+              <label class="hint" for="chat-input" data-i18n="chat.input">Message</label>
+              <textarea id="chat-input" rows="3" maxlength="16000" required></textarea>
+              <button id="chat-send" class="btn primary" type="submit" data-i18n="chat.send">Send</button>
+            </form>
+          </section>
+        </section>
+        <section id="actions-view" class="page-view" aria-labelledby="actions-heading" hidden>
+          <header class="page-heading"><div><p class="eyebrow" data-i18n="actions.kicker">Runtime</p>
+            <h1 id="actions-heading" tabindex="-1" data-i18n="actions.title">Actions</h1>
+            <p class="lede" data-i18n="actions.lead">Edit the owner-defined action registry. Writes are validated, versioned and effective immediately.</p></div>
+            <button id="actions-refresh" class="btn ghost" type="button" data-i18n="common.refresh">Refresh</button></header>
+          <section class="card">
+            <div id="actions-list" class="actions-list" aria-live="polite"></div>
+            <p id="actions-message" class="form-message" role="status" aria-live="polite"></p>
+            <label class="hint" for="action-editor" data-i18n="actions.editor">Action JSON</label>
+            <textarea id="action-editor" class="action-editor" rows="14" spellcheck="false"></textarea>
+            <label class="hint" for="action-hosts" data-i18n="actions.hosts">HTTP hosts</label>
+            <textarea id="action-hosts" class="action-editor" rows="3" spellcheck="false"></textarea>
+            <div class="actions">
+              <button id="action-hosts-save" class="btn ghost" type="button" data-i18n="actions.save_hosts">Save hosts</button>
+            </div>
+            <div class="actions">
+              <button id="action-validate" class="btn ghost" type="button" data-i18n="actions.validate">Validate</button>
+              <button id="action-save" class="btn primary" type="button" data-i18n="actions.save">Publish</button>
+              <button id="action-disable" class="btn ghost danger" type="button" data-i18n="actions.disable">Disable</button>
+            </div>
+            <h2 data-i18n="actions.versions">Versions</h2>
+            <div id="action-versions" class="actions-list" aria-live="polite"></div>
           </section>
         </section>
         <section id="settings-view" class="page-view" aria-labelledby="settings-heading" hidden>

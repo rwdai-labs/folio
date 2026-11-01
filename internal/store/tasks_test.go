@@ -354,3 +354,24 @@ func TestCreateTaskProjectsPluginPayload(t *testing.T) {
 		}
 	}
 }
+
+func TestPutTaskPolicyValidatesAndPersists(t *testing.T) {
+	store := newTestStore(t)
+	value, err := store.PutTaskPolicyJSON([]byte(`{"defer":{"P2":false},"window":{"start":"22:00","end":"06:00","utc_offset_minutes":480}}`))
+	if err != nil {
+		t.Fatalf("put policy: %v", err)
+	}
+	window := value["window"].(taskWindow)
+	if window.Start != "22:00" || window.End != "06:00" || window.OffsetMinutes == nil || *window.OffsetMinutes != 480 {
+		t.Fatalf("policy=%v", value)
+	}
+	if value["defer"].(map[string]bool)["P2"] {
+		t.Fatal("defer override did not persist")
+	}
+	if _, err := store.PutTaskPolicyJSON([]byte(`{"window":{"start":"25:00","end":"06:00"}}`)); err == nil {
+		t.Fatal("invalid clock was accepted")
+	}
+	if _, err := store.PutTaskPolicyJSON([]byte(`{"defer":{"P9":true}}`)); err == nil {
+		t.Fatal("invalid priority was accepted")
+	}
+}

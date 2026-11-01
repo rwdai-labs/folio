@@ -191,6 +191,26 @@ func (b *testBackend) AcceptHook(id string, timestamp int64, eventID, signature 
 	return map[string]any{"name": "Watch context", "action": "maintenance", "priority": "P2"}, "ok"
 }
 
+func (b *testBackend) AgentAvailable() bool { return true }
+
+func (b *testBackend) AgentRoute(source, typ string) (string, bool, error) {
+	return "agent:main", true, nil
+}
+
+func (b *testBackend) AgentTurnMap(ctx context.Context, session, text, trust string, emit func(map[string]any)) (map[string]any, error) {
+	emit(map[string]any{"type": "turn.started"})
+	emit(map[string]any{"type": "text.delta", "text": "hello " + text})
+	emit(map[string]any{"type": "turn.finished", "status": "reported", "run_id": "r-0123456789ab"})
+	return map[string]any{"text": "hello " + text, "run_id": "r-0123456789ab"}, nil
+}
+
+func (b *testBackend) AgentHistory(session string) (map[string]any, error) {
+	return map[string]any{"session": session, "messages": []any{
+		map[string]any{"role": "user", "content": "hi"},
+		map[string]any{"role": "assistant", "content": "hello hi"},
+	}}, nil
+}
+
 func (b *testBackend) ListActions() (map[string]any, error) {
 	return map[string]any{
 		"http_hosts": []string{"api.example.com"},
@@ -214,6 +234,10 @@ func (b *testBackend) PutActionJSON(raw []byte) (map[string]any, error) {
 
 func (b *testBackend) DisableAction(id string) error {
 	return nil
+}
+
+func (b *testBackend) PutActionHostsJSON(raw []byte) (map[string]any, error) {
+	return b.ListActions()
 }
 
 func (b *testBackend) ActionVersions() (map[string]any, error) {
@@ -1131,5 +1155,54 @@ func TestActionRegistryAPI(t *testing.T) {
 	}, server.URL)
 	if status != http.StatusOK {
 		t.Fatalf("restore status=%d", status)
+	}
+}
+
+func TestAgentChatAPI(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/agent/sessions/console-main", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated history status=%d", status)
+	}
+	client.login(t, password)
+	status, _, history := client.request(t, http.MethodGet, "/api/agent/sessions/console-main", nil, "")
+	if status != http.StatusOK || len(history["messages"].([]any)) != 2 {
+		t.Fatalf("history status=%d value=%v", status, history)
+	}
+
+	rawBody := `{"session":"console-main","text":"hi"}`
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/api/agent/turns", strings.NewReader(rawBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = strings.TrimPrefix(server.URL, "http://")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", server.URL)
+	request.Header.Set("Cookie", client.cookie)
+	request.Header.Set("X-CSRF-Token", client.csrf)
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("turn status=%d body=%s", response.StatusCode, body)
+	}
+	if !strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("content-type=%q", response.Header.Get("Content-Type"))
+	}
+	text := string(body)
+	for _, want := range []string{"turn.started", "text.delta", "hello hi", "turn.finished"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("SSE missing %q: %s", want, text)
+		}
 	}
 }

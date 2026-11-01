@@ -75,6 +75,12 @@
     viewInitialized: false,
     rechecking: false,
     selectedRun: null,
+    chat: [],
+    chatBusy: false,
+    actions: [],
+    actionVersions: [],
+    actionSelected: "",
+    actionsBusy: false,
   };
 
   const messageRegions = {
@@ -87,6 +93,8 @@
     quotas: { element: "quotas-message", data: null },
     weixin: { element: "weixin-message", data: null },
     tasks: { element: "tasks-message", data: null },
+    chat: { element: "chat-message", data: null },
+    actions: { element: "actions-message", data: null },
     review: { element: "review-message", data: null },
     app: { element: "app-message", data: null },
   };
@@ -756,7 +764,7 @@
 
   /* --------------------------------------------------------------- state */
 
-  const views = ["dashboard", "runs", "review", "settings"];
+  const views = ["dashboard", "chat", "actions", "runs", "review", "settings"];
   const sectionViews = {
     "repository-section": "settings", "runner-settings": "settings",
     "channels-section": "settings", "hooks-section": "settings",
@@ -777,6 +785,8 @@
     const target = views.includes(fragment) ? fragment : sectionViews[fragment];
     state.view = target || (setupReady() ? "dashboard" : "settings");
     views.forEach((view) => { $(`${view}-view`).hidden = view !== state.view; });
+    if (state.view === "chat") loadChat();
+    if (state.view === "actions") loadActions();
     document.querySelectorAll("[data-view]").forEach((link) => {
       if (link.dataset.view === state.view) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
@@ -2542,6 +2552,337 @@
     }
   }
 
+
+
+  /* --------------------------------------------------------------- actions */
+
+  function renderActions() {
+    const list = $("actions-list");
+    if (!list) return;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!state.actions.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = t("actions.empty");
+      list.appendChild(empty);
+      return;
+    }
+    state.actions.forEach((action) => {
+      if (!action || typeof action.id !== "string") return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn ghost small action-row";
+      button.dataset.actionId = action.id;
+      button.textContent = `${action.label || action.id} · ${action.id}${action.enabled === false ? " · " + t("actions.off") : ""}`;
+      list.appendChild(button);
+    });
+  }
+
+  function selectAction(id) {
+    const action = state.actions.find((item) => item && item.id === id);
+    if (!action) return;
+    state.actionSelected = id;
+    const editor = $("action-editor");
+    if (editor) editor.value = JSON.stringify(action, null, 2);
+    setMessage("actions", "actions.selected", { vars: { id } });
+  }
+
+  function parseActionEditor() {
+    const editor = $("action-editor");
+    if (!editor || !editor.value.trim()) {
+      setMessage("actions", "actions.select", { error: true });
+      return null;
+    }
+    try {
+      const value = JSON.parse(editor.value);
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
+      return value;
+    } catch (error) {
+      setMessage("actions", "actions.invalid_json", { error: true });
+      return null;
+    }
+  }
+
+  async function loadActions() {
+    try {
+      const data = await api("/api/actions");
+      state.actions = Array.isArray(data.actions) ? data.actions : [];
+      const hosts = $("action-hosts");
+      if (hosts) hosts.value = Array.isArray(data.http_hosts) ? data.http_hosts.join("\n") : "";
+      renderActions();
+      await loadActionVersions();
+    } catch (error) {
+      if (error.code !== "authentication_required") setMessage("actions", "actions.failed", { error: true });
+    }
+  }
+
+  async function validateAction() {
+    if (state.actionsBusy) return;
+    const action = parseActionEditor();
+    if (!action) return;
+    state.actionsBusy = true;
+    const button = $("action-validate");
+    setBusy(button, "common.running");
+    try {
+      await api("/api/actions/validate", { method: "POST", body: { action } });
+      setMessage("actions", "actions.valid");
+    } catch (error) {
+      setMessage("actions", "actions.invalid", { error: true });
+    } finally {
+      state.actionsBusy = false;
+      clearBusy(button);
+    }
+  }
+
+  async function saveAction() {
+    if (state.actionsBusy) return;
+    const action = parseActionEditor();
+    if (!action) return;
+    state.actionsBusy = true;
+    const button = $("action-save");
+    setBusy(button, "common.running");
+    try {
+      const data = await api("/api/actions", { method: "POST", body: { action } });
+      state.actions = Array.isArray(data.actions) ? data.actions : state.actions;
+      renderActions();
+      await loadActionVersions();
+      setMessage("actions", "actions.saved");
+    } catch (error) {
+      setMessage("actions", "actions.invalid", { error: true });
+    } finally {
+      state.actionsBusy = false;
+      clearBusy(button);
+    }
+  }
+
+  async function disableAction() {
+    if (state.actionsBusy || !state.actionSelected) {
+      setMessage("actions", "actions.select", { error: true });
+      return;
+    }
+    state.actionsBusy = true;
+    const button = $("action-disable");
+    setBusy(button, "common.running");
+    try {
+      const data = await api(`/api/actions/${encodeURIComponent(state.actionSelected)}/disable`, { method: "POST", body: {} });
+      state.actions = Array.isArray(data.actions) ? data.actions : state.actions;
+      renderActions();
+      await loadActionVersions();
+      setMessage("actions", "actions.disabled");
+    } catch (error) {
+      setMessage("actions", "actions.failed", { error: true });
+    } finally {
+      state.actionsBusy = false;
+      clearBusy(button);
+    }
+  }
+
+  async function saveActionHosts() {
+    if (state.actionsBusy) return;
+    const field = $("action-hosts");
+    const hosts = field ? field.value.split(/[\n,]/).map((host) => host.trim()).filter(Boolean) : [];
+    state.actionsBusy = true;
+    const button = $("action-hosts-save");
+    setBusy(button, "common.running");
+    try {
+      await api("/api/actions/hosts", { method: "POST", body: { hosts } });
+      await loadActions();
+      setMessage("actions", "actions.hosts_saved");
+    } catch (error) {
+      setMessage("actions", "actions.hosts_invalid", { error: true });
+    } finally {
+      state.actionsBusy = false;
+      clearBusy(button);
+    }
+  }
+
+  async function loadActionVersions() {
+    const list = $("action-versions");
+    if (!list) return;
+    try {
+      const data = await api("/api/actions/versions");
+      state.actionVersions = Array.isArray(data.versions) ? data.versions : [];
+    } catch (error) {
+      state.actionVersions = [];
+    }
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!state.actionVersions.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = t("actions.no_versions");
+      list.appendChild(empty);
+      return;
+    }
+    state.actionVersions.forEach((version) => {
+      if (!version || typeof version.name !== "string") return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn ghost small action-row";
+      button.dataset.actionVersion = version.name;
+      button.textContent = `${version.name} · ${t("actions.restore")}`;
+      list.appendChild(button);
+    });
+  }
+
+  async function restoreActionVersion(name) {
+    if (state.actionsBusy || !name) return;
+    state.actionsBusy = true;
+    try {
+      const data = await api("/api/actions/restore", { method: "POST", body: { version: name } });
+      state.actions = Array.isArray(data.actions) ? data.actions : state.actions;
+      renderActions();
+      await loadActionVersions();
+      setMessage("actions", "actions.restored");
+    } catch (error) {
+      setMessage("actions", "actions.failed", { error: true });
+    } finally {
+      state.actionsBusy = false;
+    }
+  }
+
+  /* ------------------------------------------------------------- assistant */
+
+  function renderChat() {
+    const log = $("chat-log");
+    if (!log) return;
+    while (log.firstChild) log.removeChild(log.firstChild);
+    if (!state.chat.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = t("chat.empty");
+      log.appendChild(empty);
+      return;
+    }
+    state.chat.forEach((message) => {
+      if (!message || (message.role !== "user" && message.role !== "assistant")) return;
+      const bubble = document.createElement("div");
+      bubble.className = `chat-bubble ${message.role === "user" ? "chat-user" : "chat-assistant"}`;
+      const label = document.createElement("p");
+      label.className = "chat-role";
+      label.textContent = t(message.role === "user" ? "chat.you" : "chat.assistant");
+      const body = document.createElement("p");
+      body.textContent = message.content || "";
+      bubble.appendChild(label);
+      bubble.appendChild(body);
+      log.appendChild(bubble);
+    });
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function appendChatMessage(role, text) {
+    if (!text) return;
+    state.chat.push({ role, content: text });
+    renderChat();
+  }
+
+  function appendChatTool(text) {
+    const log = $("chat-log");
+    if (!log || !text) return;
+    const row = document.createElement("p");
+    row.className = "chat-tool";
+    row.textContent = text;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function loadChat() {
+    try {
+      const data = await api("/api/agent/sessions/console-main");
+      state.chat = Array.isArray(data.messages) ? data.messages : [];
+      renderChat();
+    } catch (error) {
+      if (error.code === "agent_unavailable") {
+        setMessage("chat", "chat.unavailable", { error: true });
+      } else if (error.code !== "authentication_required") {
+        setMessage("chat", "chat.failed", { error: true });
+      }
+    }
+  }
+
+  function handleChatEvent(event) {
+    if (!event || typeof event.type !== "string") return;
+    if (event.type === "turn.started") {
+      setMessage("chat", "chat.thinking");
+    } else if (event.type === "text.delta") {
+      if (typeof event.text === "string") appendChatMessage("assistant", event.text);
+    } else if (event.type === "tool.call") {
+      appendChatTool(t("chat.tool_running", { tool: event.tool || "" }));
+    } else if (event.type === "tool.result") {
+      appendChatTool(t("chat.tool_done", { tool: event.tool || "", status: event.status || "" }));
+    } else if (event.type === "turn.finished") {
+      setMessage("chat", event.status === "failed" ? "chat.failed" : null, { error: event.status === "failed" });
+    } else if (event.type === "error") {
+      setMessage("chat", "chat.failed", { error: true });
+    }
+  }
+
+  async function sendChat(event) {
+    event.preventDefault();
+    if (state.chatBusy) return;
+    const input = $("chat-input");
+    const text = input ? input.value.trim() : "";
+    if (!text) return;
+    appendChatMessage("user", text);
+    if (input) input.value = "";
+    state.chatBusy = true;
+    const button = $("chat-send");
+    setBusy(button, "chat.sending");
+    setMessage("chat", "chat.thinking");
+    try {
+      const response = await fetch("/api/agent/turns", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          "X-CSRF-Token": state.csrf,
+        },
+        body: JSON.stringify({ session: "console-main", text }),
+      });
+      if (!response.ok) {
+        let code = "chat.failed";
+        try {
+          const body = await response.json();
+          if (body && (body.error === "agent_unavailable" || body.error === "agent_route_disabled")) code = "chat.unavailable";
+        } catch (error) {
+          // The status is enough; do not surface a raw response.
+        }
+        setMessage("chat", code, { error: true });
+        return;
+      }
+      if (!response.body) {
+        setMessage("chat", "chat.failed", { error: true });
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const chunk = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const line = chunk.split("\n").find((item) => item.startsWith("data: "));
+          if (line) {
+            try {
+              handleChatEvent(JSON.parse(line.slice(6)));
+            } catch (error) {
+              // Ignore one malformed event; the stream may continue.
+            }
+          }
+          boundary = buffer.indexOf("\n\n");
+        }
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") setMessage("chat", "chat.failed", { error: true });
+    } finally {
+      state.chatBusy = false;
+      clearBusy(button);
+    }
+  }
+
   /* ----------------------------------------------------------- run display */
 
   function statusKey(status) {
@@ -3074,6 +3415,22 @@
   on("quotas-refresh", "click", () => refreshQuotas({ refresh: true }));
 
   on("hook-form", "submit", createHook);
+  on("chat-form", "submit", sendChat);
+  on("actions-refresh", "click", loadActions);
+  on("action-validate", "click", validateAction);
+  on("action-save", "click", saveAction);
+  on("action-disable", "click", disableAction);
+  on("action-hosts-save", "click", saveActionHosts);
+  on("actions-list", "click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target ? target.closest("button[data-action-id]") : null;
+    if (button) selectAction(button.dataset.actionId);
+  });
+  on("action-versions", "click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const button = target ? target.closest("button[data-action-version]") : null;
+    if (button) restoreActionVersion(button.dataset.actionVersion);
+  });
   on("hook-secret-copy", "click", copyHookSecret);
   on("hooks-list", "click", (event) => {
     const target = event.target instanceof Element ? event.target : null;

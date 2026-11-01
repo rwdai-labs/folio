@@ -178,3 +178,22 @@ func TestActionDefinitionRejectsUnknownFields(t *testing.T) {
 		t.Fatal("unknown field was accepted")
 	}
 }
+
+func TestPutActionHostsRevalidatesActions(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.PutActionHostsJSON([]byte(`{"hosts":["api.example.com"]}`)); err != nil {
+		t.Fatalf("put hosts: %v", err)
+	}
+	if err := store.PutAction(pipelineDefinition{
+		ID: "fetch", Label: "Fetch",
+		Steps: []pipelineStep{{ID: "get", Type: "http", URL: "https://api.example.com/x"}},
+	}); err != nil {
+		t.Fatalf("put action: %v", err)
+	}
+	if _, err := store.PutActionHostsJSON([]byte(`{"hosts":[]}`)); err == nil {
+		t.Fatal("host removal left an unroutable action")
+	}
+	if _, err := store.PutActionHostsJSON([]byte(`{"hosts":["bad host"]}`)); err == nil {
+		t.Fatal("invalid host was accepted")
+	}
+}

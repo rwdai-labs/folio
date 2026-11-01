@@ -16,10 +16,16 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - API changes require matching `Backend` implementations, fake backends, UI
   consumers, and contract documentation. Task acceptance is not run completion.
   Update these instructions whenever API ownership or security rules change.
+- The optional `AgentBackend` contract serves session/CSRF-protected
+  `POST /api/agent/turns` (`text/event-stream`) and session-protected
+  `GET /api/agent/sessions/{id}`. The store checks the event route and runtime
+  availability first; events carry bounded text/tool status, never raw runtime
+  errors or secrets. A disconnected request cancels the turn.
 - The optional `ActionBackend` contract serves session-protected
   `GET /api/actions` and `GET /api/actions/versions`, and CSRF-protected
-  `POST /api/actions`, `POST /api/actions/validate`, `POST /api/actions/restore`
-  and `POST /api/actions/{id}/disable`. Definitions are owner configuration:
+  `POST /api/actions`, `POST /api/actions/validate`, `POST /api/actions/restore`,
+  `POST /api/actions/hosts` and `POST /api/actions/{id}/disable`. Definitions
+  are owner configuration:
   validate the whole definition, snapshot before writing, and map failures to
   fixed `action_*` codes. Responses may carry action definitions, never action
   secrets or arbitrary runtime files.

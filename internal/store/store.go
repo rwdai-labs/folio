@@ -114,9 +114,16 @@ type Store struct {
 	taskMu     sync.Mutex
 	dispatchMu sync.Mutex
 	actionMu   sync.Mutex
-	tasksCache *tasksFile
-	tasksPath  string
-	policyPath string
+
+	// The main-agent turn loop serializes one interactive turn and stores
+	// bounded history. The runtime is an injected adapter; the default command
+	// adapter is unavailable until an executable exists at data/agent/runtime.
+	agentMu       sync.Mutex
+	agentRuntime  AgentRuntime
+	agentSessions string
+	tasksCache    *tasksFile
+	tasksPath     string
+	policyPath    string
 
 	modelCatalogMu   sync.Mutex
 	modelCatalogAt   time.Time
@@ -164,12 +171,14 @@ func New(dataDir, toolRoot string, remote storage.Remote) (*Store, error) {
 		hooksPath:      filepath.Join(data, "secrets", "hooks.json"),
 		tasksPath:      filepath.Join(data, "runtime", "tasks.json"),
 		policyPath:     policyPathFor(data),
+		agentSessions:  filepath.Join(data, "runtime", "agent", "sessions"),
 		replayPath:     filepath.Join(data, "runtime", "hook-replay.json"),
 		remote:         remote,
 		quotaService:   quota.New(data),
 		notifyLast:     map[string]time.Time{},
 		hookCalls:      map[string][]time.Time{},
 	}
+	s.agentRuntime = &commandAgentRuntime{store: s, path: filepath.Join(data, "agent", "runtime")}
 	if err := s.ensureDirs(); err != nil {
 		return nil, err
 	}

@@ -68,6 +68,7 @@ var (
 	safeJobID          = regexp.MustCompile(`^[0-9a-f-]{36}$`)
 	safePreviewID      = regexp.MustCompile(`^[A-Za-z0-9_-]{20,100}$`)
 	safeReportID       = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	safeAgentSession   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	sensitiveKey       = regexp.MustCompile(`(?i)(pass(?:word)?|token|secret|credential|authorization|private[_ -]?key|device[_ -]?(?:code|key)|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret)`)
 	credentialURL      = regexp.MustCompile(`(?i)(https?://)([^/\s@]+)@`)
 	bearerValue        = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`)
@@ -159,8 +160,18 @@ type ActionBackend interface {
 	ValidateActionJSON(raw []byte) error
 	PutActionJSON(raw []byte) (map[string]any, error)
 	DisableAction(id string) error
+	PutActionHostsJSON(raw []byte) (map[string]any, error)
 	ActionVersions() (map[string]any, error)
 	RestoreActionVersion(name string) error
+}
+
+// AgentBackend is the optional main-agent contract. The store owns the turn
+// loop, tools, sessions and audit; Web only streams bounded events.
+type AgentBackend interface {
+	AgentAvailable() bool
+	AgentRoute(source, typ string) (string, bool, error)
+	AgentTurnMap(ctx context.Context, session, text, trust string, emit func(map[string]any)) (map[string]any, error)
+	AgentHistory(session string) (map[string]any, error)
 }
 
 // Options configures the local web boundary.
@@ -1084,6 +1095,12 @@ func (s *Server) actionBackend() (ActionBackend, bool) {
 	return backend, ok
 }
 
+// agentBackend reports whether the configured store exposes the main agent.
+func (s *Server) agentBackend() (AgentBackend, bool) {
+	backend, ok := s.store.(AgentBackend)
+	return backend, ok
+}
+
 // hookBackend reports whether the configured store exposes inbound hooks.
 func (s *Server) hookBackend() (HookBackend, bool) {
 	backend, ok := s.store.(HookBackend)
@@ -1259,6 +1276,30 @@ func (s *Server) taskAdmin(w http.ResponseWriter, r *http.Request, payload map[s
 	}
 	s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	return true
+}
+
+// agentStream runs one main-agent turn and forwards bounded events as SSE.
+func (s *Server) agentStream(w http.ResponseWriter, r *http.Request, backend AgentBackend, session, text string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		s.writeError(w, http.StatusInternalServerError, "stream_unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	write := func(event map[string]any) {
+		raw, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
+		flusher.Flush()
+	}
+	if _, err := backend.AgentTurnMap(r.Context(), session, text, "owner", write); err != nil {
+		write(map[string]any{"type": "error", "code": err.Error()})
+	}
 }
 
 // actionAdmin handles the session-authenticated action verbs that carry an id.
@@ -1666,6 +1707,30 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, payload, nil)
 		return
 	}
+	if strings.HasPrefix(path, "/api/agent/sessions/") {
+		_, _, ok := s.session(r)
+		if !ok {
+			s.writeError(w, http.StatusUnauthorized, "authentication_required")
+			return
+		}
+		session := strings.TrimPrefix(path, "/api/agent/sessions/")
+		if !safeAgentSession.MatchString(session) {
+			s.writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		backend, ok := s.agentBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "agent_unavailable")
+			return
+		}
+		value, err := backend.AgentHistory(session)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "agent_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+		return
+	}
 	if strings.HasPrefix(path, "/api/automation/runs/") {
 		_, _, ok := s.session(r)
 		if !ok {
@@ -1903,6 +1968,32 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/agent/turns":
+		backend, ok := s.agentBackend()
+		if !ok || !backend.AgentAvailable() {
+			s.writeError(w, http.StatusServiceUnavailable, "agent_unavailable")
+			return
+		}
+		target, routed, routeErr := backend.AgentRoute("console", "owner.message")
+		if routeErr != nil || !routed || target != "agent:main" {
+			s.writeError(w, http.StatusServiceUnavailable, "agent_route_disabled")
+			return
+		}
+		text, _ := payload["text"].(string)
+		text = strings.TrimSpace(text)
+		if text == "" || len([]byte(text)) > 16*1024 {
+			s.writeError(w, http.StatusBadRequest, "agent_input_invalid")
+			return
+		}
+		session, _ := payload["session"].(string)
+		if session == "" {
+			session = "console-main"
+		}
+		if !safeAgentSession.MatchString(session) {
+			s.writeError(w, http.StatusBadRequest, "agent_session_invalid")
+			return
+		}
+		s.agentStream(w, r, backend, session, text)
 	case "/api/actions/validate":
 		backend, ok := s.actionBackend()
 		if !ok {
@@ -1931,6 +2022,19 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		value, callErr := backend.PutActionJSON(raw)
+		s.writeBackendResult(w, callErr, value)
+	case "/api/actions/hosts":
+		backend, ok := s.actionBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+			return
+		}
+		raw, err := json.Marshal(map[string]any{"hosts": payload["hosts"]})
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "action_invalid")
+			return
+		}
+		value, callErr := backend.PutActionHostsJSON(raw)
 		s.writeBackendResult(w, callErr, value)
 	case "/api/actions/restore":
 		backend, ok := s.actionBackend()

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -802,3 +803,62 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 
 // policyPathFor is the private policy file, next to the other runtime data.
 func policyPathFor(data string) string { return filepath.Join(data, "policies.json") }
+
+// TaskPolicy returns the effective queue policy, including defaults for fields
+// omitted from policies.json.
+func (s *Store) TaskPolicy() map[string]any {
+	policy := s.loadTaskPolicy()
+	return map[string]any{"defer": policy.Defer, "window": policy.Window}
+}
+
+// PutTaskPolicyJSON validates and writes the owner's queue policy. Missing
+// fields keep their defaults; unknown fields and invalid clock values fail
+// closed.
+func (s *Store) PutTaskPolicyJSON(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 || len(raw) > maxPoliciesBytes {
+		return nil, errStore("policy_invalid")
+	}
+	var file struct {
+		Defer  map[string]bool `json:"defer"`
+		Window *taskWindow     `json:"window"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&file); err != nil {
+		return nil, errStore("policy_invalid")
+	}
+	policy := defaultTaskPolicy()
+	for key, value := range file.Defer {
+		if !validPriority(key) {
+			return nil, errStore("policy_invalid")
+		}
+		policy.Defer[key] = value
+	}
+	if file.Window != nil {
+		start := strings.TrimSpace(file.Window.Start)
+		end := strings.TrimSpace(file.Window.End)
+		if start == "" || end == "" {
+			return nil, errStore("policy_invalid")
+		}
+		if _, ok := parseClock(start); !ok {
+			return nil, errStore("policy_invalid")
+		}
+		if _, ok := parseClock(end); !ok {
+			return nil, errStore("policy_invalid")
+		}
+		if file.Window.OffsetMinutes != nil && (*file.Window.OffsetMinutes < -12*60 || *file.Window.OffsetMinutes > 14*60) {
+			return nil, errStore("policy_invalid")
+		}
+		policy.Window = *file.Window
+	}
+	encoded, err := json.MarshalIndent(map[string]any{"defer": policy.Defer, "window": policy.Window}, "", "  ")
+	if err != nil || len(encoded) > maxPoliciesBytes {
+		return nil, errStore("policy_invalid")
+	}
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	if err := writeAtomic(s.policyPath, append(encoded, byte(10)), 0o600); err != nil {
+		return nil, err
+	}
+	return s.TaskPolicy(), nil
+}

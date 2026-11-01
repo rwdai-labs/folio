@@ -180,3 +180,23 @@ exit 2
 		t.Fatalf("context answer failed: %q %v", reply, err)
 	}
 }
+
+func TestWeixinOwnerUsesMainAgentWhenAvailable(t *testing.T) {
+	store := newTestStore(t)
+	runtime := &fakeAgentRuntime{available: true, responses: []AgentResponse{{Text: "agent reply"}}}
+	store.SetAgentRuntime(runtime)
+	handler, err := store.WeixinHandler("bot", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := handler.HandleMessage(context.Background(), channel.Message{
+		Channel: "weixin", AccountID: "bot", SenderID: "owner", ConversationID: "owner",
+		ID: "1", Text: "hello",
+	})
+	if err != nil || reply != "agent reply" {
+		t.Fatalf("reply=%q err=%v", reply, err)
+	}
+	if len(runtime.requests) != 1 || !strings.HasPrefix(runtime.requests[0].Session, "weixin-") {
+		t.Fatalf("runtime request=%+v", runtime.requests)
+	}
+}

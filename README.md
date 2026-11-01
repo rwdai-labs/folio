@@ -114,6 +114,15 @@ usage in the run ledger, a notification, and no repository write). A new kind is
 a JSON edit and a Web UI reload; only a genuinely new capability needs Go. An
 unknown kind is rejected at hook creation and again at dispatch, never guessed.
 
+`data/actions.json` v2 adds owner-defined runtime actions: an ordered chain of
+`context`, `agent`, `script`, `push`, `http` and `task` steps. The registry is
+validated and versioned before a write; scripts run as argv under
+`/data/scripts` with no shell, and HTTP steps require the configured HTTPS host
+allowlist. The Actions page can validate, publish, disable, restore versions and
+edit the host allowlist; the Assistant can edit the same registry when an owner
+runtime is configured.
+Source code and deployment remain outside the agent's write surface.
+
 Token usage is recorded per run from what the runner itself reported: Codex via
 its `turn.completed` JSON event, DSH via its per-request `usage` chunks. The
 record separates uncached, cached, and output tokens, and a run that never
@@ -208,6 +217,13 @@ readiness, push notifications and event hooks are grouped in Settings. On an
 unconfigured installation the console starts there, with a setup checklist;
 notifications and triggers are optional. Runner installation is reported
 separately from provider authentication, which the first model run checks.
+
+The console also has an Assistant chat and an Actions registry. Chat goes to the
+main-agent adapter at `/data/agent/runtime`; if no adapter is installed the view
+reports unavailable and Weixin keeps its bounded read-only answer. The agent's
+tool surface is queue/action/route/policy/channel/context/audit control, not
+source or deploy. Actions can be validated, published, disabled, and restored
+from retained versions; the same operations are exposed as agent tools.
 
 Owner review shows the findings from the most recent retained successful
 maintenance, with a timestamp. It is a historical snapshot, not a live approval

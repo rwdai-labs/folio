@@ -7,7 +7,8 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `store.go`, `storage.go`, `executor.go`, `git.go`, `lifecycle.go` | Layout, remote integration, safe processes and repository lifecycle |
 | `automation.go`, `review.go` | Validated automatic edits and owner-reviewed changes |
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
-| `tasks.go`, `kinds.go`, `hooks.go`, `actions.go`, `events.go`, `action_config.go`, `action_pipeline.go` | Durable queue, data-defined actions, internal action plans, signed events, the event/route seam and the runtime action registry/pipeline |
+| `tasks.go`, `kinds.go`, `hooks.go`, `actions.go`, `events.go`, `routes.go`, `action_config.go`, `action_pipeline.go` | Durable queue, data-defined actions, internal action plans, signed events, event routes and the runtime action registry/pipeline |
+| `agent.go`, `agent_tools.go` | Main-agent runtime boundary, bounded sessions, owner/observer tool grants and agent run audit |
 | `report.go`, `usage.go`, `channels.go`, `models.go`, `quota.go` | Reports, usage, notifications, runner catalogs and the optional quota snapshot |
 | `inbound.go`, `weixin_push.go` | Explicit Weixin owner authorization, bounded read-only answers and the optional outbound push |
 
@@ -30,6 +31,15 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   configured host allowlist and HTTPS, and secrets resolve only in script env or
   HTTP headers/body. Audit step metadata and digests, never raw step output or
   stderr.
+- The main agent is a bounded host loop, not an ambient process. The runtime
+  receives one request and proposes text/tool calls; the store re-checks every
+  tool against the trust class, executes it, and audits names/status without
+  arguments or secrets. Owner sessions get control tools; integration observers
+  get read-only tools. Sessions are bounded and keyed by authenticated identity.
+  The `/data/agent/runtime` command adapter is the pi boundary; a real pi wrapper
+  is unverified, so tests use a fake.
+- `routes.json` is the single source for event targets; an action target must
+  resolve through the validated registry and a disabled route fails closed.
 - Inbound Weixin uses an explicitly configured account/owner/direct-peer match
   before any capability, including cached reply delivery. Text reuses the
   ephemeral read-only report worker with a fresh per-call directory; never pass

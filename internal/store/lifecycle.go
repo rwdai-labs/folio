@@ -154,7 +154,10 @@ func (s *Store) SchedulerTick() (map[string]any, error) {
 		Trust:      eventTrustSystem,
 		OccurredAt: time.Now(),
 	}
-	target, ok := resolveEventRoute(e)
+	target, ok, err := s.eventRouteFor(e)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, errStore("route_unknown")
 	}
