@@ -28,6 +28,12 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   a rendered PNG data URL only, never the raw QR payload, tokens, cursors or
   transport wording. Errors map to stable `weixin_*` codes: 409 for conflicts,
   403 for the deployment kill switch, 500 for private-state faults.
+- The optional `WeixinPushBackend` contract serves CSRF-protected
+  `POST /api/channels/weixin` (`{"enabled": bool}`) and
+  `POST /api/channels/weixin/test`. It is separate from `ChannelBackend` so a
+  store without a WeChat transport still satisfies the push-channel contract;
+  a missing transport answers 503 `weixin_unavailable`. Responses are bounded
+  maps and delivery receipts, never tokens or transport text.
 - Maintenance run details add `input_files` (original byte fingerprints),
   `remaining` (unprocessed changed document count) and `needs_review`
   (`source`, `reason`). These are private authenticated audit data. Consumers

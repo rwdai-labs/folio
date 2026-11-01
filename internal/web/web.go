@@ -120,6 +120,14 @@ type ChannelBackend interface {
 	TestBarkChannel(override map[string]any) (map[string]any, error)
 }
 
+// WeixinPushBackend is the optional outbound-WeChat contract. It is separate
+// from ChannelBackend so a store without a WeChat transport still satisfies the
+// push-channel contract.
+type WeixinPushBackend interface {
+	SaveWeixinPush(enabled bool) (map[string]any, error)
+	TestWeixinPush() (map[string]any, error)
+}
+
 // HookBackend is the optional inbound-trigger contract. Like ChannelBackend it
 // is separate from Backend so the core adapter stays small.
 type HookBackend interface {
@@ -1003,7 +1011,7 @@ func channelErrorCode(err error) string {
 	}
 	message := err.Error()
 	switch message {
-	case "device_key_required", "channel_not_configured", "invalid_channel", "invalid_level", "invalid_language":
+	case "device_key_required", "channel_not_configured", "invalid_channel", "invalid_level", "invalid_language", "weixin_unavailable":
 		return message
 	default:
 		return "operation_failed"
@@ -2008,6 +2016,45 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		value, callErr := backend.SaveBarkChannel(payload)
 		if callErr != nil {
 			s.writeError(w, http.StatusBadRequest, channelErrorCode(callErr))
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	case "/api/channels/weixin":
+		backend, ok := s.store.(WeixinPushBackend)
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		enabled, ok := payload["enabled"].(bool)
+		if !ok {
+			s.writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		value, callErr := backend.SaveWeixinPush(enabled)
+		if callErr != nil {
+			code := channelErrorCode(callErr)
+			status := http.StatusBadRequest
+			if code == "weixin_unavailable" {
+				status = http.StatusServiceUnavailable
+			}
+			s.writeError(w, status, code)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	case "/api/channels/weixin/test":
+		backend, ok := s.store.(WeixinPushBackend)
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "weixin_unavailable")
+			return
+		}
+		value, callErr := backend.TestWeixinPush()
+		if callErr != nil {
+			code := channelErrorCode(callErr)
+			status := http.StatusBadRequest
+			if code == "weixin_unavailable" {
+				status = http.StatusServiceUnavailable
+			}
+			s.writeError(w, status, code)
 			return
 		}
 		s.writeJSON(w, http.StatusOK, safeMap(value), nil)

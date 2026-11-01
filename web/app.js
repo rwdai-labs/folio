@@ -191,6 +191,8 @@
         return "quota.error.quota_rate_limited";
       case "quota_refresh_limited":
         return "quota.error.quota_refresh_limited";
+      case "weixin_unavailable":
+        return "weixin.error.push_unavailable";
       case "weixin_busy":
         return "weixin.error.busy";
       case "weixin_deployment_off":
@@ -213,7 +215,7 @@
       case "weixin_invalid_request":
         return "weixin.error.invalid";
       case "weixin_unavailable":
-        return "weixin.error.unavailable";
+        return "weixin.error.push_unavailable";
       case "task_not_found":
         return "tasks.not_found";
       case "task_busy":
@@ -1033,6 +1035,9 @@
     state.channels = data;
     renderChannelValues(data);
     renderChannelTexts(data);
+    // The push switch lives in the channel payload but is shown beside the
+    // WeChat card, so a late channel load must refresh that card too.
+    if (state.weixin) renderWeixin(state.weixin);
   }
 
   function deliveryKindKey(kind) {
@@ -1933,6 +1938,63 @@
     return "";
   }
 
+  function weixinPushNote(push) {
+    if (!push) return "";
+    if (push.last_test_status === "failed") {
+      return t("weixin.push.failed", { detail: push.last_error || "failed" });
+    }
+    if (push.last_test_status === "delivered" && push.last_test_at) {
+      return t("weixin.push.delivered", { time: formatTime(push.last_test_at) || push.last_test_at });
+    }
+    return push.enabled ? t("weixin.push.on") : t("weixin.push.off");
+  }
+
+  async function toggleWeixinPush(event) {
+    const enabled = Boolean(event.target.checked);
+    setMessage("weixin", null);
+    try {
+      state.channels = await api("/api/channels/weixin", { method: "POST", body: { enabled } });
+      renderChannelState(state.channels);
+      setMessage("weixin", enabled ? "weixin.push.enabled" : "weixin.push.disabled");
+    } catch (error) {
+      if (event.target) event.target.checked = !enabled;
+      setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+    }
+  }
+
+  async function testWeixinPush() {
+    if (state.weixinPushBusy) return;
+    state.weixinPushBusy = true;
+    const button = $("weixin-push-test");
+    setBusy(button, "weixin.push.testing");
+    setMessage("weixin", null);
+    try {
+      const result = await api("/api/channels/weixin/test", { method: "POST", body: {} });
+      if (result.state) renderChannelState(result.state);
+      const receipt = result.receipt || {};
+      if (receipt.status === "delivered") setMessage("weixin", "weixin.push.test_sent");
+      else setMessage("weixin", "weixin.push.test_failed", { vars: { detail: receipt.detail || "failed" }, error: true });
+    } catch (error) {
+      setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
+    } finally {
+      state.weixinPushBusy = false;
+      clearBusy(button);
+    }
+  }
+
+  function weixinHealthText(data) {
+    const info = data && data.diagnostics;
+    if (!info) return "";
+    if (info.last_error) {
+      return t("weixin.health.error", {
+        reason: translateKnown(`weixin.reason.${info.last_error}`, info.last_error),
+        time: formatTime(info.last_error_at) || info.last_error_at || "",
+      });
+    }
+    if (info.last_ok_at) return t("weixin.health.ok", { time: formatTime(info.last_ok_at) || info.last_ok_at });
+    return "";
+  }
+
   function renderWeixin(data) {
     const section = $("weixin-section");
     if (!section) return;
@@ -1952,6 +2014,12 @@
     }
     const note = $("weixin-note");
     if (note) note.textContent = weixinNoteText(data);
+    const health = $("weixin-health");
+    if (health) {
+      const text = weixinHealthText(data);
+      health.hidden = !text;
+      health.textContent = text;
+    }
 
     const deployment = data.deployment || {};
     const login = data.login || null;
@@ -1999,6 +2067,17 @@
     const scanner = $("weixin-scanner");
     if (scanner) {
       scanner.textContent = awaiting && typeof login.scanner_id === "string" ? login.scanner_id : "";
+    }
+
+    const push = (state.channels && state.channels.weixin) || null;
+    const pushBox = $("weixin-push");
+    if (pushBox) {
+      const ready = Boolean(push && push.available && data.configured && data.owner_id);
+      pushBox.hidden = !ready;
+      const toggle = $("weixin-push-toggle");
+      if (toggle) toggle.checked = Boolean(push && push.enabled);
+      const pushNote = $("weixin-push-note");
+      if (pushNote) pushNote.textContent = weixinPushNote(push);
     }
 
     if (login && login.error) {
@@ -3005,6 +3084,8 @@
   on("weixin-code-form", "submit", submitWeixinCode);
   on("weixin-confirm-button", "click", confirmWeixinOwner);
   on("weixin-toggle", "click", toggleWeixin);
+  on("weixin-push-toggle", "change", toggleWeixinPush);
+  on("weixin-push-test", "click", testWeixinPush);
 
   on("bark-form", "submit", saveBark);
   on("bark-test", "click", testBark);

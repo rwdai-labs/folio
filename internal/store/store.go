@@ -92,6 +92,8 @@ type Store struct {
 	// mutexes instead of the global one.
 	notifyMu        sync.Mutex
 	channelSettings *channelSettings
+	senderMu        sync.RWMutex
+	weixinSender    WeixinSender
 	notifyLast      map[string]time.Time
 	deliveryMu      sync.Mutex
 	channelsPath    string

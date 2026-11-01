@@ -34,6 +34,7 @@ type testBackend struct {
 	syncRun      chan struct{}
 	syncDone     chan struct{}
 	channelSaves []map[string]any
+	weixinPush   bool
 	quotaCalls   []bool
 	quotaValue   quota.Snapshot
 }
@@ -117,6 +118,23 @@ func (b *testBackend) ChannelState() (map[string]any, error) {
 			"server": "https://api.day.app", "level": "active",
 		},
 		"deliveries": []any{},
+	}, nil
+}
+
+func (b *testBackend) SaveWeixinPush(enabled bool) (map[string]any, error) {
+	b.mu.Lock()
+	b.weixinPush = enabled
+	b.mu.Unlock()
+	return map[string]any{
+		"language": "en",
+		"weixin":   map[string]any{"available": true, "enabled": enabled},
+	}, nil
+}
+
+func (b *testBackend) TestWeixinPush() (map[string]any, error) {
+	return map[string]any{
+		"receipt": map[string]any{"channel": "weixin", "status": "delivered", "at": "2026-01-01T00:00:00Z"},
+		"state":   map[string]any{"weixin": map[string]any{"available": true, "enabled": true}},
 	}, nil
 }
 
@@ -997,5 +1015,33 @@ func TestQuotaRefreshMapsThrottleAndSuccess(t *testing.T) {
 	backend.mu.Unlock()
 	if len(calls) != 2 || !calls[0] || !calls[1] {
 		t.Fatalf("quota calls=%v", calls)
+	}
+}
+
+func TestWeixinPushRoutesUseTheOptionalBackend(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServerWith(t, backend, Options{})
+	defer server.Close()
+	client := &testClient{server: server}
+	client.login(t, password)
+
+	status, _, result := client.request(t, http.MethodPost, "/api/channels/weixin", map[string]any{"enabled": "yes"}, server.URL)
+	if status != http.StatusBadRequest || result["error"] != "invalid_request" {
+		t.Fatalf("invalid payload status=%d result=%v", status, result)
+	}
+	status, _, saved := client.request(t, http.MethodPost, "/api/channels/weixin", map[string]any{"enabled": true}, server.URL)
+	if status != http.StatusOK {
+		t.Fatalf("save status=%d result=%v", status, saved)
+	}
+	if !backend.weixinPush {
+		t.Fatal("push switch was not stored")
+	}
+	status, _, tested := client.request(t, http.MethodPost, "/api/channels/weixin/test", map[string]any{}, server.URL)
+	if status != http.StatusOK {
+		t.Fatalf("test status=%d result=%v", status, tested)
+	}
+	receipt, ok := tested["receipt"].(map[string]any)
+	if !ok || receipt["status"] != "delivered" {
+		t.Fatalf("receipt=%v", tested["receipt"])
 	}
 }

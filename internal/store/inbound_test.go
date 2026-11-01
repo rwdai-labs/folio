@@ -99,3 +99,84 @@ printf '%s' '{"text":"Synthetic Folio answer"}' > "$out"
 		t.Fatal("canceled call started a report")
 	}
 }
+
+func TestWeixinReportClassifiesRunnerExit(t *testing.T) {
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{"auth", "#!/bin/sh\nexit 4\n", "runner_auth"},
+		{"timeout", "#!/bin/sh\nexit 6\n", "runner_timeout"},
+		{"unavailable", "#!/bin/sh\nexit 3\n", "runner_unavailable"},
+		{"no output", "#!/bin/sh\nexit 0\n", "result_invalid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			if err := os.WriteFile(filepath.Join(s.toolRoot, "folio"), []byte(tc.script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			handler, err := s.WeixinHandler("bot", "owner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := channel.Message{Channel: "weixin", AccountID: "bot", SenderID: "owner", ConversationID: "owner", ID: "1", Text: "Synthetic owner question"}
+			_, err = handler.HandleMessage(context.Background(), m)
+			var coded interface{ FailureClass() string }
+			if !errors.As(err, &coded) || coded.FailureClass() != tc.want {
+				t.Fatalf("class=%v want=%q err=%v", coded, tc.want, err)
+			}
+		})
+	}
+}
+
+func TestWeixinAnswersUseBoundedContextPacket(t *testing.T) {
+	s := newTestStore(t)
+	if err := os.MkdirAll(filepath.Join(s.repositoryDir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+case "$1" in
+  build)
+    shift
+    sawstdout=""; sawnorecord=""; sawsep=""
+    for arg in "$@"; do
+      [ "$arg" = "--stdout" ] && sawstdout=1
+      [ "$arg" = "--no-record" ] && sawnorecord=1
+      [ "$arg" = "--" ] && sawsep=1
+    done
+    [ -n "$sawstdout" ] && [ -n "$sawnorecord" ] && [ -n "$sawsep" ] || exit 8
+    printf '# Packet\n\n## core/profile.md\n\nSynthetic context line\n'
+    exit 0
+    ;;
+  agent)
+    shift
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --report-prompt) prompt="$2"; shift 2 ;;
+        --report-out) out="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    grep -q 'Synthetic context line' "$prompt" || exit 9
+    grep -q 'Synthetic owner question' "$prompt" || exit 9
+    printf '%s' '{"text":"Synthetic context answer"}' > "$out"
+    exit 0
+    ;;
+esac
+exit 2
+`
+	if err := os.WriteFile(filepath.Join(s.toolRoot, "folio"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := s.WeixinHandler("bot", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := channel.Message{Channel: "weixin", AccountID: "bot", SenderID: "owner", ConversationID: "owner", ID: "1", Text: "Synthetic owner question"}
+	reply, err := handler.HandleMessage(context.Background(), m)
+	if err != nil || reply != "Synthetic context answer" {
+		t.Fatalf("context answer failed: %q %v", reply, err)
+	}
+}

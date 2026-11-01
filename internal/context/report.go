@@ -17,6 +17,52 @@ const (
 	maxReportTextBytes   = 64 * 1024
 )
 
+// Runner failure classes are the only description of a failed model call that
+// may leave this package. Stderr, provider URLs, credentials and model output
+// stay here; a caller receives one fixed label.
+const (
+	RunnerUnavailable = "unavailable"
+	RunnerAuth        = "auth"
+	RunnerNetwork     = "network"
+	RunnerTimeout     = "timeout"
+	RunnerFailed      = "failed"
+)
+
+// RunnerFailure reports which class of model-run failure stopped a report.
+type RunnerFailure struct{ Class string }
+
+func (e *RunnerFailure) Error() string { return "model runner failed: " + e.Class }
+
+// FailureClass exposes the fixed label without the underlying output.
+func (e *RunnerFailure) FailureClass() string { return e.Class }
+
+// runnerClass maps a terminated runner to one stable label. Only a fixed set of
+// markers is inspected; nothing from the buffer is retained.
+func runnerClass(runErr error, stderr []byte) string {
+	if errors.Is(runErr, errRunnerTimeout) {
+		return RunnerTimeout
+	}
+	text := strings.ToLower(string(stderr))
+	authMarkers := []string{"invalid_api_key", "incorrect api key", "unauthorized", "authentication failed", "401", "403"}
+	if containsAny(text, authMarkers) {
+		return RunnerAuth
+	}
+	networkMarkers := []string{"dial tcp", "no such host", "connection refused", "proxyconnect", "tls handshake", "connection reset", "i/o timeout"}
+	if containsAny(text, networkMarkers) {
+		return RunnerNetwork
+	}
+	return RunnerFailed
+}
+
+func containsAny(text string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // runReport answers one owner task with a single read-only model call. It is
 // the generic half of a data-defined task kind: the prompt and the model come
 // from configuration, Folio only guarantees the sandbox and the output shape.
@@ -77,7 +123,7 @@ func (r *Router) runReport(options AgentOptions, runtime string) error {
 func (r *Router) runCodexReport(options AgentOptions, work, runtime string, prompt []byte) (string, *usageReport, error) {
 	codex, err := exec.LookPath("codex")
 	if err != nil {
-		return "", nil, errors.New("codex is required; authenticate it outside this repository first")
+		return "", nil, &RunnerFailure{Class: RunnerUnavailable}
 	}
 	outputPath := filepath.Join(work, "report.txt")
 	connectionArgs, providerEnv, err := CodexConnectionArgs()
@@ -97,7 +143,7 @@ func (r *Router) runCodexReport(options AgentOptions, work, runtime string, prom
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if runErr := runWithTimeout(cmd, options.Timeout); runErr != nil {
-		return "", nil, errors.New("report run failed")
+		return "", nil, &RunnerFailure{Class: runnerClass(runErr, stderr.Bytes())}
 	}
 	info, statErr := os.Lstat(outputPath)
 	if statErr != nil || !info.Mode().IsRegular() || info.Size() > maxReportTextBytes {
@@ -117,7 +163,7 @@ func (r *Router) runCodexReport(options AgentOptions, work, runtime string, prom
 func (r *Router) runDSHReport(options AgentOptions, work, runtime string, prompt []byte) (string, *usageReport, error) {
 	dsh, err := exec.LookPath("dsh")
 	if err != nil {
-		return "", nil, errors.New("dsh is required; install and configure the DSH headless profile first")
+		return "", nil, &RunnerFailure{Class: RunnerUnavailable}
 	}
 	dshConfig, configErr := dshconfig.LoadFromEnv()
 	if configErr != nil && options.Model != "" {
@@ -148,7 +194,7 @@ func (r *Router) runDSHReport(options AgentOptions, work, runtime string, prompt
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if runErr := runWithTimeout(cmd, options.Timeout); runErr != nil {
-		return "", nil, errors.New("report run failed")
+		return "", nil, &RunnerFailure{Class: runnerClass(runErr, stderr.Bytes())}
 	}
 	text, ok := extractDSHFinal(stdout.buffer.Bytes())
 	if !ok {

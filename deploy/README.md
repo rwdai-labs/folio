@@ -106,8 +106,12 @@ kill switch that refuses browser binding as well. Never send QR output, token
 files, scanner IDs or private messages to chat or shared logs.
 
 Send `/status` to verify the channel, then a short text question after repository
-and Codex setup. Replies reuse Folio's existing read-only report runner; they
-have no private Context automatically and cannot execute maintenance commands.
+and Codex setup. Replies reuse Folio's read-only report runner, add one bounded
+context packet when a repository is connected, and cannot execute maintenance
+commands. The reply reports a fixed failure class when the model run fails, and
+the console shows the same class beside the channel. The optional push switch
+sends finished `pushed`/`failed` runs to the confirmed owner through the reply
+context of the owner's last answered message, so the owner must write once first.
 Non-owner senders are denied before any Folio capability. Media, group chats and
 personas are deferred. Calls are ephemeral and are not currently counted in the
 task/run usage dashboard.

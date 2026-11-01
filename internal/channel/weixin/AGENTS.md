@@ -28,10 +28,18 @@ Inherit `../../../AGENTS.md`, `../../AGENTS.md` and `../AGENTS.md`.
   `settings.json` uses the same reader and writer.
   Refuse state paths inside Git worktrees. Corrupt state fails closed; never
   silently reset the cursor.
-- `service.go` stages inbox plus cursor before invoking the handler and stages
-  replies before sending with stable client IDs. Only direct completed text
-  messages are supported. Authorization belongs to the Folio handler. No media
-  fetches, arbitrary endpoints, model sessions or tools belong here.
+- `service.go` stages inbox plus cursor before invoking the handler, shows the
+  best-effort typing hint while an answer is produced, and stages replies before
+  sending with stable client IDs. Only direct completed text messages are
+  supported. Authorization belongs to the Folio handler. No media fetches,
+  arbitrary endpoints, model sessions or tools belong here.
+- `diagnostics.go` maps a handler error to one fixed failure class and keeps the
+  last success/failure in `diagnostics.json`. Never store message text, peer
+  identity or runner stderr there; the supervisor exposes the same bounded map.
+- `contacts.go` remembers the reply context token of a peer that actually
+  received a reply, bounded to the newest eight, so `Supervisor.SendText` can
+  push to the confirmed owner. A sender that was refused never enters the table.
+  A push outside that context fails with `ErrNoContext`; it is not retried.
 - Preserve cancellation, bounded retry and fail-closed expired-token behavior.
   Tests use synthetic accounts and local fake HTTP servers, never live login.
 

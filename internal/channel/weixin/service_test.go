@@ -45,15 +45,40 @@ func testDisk(t *testing.T) *Disk {
 	return d
 }
 
+// stubChannelClient replaces the default public host with a local server that
+// accepts every protocol call. Tests that do not assert transport behaviour use
+// it so the optional typing hint never reaches a real host.
+func stubChannelClient(t *testing.T, s *Service) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "getconfig") {
+			fmt.Fprint(w, `{"ret":0,"typing_ticket":"ticket"}`)
+			return
+		}
+		fmt.Fprint(w, `{"ret":0}`)
+	}))
+	t.Cleanup(server.Close)
+	s.client = newClient(server.URL, "synthetic-token")
+}
+
 func sampleMessage(id, sender string) wireMessage {
 	return wireMessage{ID: wireID(id), From: sender, To: "bot", Type: 1, State: 2, ContextToken: "synthetic-context-" + sender, Items: []item{{Type: 1, Text: &textItem{Text: "你好"}}}}
 }
 
 func TestDurableInboxReplyRetryAndRestartDeduplication(t *testing.T) {
 	disk := testDisk(t)
-	var handled, sent, fetched atomic.Int32
+	var handled, sent, fetched, typing atomic.Int32
 	var clientID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "getconfig") {
+			fmt.Fprint(w, `{"ret":0,"typing_ticket":"ticket-1"}`)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "sendtyping") {
+			typing.Add(1)
+			fmt.Fprint(w, `{"ret":0}`)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "getupdates") {
 			fetched.Add(1)
 			var req map[string]any
@@ -121,6 +146,10 @@ func TestDurableInboxReplyRetryAndRestartDeduplication(t *testing.T) {
 	}
 	if handled.Load() != 1 || sent.Load() != 2 || fetched.Load() != 2 || len(s.state.Pending) != 0 {
 		t.Fatalf("duplicate handling: calls=%d sends=%d polls=%d", handled.Load(), sent.Load(), fetched.Load())
+	}
+	// One active and one inactive hint for the single answered message.
+	if typing.Load() != 2 {
+		t.Fatalf("typing hints: %d", typing.Load())
 	}
 }
 
@@ -265,11 +294,122 @@ func TestCancellationKeepsAcceptedWork(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s, _ := NewService(disk, testHandler(func(context.Context, channel.Message) (string, error) { cancel(); return "", context.Canceled }))
+	stubChannelClient(t, s)
 	if err := s.drain(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatal("cancellation lost")
 	}
 	restored, err := disk.state("bot")
 	if err != nil || len(restored.Pending) != 1 || restored.Pending[0].Ready {
 		t.Fatal("canceled message acknowledged")
+	}
+}
+
+func TestTypingHintIsBestEffort(t *testing.T) {
+	t.Run("broken hint still replies", func(t *testing.T) {
+		disk := testDisk(t)
+		var sent atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "getupdates"):
+				_ = json.NewEncoder(w).Encode(updates{Cursor: "c1", Messages: []wireMessage{sampleMessage("1", "owner")}})
+			case strings.HasSuffix(r.URL.Path, "getconfig"):
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				sent.Add(1)
+				fmt.Fprint(w, `{"ret":0}`)
+			}
+		}))
+		defer server.Close()
+		s, err := NewService(disk, testHandler(func(context.Context, channel.Message) (string, error) { return "reply", nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.client = newClient(server.URL, "synthetic-token")
+		if err := s.step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if sent.Load() != 1 {
+			t.Fatalf("reply not delivered after a rejected typing hint: %d", sent.Load())
+		}
+	})
+	t.Run("commands skip the hint", func(t *testing.T) {
+		disk := testDisk(t)
+		var typing atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "getupdates") {
+				m := sampleMessage("2", "owner")
+				m.Items[0].Text = &textItem{Text: "/status"}
+				_ = json.NewEncoder(w).Encode(updates{Cursor: "c2", Messages: []wireMessage{m}})
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "getconfig") || strings.HasSuffix(r.URL.Path, "sendtyping") {
+				typing.Add(1)
+			}
+			fmt.Fprint(w, `{"ret":0}`)
+		}))
+		defer server.Close()
+		s, err := NewService(disk, testHandler(func(context.Context, channel.Message) (string, error) { return "status", nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.client = newClient(server.URL, "synthetic-token")
+		if err := s.step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if typing.Load() != 0 {
+			t.Fatalf("command produced typing calls: %d", typing.Load())
+		}
+	})
+}
+
+type codedFailure struct{ class string }
+
+func (e codedFailure) Error() string        { return "synthetic failure" }
+func (e codedFailure) FailureClass() string { return e.class }
+
+func TestFailureReplyAndDiagnosticsStayRedacted(t *testing.T) {
+	disk := testDisk(t)
+	var reply string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "getupdates"):
+			_ = json.NewEncoder(w).Encode(updates{Cursor: "c1", Messages: []wireMessage{sampleMessage("1", "owner")}})
+		case strings.HasSuffix(r.URL.Path, "getconfig"):
+			fmt.Fprint(w, `{"ret":0,"typing_ticket":"ticket"}`)
+		case strings.HasSuffix(r.URL.Path, "sendtyping"):
+			fmt.Fprint(w, `{"ret":0}`)
+		default:
+			var req struct {
+				Msg struct {
+					Items []item `json:"item_list"`
+				} `json:"msg"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			if len(req.Msg.Items) == 1 && req.Msg.Items[0].Text != nil {
+				reply = req.Msg.Items[0].Text.Text
+			}
+			fmt.Fprint(w, `{"ret":0}`)
+		}
+	}))
+	defer server.Close()
+	s, err := NewService(disk, testHandler(func(context.Context, channel.Message) (string, error) {
+		return "", codedFailure{class: "runner_auth"}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.client = newClient(server.URL, "synthetic-token")
+	if err := s.step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "凭据") {
+		t.Fatalf("owner did not learn the failure class: %q", reply)
+	}
+	saved := loadDiagnostics(disk)
+	if saved.LastError != "runner_auth" || saved.LastErrorAt == "" || saved.LastOKAt != "" {
+		t.Fatalf("diagnostics=%+v", saved)
+	}
+	if strings.Contains(saved.LastError, " ") {
+		t.Fatal("diagnostics carried free text")
 	}
 }

@@ -16,7 +16,12 @@ type Service struct {
 	state       *syncState
 	handler     channel.Handler
 	pollTimeout time.Duration
+	diagnostics diagnostics
 }
+
+// typingTimeout bounds the optional "typing" hint. The hint is cosmetic: it
+// must never delay an answer or fail a reply.
+const typingTimeout = 3 * time.Second
 
 func NewService(disk *Disk, handler channel.Handler) (*Service, error) {
 	creds, err := disk.Credentials()
@@ -31,7 +36,7 @@ func NewService(disk *Disk, handler channel.Handler) (*Service, error) {
 	if err != nil || handler == nil {
 		return nil, ErrState
 	}
-	return &Service{disk: disk, client: c, state: state, handler: handler, pollTimeout: 40 * time.Second}, nil
+	return &Service{disk: disk, client: c, state: state, handler: handler, pollTimeout: 40 * time.Second, diagnostics: loadDiagnostics(disk)}, nil
 }
 
 // Run serializes the small text MVP. Cursor movement and durable acceptance
@@ -131,6 +136,18 @@ func incoming(account string, raw wireMessage) (channel.Message, bool) {
 	return channel.Message{Channel: "weixin", AccountID: account, ID: string(raw.ID), SenderID: raw.From, ConversationID: raw.From, SessionID: raw.Session, Text: text}, true
 }
 
+// typing shows Weixin's native hint while an answer is being produced. Slash
+// commands answer immediately, so they skip it. A rejected hint, a missing
+// ticket or a cancelled context is ignored: the reply is what matters.
+func (s *Service) typing(ctx context.Context, p *delivery, active bool) {
+	if strings.HasPrefix(strings.TrimSpace(p.Message.Text), "/") {
+		return
+	}
+	tctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), typingTimeout)
+	defer cancel()
+	_ = s.client.Typing(tctx, p.Message.SenderID, p.ContextToken, active)
+}
+
 func (s *Service) drain(ctx context.Context) error {
 	for len(s.state.Pending) > 0 {
 		if ctx.Err() != nil {
@@ -144,20 +161,27 @@ func (s *Service) drain(ctx context.Context) error {
 			p.Ready, p.Reply = true, ""
 		}
 		if !p.Ready {
+			s.typing(ctx, p, true)
 			reply, err := s.handler.HandleMessage(ctx, p.Message)
+			s.typing(ctx, p, false)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			class := ""
 			switch {
 			case errors.Is(err, channel.ErrUnauthorized):
 				reply = "" // Refuse silently, before any model or privileged call.
 			case err != nil:
-				reply = "Folio 暂时无法处理这条消息，请稍后重试。"
+				class = failureClass(err)
+				reply = failureReply(class)
 			}
 			if len(reply) > maxTextBytes || utf8.RuneCountInString(reply) > 4000 || !utf8.ValidString(reply) {
 				reply = "Folio 的回复超过文本长度限制，请缩小问题范围。"
 			}
 			p.Reply, p.Ready = reply, true
+			if class != "" || err == nil {
+				s.record(class)
+			}
 			if err := s.disk.save("sync.json", s.state); err != nil {
 				return err
 			}
@@ -168,6 +192,9 @@ func (s *Service) drain(ctx context.Context) error {
 			if err := s.client.sendText(ctx, p.Message.SenderID, p.ContextToken, "folio-weixin-"+p.Message.Key(), p.Reply); err != nil {
 				return err
 			}
+			// Only a peer that received a reply may be pushed to later; a
+			// refused sender never reaches this point.
+			_ = rememberContact(s.disk, p.Message.SenderID, p.ContextToken)
 		}
 		s.state.Recent = append(s.state.Recent, p.Message.Key())
 		if len(s.state.Recent) > maxRecent {

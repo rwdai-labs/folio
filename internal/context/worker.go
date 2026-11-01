@@ -1624,7 +1624,17 @@ func (r *Router) writeReviewReport(options AgentOptions, data ReviewData, digest
 	return nil
 }
 
+// errRunnerTimeout marks a runner killed by its own deadline, so callers can
+// classify it without matching message text.
+var errRunnerTimeout = errors.New("timeout")
+
+// waitDelay bounds how long Wait keeps reading pipes that a killed runner's
+// children still hold open. Without it a timed-out runner can block the caller
+// for the child's whole lifetime.
+const waitDelay = 2 * time.Second
+
 func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) error {
+	cmd.WaitDelay = waitDelay
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -1638,7 +1648,7 @@ func runWithTimeout(cmd *exec.Cmd, timeout time.Duration) error {
 	case <-timer.C:
 		_ = cmd.Process.Kill()
 		<-done
-		return errors.New("timeout")
+		return errRunnerTimeout
 	}
 }
 

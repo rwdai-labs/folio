@@ -15,7 +15,7 @@ Reference snapshot: Tencent/openclaw-weixin **2.4.10**, commit
 | [`docs/protocol_zh_CN.md`](https://github.com/Tencent/openclaw-weixin/blob/874637a0dbc24050f72d1385add4fc6170a2d726/docs/protocol_zh_CN.md), `src/api/api.ts`, `src/api/types.ts` | Reimplemented HTTP requests, headers, base metadata, message envelopes and return-code handling in Go |
 | `src/auth/login-qr.ts`, `src/auth/accounts.ts` | QR states, verification, credentials and scanner identity; Folio owns its private file format |
 | `src/monitor/monitor.ts`, `src/storage/sync-buf.ts`, `src/messaging/send.ts` | Long polling, `get_updates_buf`, text sending and reply context tokens; Folio adds its own durable inbox/outbox |
-| `src/api/config-cache.ts`, `src/messaging/typing.ts` | Native `getconfig`/`sendtyping` primitive; automatic typing/progress callbacks are deferred |
+| `src/api/config-cache.ts`, `src/messaging/typing.ts` | Native `getconfig`/`sendtyping` primitive, used as a best-effort "typing" hint while an answer is produced |
 | `src/cdn/`, `src/media/`, `src/messaging/send-media.ts` | Research only; media is deferred |
 | `src/channel.ts`, `src/messaging/process-message.ts`, authorization/pairing and OpenClaw SDK imports | Framework adapters replaced by a small Folio handler; no Agent, Memory, Tool or Session framework imported |
 
@@ -31,7 +31,13 @@ The entrypoint wires:
 ```text
 Weixin → native iLink poller → channel.Message → Folio authorization/handler
        ← native text sender ← saved reply    ← read-only Folio result
+       ← proactive push     ← stored reply context ← finished run notification
 ```
+
+The handler answer is either a plain read-only text reply or, when a repository
+is connected, one selected context packet used as reference data. Proactive
+pushes reuse the reply context of the owner's last answered message, because the
+protocol delivers a server-initiated message only inside that context.
 
 `internal/channel` contains only a message envelope and the application handler
 contract. Identity includes channel, bot account, sender, direct conversation,
@@ -132,6 +138,8 @@ directory, never in the context repository or image:
 | `credentials.json` | Bot token, account ID, scanner ID and validated API base URL |
 | `settings.json` | Confirmed `owner_id`, the `pending_owner_id` awaiting confirmation, and the persisted `enabled` decision |
 | `sync.json` | Schema version, account ID, cursor, pending inbound messages/prepared replies and recent message hashes |
+| `contacts.json` | Bounded table of the newest reply context token per peer that received a reply, used for proactive pushes |
+| `diagnostics.json` | Last answered message and the last fixed failure class, shown beside the channel |
 | `channel.lock` | Exclusive process lock, released by OS on process exit |
 
 The directory is `0700`; files are `0600`. Credentials are protected by filesystem
@@ -144,14 +152,32 @@ data directory. State paths inside Git worktrees are refused. The service image
 is Linux; the channel supports Unix flock
 platforms and fails closed on other platforms.
 
+0. While an answer is being produced, the transport may show Weixin's native
+   "typing" hint. It is best effort: a refused ticket, a slow request or a
+   cancelled context never delays or fails the reply, and slash commands skip it.
 1. Poll with the saved `get_updates_buf`. Persist a successful batch's new
    nonempty cursor **together with** its accepted inbox before calling Folio.
 2. Authorize and process pending messages sequentially. Save a prepared reply
    before attempting network delivery. Each retry reuses a deterministic
    `client_id` scoped to channel/account/sender/conversation/message.
-3. After successful sending, atomically remove the pending item and add its
-   hash to the most recent **4096** message IDs. Duplicate entries in a batch
-   and replays inside this window do not invoke Folio again.
+3. After successful sending, atomically remove the pending item, add its hash to
+   the most recent **4096** message IDs, and remember that peer's reply context
+   (`contacts.json`, newest eight peers). Duplicate entries in a batch and
+   replays inside this window do not invoke Folio again.
+
+The answer path reports one fixed failure class — `runner_unavailable`,
+`runner_auth`, `runner_network`, `runner_timeout`, `runner_failed`,
+`result_invalid` or `result_rejected` — instead of a generic apology. The class
+crosses the `folio agent` process boundary as an exit code, never as stderr, and
+is both sent to the owner as targeted text and stored in `diagnostics.json`. The
+console shows the last success time and the last failure class beside the
+channel, so a broken model credential is visible without reading logs.
+
+Proactive push is off by default. When the owner enables it in the console, a
+finished `pushed` or `failed` run is also sent to the confirmed WeChat owner.
+The push is best effort: a peer without a stored context, an expired token, a
+disabled deployment or a missing transport is recorded in the delivery ledger as
+`weixin` with a fixed detail code, and never fails the run that produced it.
 
 Only completed (`message_type: 1`, `message_state: 2`) direct text messages with
 a stable message ID, sender and reply context token are accepted. String and
@@ -184,8 +210,12 @@ server token never expires or that the backend retains every offline message.
 
 ## Deferred capabilities and acceptance
 
-No picture/file/voice/video download or upload, group routing, external-user
-persona, interactive Web QR setup or full channel framework is implemented.
+Typing hints, a targeted failure class, read-only context-packet answers and
+proactive pushes to the confirmed owner are implemented. Push delivery is bounded
+by the stored reply context: an owner who has not written recently, or whose
+token the server has expired, cannot be reached. No picture/file/voice/video
+download or upload, group routing, external-user persona, interactive Web QR
+setup or full channel framework is implemented.
 Media can later reuse the documented CDN upload URL, AES-128-ECB/PKCS#7 and
 encrypted reference flows behind separate bounds and URL validation. No media
 requirement found in the reference requires an OpenClaw runtime. Any future
@@ -201,6 +231,10 @@ private-state checks. They do not establish compatibility with a live account.
 For operator acceptance, bind through the console (or the private terminal),
 test `/status` and a short model question, restart with the same data volume,
 then test another message and verify that an unapproved sender gets no reply.
+To accept the rest of the path: check that a failing model run shows its class
+in the console and in the reply, that a question about the private context is
+answered from the returned packet, and that the push test message arrives after
+the owner has written once.
 Also verify that stopping the channel in the console stops reading: no message
 posted while it is disabled may produce a reply after it is enabled again.
 Do not paste real tokens, scanner IDs, QR images or message contents into

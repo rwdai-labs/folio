@@ -1,12 +1,16 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestChannelStateStartsEmptyAndMasked(t *testing.T) {
@@ -203,5 +207,80 @@ func TestAllowNotificationThrottlesRepeatedKind(t *testing.T) {
 	}
 	if !store.allowNotification("run:pushed") {
 		t.Fatal("a different kind should not be throttled")
+	}
+}
+
+// stubWeixin records outbound pushes without a network.
+type stubWeixin struct {
+	mu    sync.Mutex
+	texts []string
+	err   error
+}
+
+func (s *stubWeixin) SendWeixinText(_ context.Context, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.texts = append(s.texts, text)
+	return s.err
+}
+
+func (s *stubWeixin) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.texts)
+}
+
+func TestWeixinPushRequiresTransportAndRecordsReceipt(t *testing.T) {
+	store := newTestStore(t)
+	if _, err := store.SaveWeixinPush(true); err == nil {
+		t.Fatal("enabled push without a transport")
+	}
+	sender := &stubWeixin{}
+	store.SetWeixinSender(sender)
+	state, err := store.SaveWeixinPush(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	push, ok := state["weixin"].(map[string]any)
+	if !ok || push["available"] != true || push["enabled"] != true {
+		t.Fatalf("weixin state = %v", state["weixin"])
+	}
+	result, err := store.TestWeixinPush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := result["receipt"].(map[string]any)
+	if receipt["channel"] != "weixin" || receipt["status"] != "delivered" {
+		t.Fatalf("receipt = %v", receipt)
+	}
+	if sender.count() != 1 {
+		t.Fatalf("pushes = %d", sender.count())
+	}
+
+	sender.err = errors.New("weixin: the owner has no reply context yet")
+	result, err = store.TestWeixinPush()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt = result["receipt"].(map[string]any)
+	if receipt["status"] != "failed" || receipt["detail"] != "no_context" {
+		t.Fatalf("failed receipt = %v", receipt)
+	}
+}
+
+func TestRunNotificationReachesWeixin(t *testing.T) {
+	store := newTestStore(t)
+	sender := &stubWeixin{}
+	store.SetWeixinSender(sender)
+	if _, err := store.SaveWeixinPush(true); err != nil {
+		t.Fatal(err)
+	}
+	store.notifyRun(map[string]any{"status": "pushed", "run_id": "synthetic-run", "summary": "synthetic"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sender.count() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if sender.count() == 0 {
+		t.Fatal("finished run did not reach the WeChat transport")
 	}
 }

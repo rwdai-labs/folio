@@ -3,8 +3,11 @@ package contextrepo
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -103,5 +106,71 @@ func writeTestExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunnerFailuresCarryOnlyAClass(t *testing.T) {
+	cases := []struct {
+		name    string
+		script  string
+		timeout time.Duration
+		want    string
+	}{
+		{"auth", "#!/bin/sh\ncat > /dev/null\necho 'ERROR: unexpected status 401 Unauthorized: Incorrect API key provided' >&2\nexit 1\n", 10 * time.Second, RunnerAuth},
+		{"network", "#!/bin/sh\ncat > /dev/null\necho 'ERROR: dial tcp: lookup api.invalid: no such host' >&2\nexit 1\n", 10 * time.Second, RunnerNetwork},
+		{"failed", "#!/bin/sh\ncat > /dev/null\nexit 1\n", 10 * time.Second, RunnerFailed},
+		{"timeout", "#!/bin/sh\ncat > /dev/null\nsleep 30\n", 300 * time.Millisecond, RunnerTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router := testRouter(t)
+			runtime := t.TempDir()
+			binDir := t.TempDir()
+			writeTestExecutable(t, filepath.Join(binDir, "codex"), tc.script)
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+			prompt := filepath.Join(runtime, "prompt.txt")
+			if err := os.WriteFile(prompt, []byte("question"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := router.RunAgent(AgentOptions{
+				Runner: "codex", RuntimeDir: runtime, Timeout: tc.timeout,
+				ReportPrompt: prompt, ReportOutput: filepath.Join(runtime, "out.json"),
+			}, io.Discard, io.Discard)
+			var failure *RunnerFailure
+			if !errors.As(err, &failure) || failure.Class != tc.want {
+				t.Fatalf("failure=%v want=%q err=%v", failure, tc.want, err)
+			}
+			if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "api.invalid") {
+				t.Fatalf("runner output leaked into the error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunMapsRunnerFailureToExitCode(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"core", "active", "domains", "projects", "decisions", "knowledge", "history", "inbox"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := t.TempDir()
+	t.Setenv("FOLIO_CONTEXT_ROOT", root)
+	t.Setenv("CODEX_HOME", t.TempDir())
+	binDir := t.TempDir()
+	writeTestExecutable(t, filepath.Join(binDir, "codex"), "#!/bin/sh\ncat > /dev/null\necho '401 Unauthorized: Incorrect API key provided' >&2\nexit 1\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+"/usr/bin:/bin")
+	prompt := filepath.Join(runtime, "prompt.txt")
+	if err := os.WriteFile(prompt, []byte("question"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := Run([]string{"agent", "--report-prompt", prompt, "--report-out", filepath.Join(runtime, "out.json"),
+		"--runtime-dir", runtime, "--runner", "codex", "--timeout", "20"}, &out, &errOut)
+	if code != ExitRunnerAuth {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if strings.Contains(errOut.String(), "Incorrect API key") {
+		t.Fatalf("raw runner output reached the caller: %s", errOut.String())
 	}
 }

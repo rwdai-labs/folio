@@ -10,8 +10,9 @@ Applies to `cmd/`; inherit `../AGENTS.md`.
   in the console, `true` = pinned on, `false` = kill switch), the optional
   `WEIXIN_OWNER_ID` pin, and the one process-wide supervisor. That supervisor is
   the single owner of the channel directory: console login and the poller share
-  its lock and never reopen it, and `weixinConsole` adapts it to the Web
-  contract. Keep QR payloads and scanner identity out of logs; credentials and
+  its lock and never reopen it; `weixinConsole` adapts it to the Web contract
+  and `weixinPusher` adapts `SendText` to the store's outbound notification
+  contract. A push reuses the owner's stored reply context; never invent one. Keep QR payloads and scanner identity out of logs; credentials and
   the owner decision live under the external data directory. See
   `../docs/weixin-channel.md`.
 - Keep business rules in the owning `internal/` package. Wire capabilities

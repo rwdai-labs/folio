@@ -66,6 +66,7 @@ async function main() {
       let run = maintenance(), reviewRun = null, runRequests = [], jobRequests = 0, quotaRefreshes = 0;
       let tasks = [];
       let weixinLogin = null, weixinConfigured = false, weixinRunning = false, weixinOwner = '';
+      let weixinDiagnostics = null;
       const taskListing = () => ({ tasks, paused, counts: {}, policy: { defer: { P2: true }, in_window: false, window_start: '00:30', window_end: '07:30' } });
       await page.route('**/api/**', async route => {
         const req = route.request(); const url = new URL(req.url()); const endpoint = url.pathname;
@@ -119,7 +120,7 @@ async function main() {
         else if (endpoint === '/api/hooks') body = { hooks: [] };
         else if (endpoint === '/api/quotas') body = quotaSnapshot();
         else if (endpoint === '/api/quotas/refresh') { quotaRefreshes++; body = quotaSnapshot(); }
-        else if (endpoint === '/api/weixin') body = weixinStatus({ configured: weixinConfigured, enabled: weixinRunning, running: weixinRunning, owner_id: weixinOwner, login: weixinLogin });
+        else if (endpoint === '/api/weixin') body = weixinStatus({ configured: weixinConfigured, enabled: weixinRunning, running: weixinRunning, owner_id: weixinOwner, login: weixinLogin, diagnostics: weixinDiagnostics });
         else if (endpoint === '/api/weixin/login') {
           if (req.method() === 'POST') weixinLogin = { status: 'waiting', qr_image: syntheticQR };
           else if (weixinLogin && weixinLogin.status === 'waiting') weixinLogin = { status: 'need_code', qr_image: syntheticQR };
@@ -132,7 +133,8 @@ async function main() {
         else if (endpoint === '/api/weixin/login/cancel') { weixinLogin = null; body = weixinStatus({ configured: weixinConfigured, owner_id: weixinOwner }); }
         else if (endpoint === '/api/weixin/confirm') {
           weixinConfigured = true; weixinRunning = true; weixinOwner = 'synthetic-owner'; weixinLogin = null;
-          body = weixinStatus({ configured: true, enabled: true, running: true, owner_id: weixinOwner });
+          weixinDiagnostics = { last_error: 'runner_auth', last_error_at: new Date().toISOString() };
+          body = weixinStatus({ configured: true, enabled: true, running: true, owner_id: weixinOwner, diagnostics: weixinDiagnostics });
         }
         else if (endpoint === '/api/weixin/enabled') {
           weixinRunning = req.postDataJSON().enabled;
@@ -181,6 +183,10 @@ async function main() {
       await visible(page, '#weixin-toggle');
       await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'enabled');
       assert.equal(await page.locator('#weixin-qr-wrap').isVisible(), false);
+      // A failed answer must reach the page as translated copy, not a raw class.
+      await visible(page, '#weixin-health');
+      const health = await page.locator('#weixin-health').innerText();
+      assert.match(health, language === 'zh' ? /模型凭据失效/ : /model credentials rejected/);
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-weixin-${language}.png`, fullPage: true });
       await page.locator('#weixin-toggle').click();
       await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'disabled');

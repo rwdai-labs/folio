@@ -431,6 +431,7 @@
             owner you confirm here is allowed to reach the read-only handler; everyone else is refused.
           </p>
           <p id="weixin-note" class="hint"></p>
+          <p id="weixin-health" class="hint" hidden></p>
 
           <div class="actions">
             <button id="weixin-connect" class="btn primary" type="button">
@@ -482,6 +483,19 @@
                 </button>
               </div>
             </div>
+          </div>
+
+          <div id="weixin-push" class="weixin-push" hidden>
+            <label class="checkbox" for="weixin-push-toggle">
+              <input id="weixin-push-toggle" type="checkbox">
+              <span data-i18n="weixin.push.toggle">Also send task results to WeChat</span>
+            </label>
+            <div class="actions">
+              <button id="weixin-push-test" class="btn ghost small" type="button">
+                <span class="btn-label" data-i18n="weixin.push.test">Send test message</span>
+              </button>
+            </div>
+            <p id="weixin-push-note" class="hint"></p>
           </div>
 
           <p id="weixin-message" class="form-message" role="status" aria-live="polite"></p>

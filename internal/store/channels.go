@@ -27,8 +27,9 @@ const (
 // channels. It lives under the private volume and is never returned verbatim:
 // the device key is replaced by a "configured" flag.
 type channelSettings struct {
-	Language string       `json:"language,omitempty"`
-	Bark     barkSettings `json:"bark"`
+	Language string         `json:"language,omitempty"`
+	Bark     barkSettings   `json:"bark"`
+	Weixin   weixinSettings `json:"weixin"`
 }
 
 type barkSettings struct {
@@ -186,6 +187,14 @@ func (s *Store) channelStatePayload(settings channelSettings) map[string]any {
 			"last_test_status": settings.Bark.LastTestStatus,
 			"last_error":       settings.Bark.LastError,
 		},
+		"weixin": map[string]any{
+			"available":        s.weixinSenderLocked() != nil,
+			"enabled":          settings.Weixin.Enabled,
+			"updated_at":       settings.Weixin.UpdatedAt,
+			"last_test_at":     settings.Weixin.LastTestAt,
+			"last_test_status": settings.Weixin.LastTestStatus,
+			"last_error":       settings.Weixin.LastError,
+		},
 		"deliveries": s.recentDeliveries(maxDeliveryList),
 	}
 }
@@ -263,7 +272,13 @@ func (s *Store) notifyRun(run map[string]any) {
 		return
 	}
 	settings, err := s.loadChannelSettings()
-	if err != nil || !settings.Bark.Enabled || strings.TrimSpace(settings.Bark.DeviceKey) == "" {
+	if err != nil {
+		return
+	}
+	barkReady := settings.Bark.Enabled && strings.TrimSpace(settings.Bark.DeviceKey) != ""
+	sender := s.weixinSenderLocked()
+	weixinReady := settings.Weixin.Enabled && sender != nil
+	if !barkReady && !weixinReady {
 		return
 	}
 	kind := "run:" + status
@@ -282,15 +297,28 @@ func (s *Store) notifyRun(run map[string]any) {
 	go func() {
 		// The run lock is held while this is scheduled, so the network call
 		// happens strictly after the caller releases it.
-		channel, err := notify.NewBark(config)
-		if err != nil {
-			return
+		if barkReady {
+			channel, err := notify.NewBark(config)
+			if err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), pushNotifyTimeout)
+				defer cancel()
+				receipt := channel.Send(ctx, message)
+				s.recordDelivery(kind, receipt, runID, message.Title)
+			}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), pushNotifyTimeout)
-		defer cancel()
-		receipt := channel.Send(ctx, message)
-		s.recordDelivery(kind, receipt, runID, message.Title)
+		if weixinReady {
+			s.deliverWeixin(sender, message, kind, runID)
+		}
 	}()
+}
+
+// deliverWeixin performs one proactive push and records its outcome. A failure
+// is a ledger entry, never an error on the run that produced it.
+func (s *Store) deliverWeixin(sender WeixinSender, message notify.Message, kind, runID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), pushNotifyTimeout)
+	defer cancel()
+	receipt := weixinReceipt(sender.SendWeixinText(ctx, weixinText(message)))
+	s.recordDelivery(kind, receipt, runID, message.Title)
 }
 
 // allowNotification limits how often one kind of push may fire, so a burst of

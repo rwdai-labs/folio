@@ -151,6 +151,9 @@ polling without a restart; a terminal login and pinned environment variables
 remain available for unattended deployments. Credentials and the cursor stay in
 the private volume. Only the owner confirmed in the console, or pinned by the
 deployment, can reach Folio's read-only text handler; other users are denied.
+A connected repository contributes a bounded, read-only context packet to each
+answer, a failing model run reports a fixed failure class instead of a generic
+apology, and the owner may opt in to receiving finished-run pushes in WeChat.
 See [docs/weixin-channel.md](docs/weixin-channel.md) for protocol research,
 setup, recovery guarantees and deferred media support.
 

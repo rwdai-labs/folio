@@ -134,6 +134,17 @@ func newWeixinSupervisor(layout string, backend *store.Store) *weixin.Supervisor
 
 // weixinConsole adapts the channel supervisor to the Web contract. The host
 // keeps HTTP naming in internal/web; the transport package keeps its own.
+// weixinPusher adapts the channel supervisor to the store's outbound contract.
+// The supervisor owns the reply context; the store only supplies bounded text.
+type weixinPusher struct{ supervisor *weixin.Supervisor }
+
+func (p weixinPusher) SendWeixinText(ctx context.Context, text string) error {
+	if p.supervisor == nil {
+		return weixin.ErrNotConfigured
+	}
+	return p.supervisor.SendText(ctx, text)
+}
+
 type weixinConsole struct{ supervisor *weixin.Supervisor }
 
 func (c weixinConsole) WeixinStatus() map[string]any { return c.supervisor.Status() }

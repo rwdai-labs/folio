@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +36,7 @@ var (
 	ErrOwnerMismatch = errors.New("weixin: confirmed owner does not match the scanner")
 	ErrNoLogin       = errors.New("weixin: no login is awaiting confirmation")
 	ErrNoPrompt      = errors.New("weixin: no verification prompt is active")
+	ErrNoContext     = errors.New("weixin: the owner has no reply context yet")
 )
 
 // HandlerFactory builds the Folio authorization handler for one account and
@@ -177,6 +180,53 @@ func (s *Supervisor) saveSettingsLocked(settings Settings) error {
 
 // Status is the authenticated console view. It exposes no token, cursor or
 // transport error, only fixed state and the confirmed scanner identity.
+// newPushClient builds the transport used by a proactive send. It exists so a
+// test can observe the exact message without reaching the network.
+var newPushClient = NewClient
+
+// SendText delivers one proactive message to the confirmed owner. Weixin only
+// accepts a message inside a context token created by that peer's inbound
+// message, so this fails with ErrNoContext until the owner has written and the
+// token has not expired. The caller supplies already-bounded text.
+func (s *Supervisor) SendText(ctx context.Context, text string) error {
+	if strings.TrimSpace(text) == "" || len(text) > maxTextBytes {
+		return ErrProtocol
+	}
+	s.control.Lock()
+	defer s.control.Unlock()
+	if s.mode == ModeOff {
+		return ErrDeploymentOff
+	}
+	s.mu.Lock()
+	settings, settingsErr := s.settingsLocked()
+	disk, diskErr := s.diskLocked()
+	s.mu.Unlock()
+	if settingsErr != nil {
+		return ErrState
+	}
+	if diskErr != nil {
+		return ErrNotConfigured
+	}
+	owner := s.effectiveOwner(settings)
+	if owner == "" {
+		return ErrOwnerRequired
+	}
+	peer, ok := contactFor(disk, owner)
+	if !ok {
+		return ErrNoContext
+	}
+	creds, err := disk.Credentials()
+	if err != nil {
+		return ErrNotConfigured
+	}
+	client, err := newPushClient(creds)
+	if err != nil {
+		return ErrNotConfigured
+	}
+	clientID := "folio-weixin-push-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	return client.sendText(ctx, owner, peer.Token, clientID, text)
+}
+
 func (s *Supervisor) Status() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -223,6 +273,13 @@ func (s *Supervisor) statusLocked() map[string]any {
 	}
 	if s.session != nil {
 		value["login"] = s.session.Snapshot().Map()
+	}
+	if report := loadDiagnostics(s.disk); report.LastOKAt != "" || report.LastError != "" {
+		value["diagnostics"] = map[string]any{
+			"last_ok_at":    report.LastOKAt,
+			"last_error":    report.LastError,
+			"last_error_at": report.LastErrorAt,
+		}
 	}
 	return value
 }

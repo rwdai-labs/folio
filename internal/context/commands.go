@@ -64,6 +64,31 @@ func parseOptions(args []string, boolFlags, valueFlags map[string]bool) (command
 // Run is the stable CLI entrypoint used by cmd/folio/main.go. It accepts
 // interspersed options, reports unsupported commands explicitly, and keeps
 // command errors on the supplied error writer.
+// Exit codes for a failed model run. A supervising process learns only the
+// class, never the runner's stderr or model output.
+const (
+	ExitRunnerUnavailable = 3
+	ExitRunnerAuth        = 4
+	ExitRunnerNetwork     = 5
+	ExitRunnerTimeout     = 6
+	ExitRunnerFailed      = 7
+)
+
+func runnerExitCode(class string) int {
+	switch class {
+	case RunnerUnavailable:
+		return ExitRunnerUnavailable
+	case RunnerAuth:
+		return ExitRunnerAuth
+	case RunnerNetwork:
+		return ExitRunnerNetwork
+	case RunnerTimeout:
+		return ExitRunnerTimeout
+	default:
+		return ExitRunnerFailed
+	}
+}
+
 func Run(args []string, out, errOut io.Writer) int {
 	if out == nil {
 		out = io.Discard
@@ -113,6 +138,11 @@ func Run(args []string, out, errOut io.Writer) int {
 		var exitOne commandExitOne
 		if errors.As(runErr, &exitOne) {
 			return 1
+		}
+		var runner *RunnerFailure
+		if errors.As(runErr, &runner) {
+			fmt.Fprintf(errOut, "context: model runner %s failure\n", runner.Class)
+			return runnerExitCode(runner.Class)
 		}
 		fmt.Fprintf(errOut, "context: %v\n", runErr)
 		return 2

@@ -95,6 +95,7 @@ func serve(args []string) error {
 	// fight over the same lock.
 	weixin := newWeixinSupervisor(layout, backend)
 	defer weixin.Close()
+	backend.SetWeixinSender(weixinPusher{supervisor: weixin})
 	application, err := web.New(backend, web.Options{
 		DataDir: layout, Plugins: plugin.NewRegistry(githubPlugin), PasswordFile: *passwordFile, AssetsDir: *assetsDir,
 		PasswordNotice: func(password, path string) {

@@ -74,3 +74,83 @@ func TestAppScriptLoadsPluginsAfterLogin(t *testing.T) {
 		t.Fatal("web/app.js never tells plugins that the session ended")
 	}
 }
+
+// TestTranslationsCoverEveryKeyInBothLanguages guards a silent regression: a
+// repair script once dropped one language's WeChat keys, and a duplicate key
+// inserted into the wrong dictionary made English pages render Chinese. Both
+// failures pass `node --check`, so the dictionaries are compared directly.
+func TestTranslationsCoverEveryKeyInBothLanguages(t *testing.T) {
+	root := repositoryRoot(t)
+	i18n := readFile(t, filepath.Join(root, "web", "i18n.js"))
+	markup := readFile(t, filepath.Join(root, "web", "index.html"))
+
+	start := strings.Index(i18n, "var EN = {")
+	middle := strings.Index(i18n, "var ZH = {")
+	end := strings.Index(i18n, "var DICT = ")
+	if start < 0 || middle < 0 || end < 0 || !(start < middle && middle < end) {
+		t.Fatal("web/i18n.js no longer declares EN and ZH dictionaries")
+	}
+	enKeys, duplicates := dictionaryKeys(i18n[start:middle])
+	if len(duplicates) > 0 {
+		t.Fatalf("duplicate English keys: %v", duplicates)
+	}
+	zhKeys, duplicates := dictionaryKeys(i18n[middle:end])
+	if len(duplicates) > 0 {
+		t.Fatalf("duplicate Chinese keys: %v", duplicates)
+	}
+
+	var missingFromZH, missingFromEN []string
+	for key := range enKeys {
+		if !zhKeys[key] {
+			missingFromZH = append(missingFromZH, key)
+		}
+	}
+	for key := range zhKeys {
+		if !enKeys[key] {
+			missingFromEN = append(missingFromEN, key)
+		}
+	}
+	sort.Strings(missingFromZH)
+	sort.Strings(missingFromEN)
+	if len(missingFromZH) > 0 || len(missingFromEN) > 0 {
+		t.Fatalf("missing from zh: %v; missing from en: %v", missingFromZH, missingFromEN)
+	}
+
+	// Every literal key the script asks for must exist in both dictionaries;
+	// a missing key renders as the raw key text in the page.
+	script := readFile(t, filepath.Join(root, "web", "app.js"))
+	for _, match := range regexp.MustCompile(`\bt\("([A-Za-z0-9_.-]+)"`).FindAllStringSubmatch(script, -1) {
+		key := match[1]
+		if !enKeys[key] || !zhKeys[key] {
+			t.Errorf("script key %q is missing from a dictionary", key)
+		}
+	}
+
+	// Every key the markup asks for must exist in both dictionaries.
+	for _, match := range regexp.MustCompile(`data-i18n(?:-placeholder)?="([^"]+)"`).FindAllStringSubmatch(markup, -1) {
+		key := match[1]
+		if key == "" || strings.Contains(key, "${") {
+			continue
+		}
+		if !enKeys[key] || !zhKeys[key] {
+			t.Errorf("markup key %q is missing from a dictionary", key)
+		}
+	}
+}
+
+// dictionaryKeys returns the declared keys and any duplicate within one block.
+func dictionaryKeys(block string) (map[string]bool, []string) {
+	keys := map[string]bool{}
+	var duplicates []string
+	for _, match := range regexp.MustCompile(`(?m)^\s{4}"([A-Za-z0-9_.-]+)":`).FindAllStringSubmatch(block, -1) {
+		key := match[1]
+		if keys[key] {
+			duplicates = append(duplicates, key)
+		}
+		keys[key] = true
+	}
+	if len(keys) == 0 {
+		return keys, []string{"no keys parsed"}
+	}
+	return keys, duplicates
+}

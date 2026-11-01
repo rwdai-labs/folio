@@ -9,7 +9,7 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
 | `tasks.go`, `kinds.go`, `hooks.go` | Durable queue, data-defined actions, signed events |
 | `report.go`, `usage.go`, `channels.go`, `models.go`, `quota.go` | Reports, usage, notifications, runner catalogs and the optional quota snapshot |
-| `inbound.go` | Explicit Weixin owner authorization and bounded read-only text responses |
+| `inbound.go`, `weixin_push.go` | Explicit Weixin owner authorization, bounded read-only answers and the optional outbound push |
 
 - A task is durable intent; a run is one attempt. Preserve single-writer
   checkout access, priority/off-peak policies, pause/hold/cancel/run-now
@@ -23,8 +23,16 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   before any capability, including cached reply delivery. Text reuses the
   ephemeral read-only report worker with a fresh per-call directory; never pass
   channel credentials or use transport session IDs to resume a model session.
+  A connected repository contributes one `folio build --stdout --no-record`
+  packet, clamped and marked as reference data; selection failures degrade to an
+  answer without context instead of failing the message. Runner failures cross
+  the child boundary as the fixed exit codes in `internal/context`, never as
+  stderr, and become a channel failure class.
   External users are denied; future personas require a separate restricted
   context/capability boundary. Channel calls do not create task/run audits.
+- `weixin_push.go` owns the optional outbound WeChat switch and test send. The
+  transport is injected at startup; enabling without it is rejected, and a push
+  failure is only a delivery-ledger entry.
 - Automatic organization uses a host-built complete snapshot and the context
   package's structural validator even with an older worker. Checkpoints advance
   only after successful no-change or verified push, acknowledging resulting

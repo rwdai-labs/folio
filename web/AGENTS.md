@@ -49,7 +49,11 @@ Inherit `../AGENTS.md`.
   require the owner to confirm the displayed scanner identity before enabling,
   and offer an enable/disable toggle only when an owner exists. Explain the
   deployment kill switch and a pinned owner; keep the QR out of storage, URLs
-  and logs; stop polling on logout and session expiry.
+  and logs; stop polling on logout and session expiry. Show the last success time
+  and the last fixed failure class from `diagnostics` so a broken runner is
+  visible, and render the optional push switch plus test button from
+  `state.channels.weixin`; refresh the card when the channel payload arrives
+  later than the status payload.
 - The subscription-quota panel is read-only. Render magpie's card/window text
   as text nodes, show `text`/`unlimited` windows without a fake percentage,
   keep source errors and stale cards visible, and never put a quota key or URL
