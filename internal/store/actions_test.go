@@ -45,20 +45,23 @@ func TestRunActionRejectsInvalidPlans(t *testing.T) {
 		t.Fatal("empty plan was accepted")
 	}
 	if _, err := store.runAction(actionPlan{
-		ID:    "two-steps",
-		Steps: []actionStep{{Type: actionStepMaintenance}, {Type: actionStepMaintenance}},
+		ID:     "two-steps",
+		Legacy: true,
+		Steps:  []actionStep{{Type: actionStepMaintenance}, {Type: actionStepMaintenance}},
 	}, taskRecord{}, "task"); err == nil {
-		t.Fatal("multi-step plan was accepted in Phase 1")
+		t.Fatal("multi-step legacy plan was accepted")
 	}
 	if _, err := store.runAction(actionPlan{
-		ID:    "unknown",
-		Steps: []actionStep{{Type: "deploy"}},
+		ID:     "unknown",
+		Legacy: true,
+		Steps:  []actionStep{{Type: "deploy"}},
 	}, taskRecord{}, "task"); err == nil {
 		t.Fatal("unknown step was accepted")
 	}
 	if _, err := store.runAction(actionPlan{
-		ID:    "report",
-		Steps: []actionStep{{Type: actionStepReport, Report: taskKind{ID: "triage", Action: kindActionReport}}},
+		ID:     "report",
+		Legacy: true,
+		Steps:  []actionStep{{Type: actionStepReport, Report: taskKind{ID: "triage", Action: kindActionReport}}},
 	}, taskRecord{}, "scheduler"); err == nil {
 		t.Fatal("report plan ran outside task dispatch")
 	}

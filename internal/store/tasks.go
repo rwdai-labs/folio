@@ -423,12 +423,12 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 	if !taskKindRE.MatchString(kind) {
 		return nil, errStore("invalid_task_kind")
 	}
-	definition, err := s.taskKindFor(kind)
+	definition, err := s.resolveTaskAction(kind)
 	if err != nil {
 		return nil, errStore("invalid_task_kind")
 	}
 	if priority == "" {
-		priority = kindDefaultPriority(definition)
+		priority = definition.defaultPriority()
 	}
 	if !validPriority(priority) {
 		return nil, errStore("invalid_task_priority")
@@ -447,7 +447,7 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 		// Changes received after an organizer's pull need a following pass.
 		// Coalesce them into one queued task instead of consuming the event
 		// against the already-running snapshot.
-		if task.Kind == kind && task.Source == source && (task.Status == taskStatusQueued || task.Status == taskStatusRunning && definition.Action != kindActionMaintenance) {
+		if task.Kind == kind && task.Source == source && (task.Status == taskStatusQueued || task.Status == taskStatusRunning && !definition.hasMaintenance()) {
 			return map[string]any{"task": publicTask(task), "created": false}, nil
 		}
 	}
@@ -716,12 +716,12 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 		return map[string]any{"dispatched": 0}, nil
 	}
 	task := &file.Tasks[index]
-	definition, kindErr := s.taskKindFor(task.Kind)
+	definition, kindErr := s.resolveTaskAction(task.Kind)
 	if kindErr != nil {
 		// A task whose kind is no longer configured must not spin forever, and
 		// must not silently fall back to a different action.
 		task.Status = taskStatusFailed
-		task.Reason = "kind_unknown"
+		task.Reason = taskResolveReason(kindErr)
 		task.FinishedAt = nowString()
 		task.UpdatedAt = nowString()
 		_ = s.saveTasksLocked(file)
@@ -744,12 +744,7 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 		run    map[string]any
 		runErr error
 	)
-	plan, planErr := actionPlanForKind(definition)
-	if planErr != nil {
-		runErr = planErr
-	} else {
-		run, runErr = s.runAction(plan, snapshot, "task")
-	}
+	run, runErr = s.runAction(definition, snapshot, "task")
 	result := map[string]any{"dispatched": 1, "task_id": taskID}
 
 	s.taskMu.Lock()
@@ -775,7 +770,7 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 		}
 		status := responseString(run, "status")
 		switch status {
-		case "pushed", "no_changes", "reported":
+		case "pushed", "no_changes", "reported", "completed":
 			item.Status = taskStatusDone
 		default:
 			item.Status = taskStatusFailed

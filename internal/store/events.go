@@ -95,9 +95,9 @@ func (s *Store) planForTarget(target string) (actionPlan, error) {
 	if id == taskKindMaintenance {
 		return builtinActionPlan(id)
 	}
-	kind, err := s.taskKindFor(id)
+	plan, err := s.resolveTaskAction(id)
 	if err != nil {
-		return actionPlan{}, errStore("kind_unknown")
+		return actionPlan{}, err
 	}
-	return actionPlanForKind(kind)
+	return plan, nil
 }

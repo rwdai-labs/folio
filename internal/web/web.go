@@ -152,6 +152,17 @@ type TaskBackend interface {
 	DispatchDue() (map[string]any, error)
 }
 
+// ActionBackend is the optional runtime-action registry contract. Definitions
+// are owner configuration; the Web layer only carries their JSON.
+type ActionBackend interface {
+	ListActions() (map[string]any, error)
+	ValidateActionJSON(raw []byte) error
+	PutActionJSON(raw []byte) (map[string]any, error)
+	DisableAction(id string) error
+	ActionVersions() (map[string]any, error)
+	RestoreActionVersion(name string) error
+}
+
 // Options configures the local web boundary.
 type Options struct {
 	DataDir string
@@ -1067,6 +1078,12 @@ func (s *Server) taskBackend() (TaskBackend, bool) {
 	return backend, ok
 }
 
+// actionBackend reports whether the configured store exposes runtime actions.
+func (s *Server) actionBackend() (ActionBackend, bool) {
+	backend, ok := s.store.(ActionBackend)
+	return backend, ok
+}
+
 // hookBackend reports whether the configured store exposes inbound hooks.
 func (s *Server) hookBackend() (HookBackend, bool) {
 	backend, ok := s.store.(HookBackend)
@@ -1238,6 +1255,34 @@ func (s *Server) taskAdmin(w http.ResponseWriter, r *http.Request, payload map[s
 			status = http.StatusConflict
 		}
 		s.writeError(w, status, taskErrorCode(err))
+		return true
+	}
+	s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	return true
+}
+
+// actionAdmin handles the session-authenticated action verbs that carry an id.
+func (s *Server) actionAdmin(w http.ResponseWriter, r *http.Request, payload map[string]any) bool {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/actions/"), "/")
+	if len(parts) != 2 || parts[1] != "disable" {
+		return false
+	}
+	backend, ok := s.actionBackend()
+	if !ok {
+		s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+		return true
+	}
+	if err := backend.DisableAction(parts[0]); err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "action_unknown" {
+			status = http.StatusNotFound
+		}
+		s.writeError(w, status, "action_invalid")
+		return true
+	}
+	value, err := backend.ListActions()
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "action_unavailable")
 		return true
 	}
 	s.writeJSON(w, http.StatusOK, safeMap(value), nil)
@@ -1741,6 +1786,30 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	case "/api/actions":
+		backend, ok := s.actionBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+			return
+		}
+		value, err := backend.ListActions()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "action_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	case "/api/actions/versions":
+		backend, ok := s.actionBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+			return
+		}
+		value, err := backend.ActionVersions()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "action_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/tasks":
 		backend, ok := s.taskBackend()
 		if !ok {
@@ -1830,7 +1899,52 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/hooks/") && s.hookAdmin(w, r, payload) {
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/actions/") && s.actionAdmin(w, r, payload) {
+		return
+	}
 	switch r.URL.Path {
+	case "/api/actions/validate":
+		backend, ok := s.actionBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+			return
+		}
+		raw, err := json.Marshal(payload["action"])
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "action_invalid")
+			return
+		}
+		if err := backend.ValidateActionJSON(raw); err != nil {
+			s.writeError(w, http.StatusBadRequest, "action_invalid")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{"valid": true}, nil)
+	case "/api/actions":
+		backend, ok := s.actionBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+			return
+		}
+		raw, err := json.Marshal(payload["action"])
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "action_invalid")
+			return
+		}
+		value, callErr := backend.PutActionJSON(raw)
+		s.writeBackendResult(w, callErr, value)
+	case "/api/actions/restore":
+		backend, ok := s.actionBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+			return
+		}
+		name, _ := payload["version"].(string)
+		if err := backend.RestoreActionVersion(name); err != nil {
+			s.writeError(w, http.StatusBadRequest, "action_invalid")
+			return
+		}
+		value, _ := backend.ListActions()
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/logout":
 		s.sessions.remove(token)
 		secure := ""

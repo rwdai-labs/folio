@@ -191,6 +191,39 @@ func (b *testBackend) AcceptHook(id string, timestamp int64, eventID, signature 
 	return map[string]any{"name": "Watch context", "action": "maintenance", "priority": "P2"}, "ok"
 }
 
+func (b *testBackend) ListActions() (map[string]any, error) {
+	return map[string]any{
+		"http_hosts": []string{"api.example.com"},
+		"actions": []any{map[string]any{
+			"id": "brief", "label": "Brief", "priority": "P1", "enabled": true,
+			"steps": []any{map[string]any{"id": "ask", "type": "agent"}},
+		}},
+	}, nil
+}
+
+func (b *testBackend) ValidateActionJSON(raw []byte) error {
+	if !strings.Contains(string(raw), `"id"`) {
+		return errTestAction
+	}
+	return nil
+}
+
+func (b *testBackend) PutActionJSON(raw []byte) (map[string]any, error) {
+	return b.ListActions()
+}
+
+func (b *testBackend) DisableAction(id string) error {
+	return nil
+}
+
+func (b *testBackend) ActionVersions() (map[string]any, error) {
+	return map[string]any{"versions": []any{map[string]any{"name": "20260101T000000.000000000Z-000000000000.json"}}}, nil
+}
+
+func (b *testBackend) RestoreActionVersion(name string) error {
+	return nil
+}
+
 func (b *testBackend) TaskKinds() (map[string]any, error) {
 	return map[string]any{
 		"actions": []string{"maintenance", "triage"},
@@ -1043,5 +1076,60 @@ func TestWeixinPushRoutesUseTheOptionalBackend(t *testing.T) {
 	receipt, ok := tested["receipt"].(map[string]any)
 	if !ok || receipt["status"] != "delivered" {
 		t.Fatalf("receipt=%v", tested["receipt"])
+	}
+}
+
+var errTestAction = errors.New("action invalid")
+
+func TestActionRegistryAPI(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+
+	status, _, _ := client.request(t, http.MethodGet, "/api/actions", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", status)
+	}
+	client.login(t, password)
+
+	status, _, listing := client.request(t, http.MethodGet, "/api/actions", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("list status=%d", status)
+	}
+	actions := listing["actions"].([]any)
+	if len(actions) != 1 || actions[0].(map[string]any)["id"] != "brief" {
+		t.Fatalf("listing=%v", listing)
+	}
+
+	status, _, result := client.request(t, http.MethodPost, "/api/actions/validate", map[string]any{
+		"action": map[string]any{"id": "brief", "label": "Brief"},
+	}, server.URL)
+	if status != http.StatusOK || result["valid"] != true {
+		t.Fatalf("validate status=%d result=%v", status, result)
+	}
+
+	status, _, _ = client.request(t, http.MethodPost, "/api/actions", map[string]any{
+		"action": map[string]any{"id": "brief", "label": "Brief"},
+	}, server.URL)
+	if status != http.StatusOK {
+		t.Fatalf("put status=%d", status)
+	}
+
+	status, _, _ = client.request(t, http.MethodPost, "/api/actions/brief/disable", map[string]any{}, server.URL)
+	if status != http.StatusOK {
+		t.Fatalf("disable status=%d", status)
+	}
+
+	status, _, versions := client.request(t, http.MethodGet, "/api/actions/versions", nil, "")
+	if status != http.StatusOK || len(versions["versions"].([]any)) != 1 {
+		t.Fatalf("versions status=%d versions=%v", status, versions)
+	}
+
+	status, _, _ = client.request(t, http.MethodPost, "/api/actions/restore", map[string]any{
+		"version": "20260101T000000.000000000Z-000000000000.json",
+	}, server.URL)
+	if status != http.StatusOK {
+		t.Fatalf("restore status=%d", status)
 	}
 }

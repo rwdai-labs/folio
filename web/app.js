@@ -2286,7 +2286,7 @@
       tasks.unshift({
         id: `run:${run.run_id}`, run_id: run.run_id, boardRun: true,
         title: t("board.direct_run"), kind: run.kind || "maintenance",
-        source: run.trigger, status: ["pushed", "no_changes", "reported"].includes(run.status) ? "done" : run.status === "skipped" ? "failed" : run.status,
+        source: run.trigger, status: ["pushed", "no_changes", "reported", "completed"].includes(run.status) ? "done" : run.status === "skipped" ? "failed" : run.status,
         reason: run.reason, created_at: run.started_at, finished_at: run.finished_at,
         runner: run.runner, model: run.model,
       });
@@ -2558,6 +2558,8 @@
         return "automation.status.running";
       case "reported":
         return "automation.status.reported";
+      case "completed":
+        return "automation.status.completed";
       default:
         return "automation.status.unknown";
     }

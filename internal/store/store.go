@@ -113,6 +113,7 @@ type Store struct {
 	// claim the same task.
 	taskMu     sync.Mutex
 	dispatchMu sync.Mutex
+	actionMu   sync.Mutex
 	tasksCache *tasksFile
 	tasksPath  string
 	policyPath string

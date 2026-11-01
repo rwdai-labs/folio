@@ -89,12 +89,12 @@ func (s *Store) CreateHook(name, action, priority string) (map[string]any, error
 	if action == "" {
 		action = taskKindMaintenance
 	}
-	kind, err := s.taskKindFor(action)
+	plan, err := s.resolveTaskAction(action)
 	if err != nil {
 		return nil, errStore("invalid_hook_action")
 	}
 	if priority == "" {
-		priority = kindDefaultPriority(kind)
+		priority = plan.defaultPriority()
 	}
 	if !validPriority(priority) {
 		return nil, errStore("invalid_hook_priority")

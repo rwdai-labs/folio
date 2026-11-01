@@ -1,8 +1,9 @@
 # Runtime actions and the main agent
 
-Status: target architecture. Snapshot date: 2026-11-01. Phase 1 (internal
-action-plan and event/route seam) is implemented; later phases are planned.
-Current user-visible behaviour remains [README](../README.md) and the package
+Status: target architecture. Snapshot date: 2026-11-01. Phases 1 and 2 are
+implemented (internal action-plan/event seam, runtime action registry and
+pipeline); the main agent/chat and the editor remain planned. Current
+user-visible behaviour remains [README](../README.md) and the package
 instructions. No private context, credentials, or host details belong here.
 
 Scope decision: the main agent may change runtime configuration; editing Go
@@ -244,8 +245,8 @@ Step types (v1):
 
 Rules:
 
-- Steps run in order. There are no loops, branches, or expressions. `when` can
-  skip a step; anything more is a new primitive, not a new JSON feature.
+- Steps run in order. There are no loops, branches, or conditional
+  expressions; anything more is a new primitive, not a new JSON feature.
 - Templates are variable substitution only:
   `{{event.*}}`, `{{payload.*}}`, `{{steps.<id>.output}}`, `{{secrets.<name>}}`.
   A missing key fails the step. Unknown functions fail validation.
@@ -433,9 +434,11 @@ Represent `maintenance` and `report` as internal built-in actions (not yet
 exposed as `actions.json` v2); keep behaviour identical. Acceptance: existing
 hook and task tests pass; a route can target the same actions.
 
-Phase 2 — action v2. Add `script`, `http`, `push`, `task` steps; validation,
-versioning, and the console dry-run. Acceptance: a script action runs from
-`/data/scripts` with argv/stdin and bounded output; a failed step is audited.
+Phase 2 — action v2 (implemented 2026-11-01). Add `script`, `http`, `push`,
+`task` steps; validation, versioning, and the console dry-run. Acceptance: a
+script action runs from `/data/scripts` with argv/stdin and bounded output; a
+failed step is audited. The registry API is implemented; the visual editor is
+deferred to Phase 4.
 
 Phase 3 — main agent and chat. Add the pi runtime, tool gateway, sessions,
 console chat, and Weixin owner turns. Acceptance: owner asks for a task in
@@ -482,19 +485,29 @@ channel, and retention policy.
 
 ## 10. Implementation status
 
-2026-11-01 — Phase 1 landed as an internal seam, with no user-visible behaviour
-change:
+2026-11-01 — Phase 1 and the Phase 2 core landed:
 
 - `internal/store/actions.go` defines the internal `actionPlan`/`actionStep`
-  shape, maps a data-defined kind to one plan, and runs it. `DispatchDue`
-  executes through that plan; Phase 1 plans are exactly one step.
+  shape and routes both legacy kinds and runtime actions through `runAction`.
+  Legacy kinds remain one-step and keep their previous behavior.
 - `internal/store/events.go` defines the internal event envelope, trust
   classes, a built-in route table and action-target validation.
-  `SchedulerTick` now enters through `scheduler.tick` → `action:maintenance`.
-- Hooks and task creation still use their existing paths. `actions.json`,
-  `routes.json`, the console chat and the pi runtime are not implemented.
-- Tests cover plans, route targets and the unchanged dispatch paths
-  (`go test -race ./internal/store`).
+  `SchedulerTick` enters through `scheduler.tick` → `action:maintenance`.
+- `internal/store/action_config.go` loads and validates `/data/actions.json`
+  (version 2), snapshots versions before writes, and exposes list/validate/
+  put/disable/restore operations. Unknown fields and unsafe definitions fail
+  closed.
+- `internal/store/action_pipeline.go` executes ordered `context`, `agent`,
+  `script`, `push`, `http` and `task` steps with bounded output, templates,
+  per-step audit records, usage aggregation and optional report persistence.
+- `internal/web` exposes session/CSRF-protected action registry routes.
+- Hooks, task creation and dispatch accept runtime action IDs; the legacy
+  `task-kinds.json` path still works.
+- Not implemented yet: the pi main agent, tool gateway, console chat, Weixin
+  owner turns, `routes.json`, lane admission, and the visual action editor.
+  `lane` is accepted and validated but not enforced until Phase 3.
+- Tests cover action validation/versioning, pipeline steps, runtime dispatch,
+  route targets, the registry API and the unchanged legacy paths.
 
 ## References
 

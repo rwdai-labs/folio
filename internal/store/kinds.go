@@ -58,8 +58,30 @@ func (s *Store) TaskKinds() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	kinds := make([]any, 0, len(file.Kinds))
+	pipelines, err := s.loadPipelines()
+	if err != nil {
+		return nil, err
+	}
+	kinds := make([]any, 0, len(file.Kinds)+len(pipelines.Actions))
+	seen := map[string]bool{}
+	for _, definition := range pipelines.Actions {
+		if seen[definition.ID] {
+			continue
+		}
+		seen[definition.ID] = true
+		kinds = append(kinds, map[string]any{
+			"id":       definition.ID,
+			"label":    definition.Label,
+			"action":   "pipeline",
+			"priority": definition.defaultPriority(),
+			"runner":   pipelineDefaultRunner(definition),
+		})
+	}
 	for _, kind := range file.Kinds {
+		if seen[kind.ID] {
+			continue
+		}
+		seen[kind.ID] = true
 		kinds = append(kinds, map[string]any{
 			"id":       kind.ID,
 			"label":    kind.Label,
@@ -68,7 +90,19 @@ func (s *Store) TaskKinds() (map[string]any, error) {
 			"runner":   kind.DefaultRunner(),
 		})
 	}
-	return map[string]any{"kinds": kinds, "actions": kindActions}, nil
+	return map[string]any{"kinds": kinds, "actions": append(kindActions, "pipeline")}, nil
+}
+
+func pipelineDefaultRunner(definition pipelineDefinition) string {
+	for _, step := range definition.Steps {
+		if step.Type == "agent" {
+			if step.Runner != "" {
+				return step.Runner
+			}
+			return "codex"
+		}
+	}
+	return "pipeline"
 }
 
 // loadTaskKinds reads the private kinds file, creating the default one on first

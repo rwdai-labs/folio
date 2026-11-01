@@ -16,6 +16,13 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - API changes require matching `Backend` implementations, fake backends, UI
   consumers, and contract documentation. Task acceptance is not run completion.
   Update these instructions whenever API ownership or security rules change.
+- The optional `ActionBackend` contract serves session-protected
+  `GET /api/actions` and `GET /api/actions/versions`, and CSRF-protected
+  `POST /api/actions`, `POST /api/actions/validate`, `POST /api/actions/restore`
+  and `POST /api/actions/{id}/disable`. Definitions are owner configuration:
+  validate the whole definition, snapshot before writing, and map failures to
+  fixed `action_*` codes. Responses may carry action definitions, never action
+  secrets or arbitrary runtime files.
 - The optional `QuotaBackend` contract exposes session-protected
   `GET /api/quotas` and CSRF-protected `POST /api/quotas/refresh`. Responses are
   bounded maps, never raw magpie bodies, key paths, or credentials. A
