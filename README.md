@@ -177,9 +177,10 @@ unrelated secrets off the service account and volume, and expose the Web UI only
 through loopback, an SSH tunnel, or an authenticated HTTPS reverse proxy.
 
 On the first start that has no owner account, the console shows a setup form
-from the local or private network. The owner chooses a username and password (8–200 characters, at least three of
-uppercase, lowercase, digits and symbols); only the PBKDF2 hash is stored in
-the private SQLite database at `/data/folio.db` (mode 0600). There is no default password, generated password,
+from the local or private network. The owner chooses a username and password
+(8–200 characters, at least three of uppercase, lowercase, digits and symbols);
+only the PBKDF2 hash is stored in the private SQLite database at
+`/data/folio.db` (mode 0600). There is no default password, generated password,
 or printed setup code. Sessions last 30 days of activity with a 90-day absolute
 limit, and survive service restarts.
 

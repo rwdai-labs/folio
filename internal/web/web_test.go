@@ -527,10 +527,10 @@ func TestFirstRunSetupAndLongSession(t *testing.T) {
 	if err != nil || !required {
 		t.Fatalf("setup required=%v err=%v", required, err)
 	}
-	if err := store.CreateUser("owner", "correct horse battery"); err != nil {
+	if err := store.CreateUser("owner", "Correct horse battery 1"); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	user, ok, err := store.Authenticate("owner", "correct horse battery")
+	user, ok, err := store.Authenticate("owner", "Correct horse battery 1")
 	if err != nil || !ok {
 		t.Fatalf("authenticate: ok=%v err=%v", ok, err)
 	}
@@ -587,7 +587,7 @@ func TestSetupAPIRequiresPrivateAddressAndCreatesOneOwner(t *testing.T) {
 		t.Fatalf("setup session status=%d value=%v", status, session)
 	}
 	status, _, setup := client.request(t, http.MethodPost, "/api/setup", map[string]any{
-		"username": "owner", "password": "correct horse battery",
+		"username": "owner", "password": "Correct horse battery 1",
 	}, httpServer.URL)
 	if status != http.StatusCreated || setup["authenticated"] != true {
 		t.Fatalf("setup status=%d value=%v", status, setup)
@@ -597,7 +597,7 @@ func TestSetupAPIRequiresPrivateAddressAndCreatesOneOwner(t *testing.T) {
 		t.Fatalf("authenticated session status=%d value=%v", status, session)
 	}
 	status, _, _ = client.request(t, http.MethodPost, "/api/setup", map[string]any{
-		"username": "other", "password": "another password 123",
+		"username": "other", "password": "Another password 123",
 	}, httpServer.URL)
 	if status != http.StatusConflict {
 		t.Fatalf("second setup status=%d", status)
@@ -1332,5 +1332,27 @@ func TestLoginRateLimitStopsPasswordGuessing(t *testing.T) {
 	}, server.URL)
 	if status != http.StatusTooManyRequests || result["error"] != "login_rate_limited" || headers.Get("Retry-After") == "" {
 		t.Fatalf("rate limit status=%d headers=%v result=%v", status, headers, result)
+	}
+}
+
+func TestPasswordPolicyRequiresEightAndThreeClasses(t *testing.T) {
+	cases := map[string]bool{
+		"Abcdefg1":                true,
+		"abcdefg1":                false,
+		"ABCDEFG1":                false,
+		"Abcdefg!":                true,
+		"Abcdefgh":                false,
+		"Abcdef1!":                true,
+		"Abcdefg":                 false,
+		"Abcdefg1!":               true,
+		"Correct horse battery 1": true,
+	}
+	for password, want := range cases {
+		if got := validAuthPassword(password); got != want {
+			t.Fatalf("validAuthPassword(%q)=%v want %v", password, got, want)
+		}
+	}
+	if validAuthPassword("Abcdef1!\n") {
+		t.Fatal("control character was accepted")
 	}
 }

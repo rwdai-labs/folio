@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "modernc.org/sqlite"
 )
@@ -24,8 +25,9 @@ const (
 	authDatabaseName     = "folio.db"
 	sessionIdleTTL       = 30 * 24 * time.Hour
 	sessionAbsoluteTTL   = 90 * 24 * time.Hour
-	minPasswordBytes     = 12
-	maxPasswordBytes     = 200
+	minPasswordRunes     = 8
+	maxPasswordRunes     = 200
+	maxPasswordBytes     = 1024
 	maxLoginFailures     = 5
 	loginFailureWindow   = 15 * time.Minute
 	maxSessionRows       = 1024
@@ -260,10 +262,33 @@ func validAuthUsername(username string) bool {
 }
 
 func validAuthPassword(password string) bool {
-	if len(password) < minPasswordBytes || len(password) > maxPasswordBytes {
+	runes := []rune(password)
+	if len(runes) < minPasswordRunes || len(runes) > maxPasswordRunes {
 		return false
 	}
-	return !strings.ContainsRune(password, 0)
+	classes := 0
+	var lower, upper, digit, special bool
+	for _, r := range runes {
+		if unicode.IsControl(r) {
+			return false
+		}
+		switch {
+		case unicode.IsLower(r):
+			lower = true
+		case unicode.IsUpper(r):
+			upper = true
+		case unicode.IsDigit(r):
+			digit = true
+		case unicode.IsPunct(r) || unicode.IsSymbol(r):
+			special = true
+		}
+	}
+	for _, present := range []bool{lower, upper, digit, special} {
+		if present {
+			classes++
+		}
+	}
+	return classes >= 3
 }
 
 // CreateUser creates the single owner account. It fails closed once a user
