@@ -25,8 +25,9 @@ ssh -L 8080:127.0.0.1:8080 <nas>
 
 Open `http://localhost:8080`. On the first start with no owner account, the
 console shows a setup form. It is accepted only from loopback or a private
-network; choose a username and a password (12–200 characters). Only the PBKDF2
-hash is stored in `/data/folio.db` (mode 0600); there is no default password,
+network; choose a username and a password (8–200 characters, at least three of
+uppercase, lowercase, digits and symbols). Only the PBKDF2 hash is stored in
+`/data/folio.db` (mode 0600); there is no default password,
 generated password, or printed setup code.
 
 If you need unattended bootstrap, mount an `ADMIN_PASSWORD_FILE` before the
@@ -117,12 +118,11 @@ events still receive observer tools only.
 
 Token counts come from the runner. Estimated cost additionally needs a price
 catalog. Folio downloads the public [models.dev](https://models.dev) catalog from
-`https://models.dev/api.json` at startup when the cache is missing or older than
-24 hours, and caches a compact copy at
-`/data/runtime/model-prices.json` (mode `0600`). **Settings → Model price
-catalog** shows the source, age and model count and has a manual refresh button
-(limited to once every 30 seconds). Set `FOLIO_PRICING_URL` only when the
-deployment must use an internal mirror; the same JSON shape is required.
+`https://models.dev/api.json` when the cache is missing or older than 24 hours,
+and caches a compact copy at `/data/runtime/model-prices.json` (mode `0600`).
+The catalog is refreshed automatically in the background; there is no settings
+page to maintain. Set `FOLIO_PRICING_URL` only when the deployment must use an
+internal mirror; the same JSON shape is required.
 
 Prices are list prices in USD per million tokens. The estimate covers uncached
 input, cached input and output. It does not model cache writes, context-length

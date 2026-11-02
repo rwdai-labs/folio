@@ -461,8 +461,8 @@ Existing task, run, usage, channel, and repository APIs keep their contracts.
 [`models.dev`](https://models.dev) catalog from `https://models.dev/api.json`,
 projects provider/model/cost entries into a compact bounded cache, and computes
 US-dollar list-price estimates per run. The catalog is refreshed in the
-background at startup when missing or older than 24 hours; the settings card can
-refresh it manually at most once every 30 seconds. `FOLIO_PRICING_URL` can point
+background at startup when missing or older than 24 hours, then checks again on
+a bounded timer. `FOLIO_PRICING_URL` can point
 at an internal mirror with the same shape.
 
 The estimate uses uncached input, cached input and output rates per million
@@ -568,9 +568,9 @@ retention policy remain planned.
   agent when the route and runtime are available, and keeps the bounded
   read-only answer as a fallback.
 - `internal/web` exposes the action registry API, agent configuration, the SSE
-  chat endpoint, session history and the price catalog. The console has `#chat`
-  and `#actions` views; Settings includes the agent runtime and price catalog
-  cards; task details and usage show estimated cost.
+  chat endpoint, session history and the price catalog API. The console has
+  `#chat` and `#actions` views; Settings includes the agent runtime card; task
+  details and usage show estimated cost.
 - Hooks, task creation and dispatch accept runtime action IDs; the legacy
   `task-kinds.json` path still works.
 - Not verified / not implemented: a real pi package wrapper, lane admission and

@@ -58,18 +58,18 @@
           <p id="login-message" class="form-message" role="status" aria-live="polite"></p>
         </form>
         <form id="setup-form" class="form" novalidate hidden>
-          <p class="hint" data-i18n="setup.first_run">First run: create the single owner account. The setup form is available only from the local or private network.</p>
           <div class="field">
             <label for="setup-username" data-i18n="setup.username">Username</label>
             <input id="setup-username" name="username" type="text" autocomplete="username" required maxlength="64" placeholder="owner" data-i18n-placeholder="login.username_placeholder">
           </div>
           <div class="field">
             <label for="setup-password" data-i18n="setup.password">Password</label>
-            <input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="200">
+            <input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="200">
+            <p class="hint" data-i18n="setup.password_hint">8–200 characters; use at least three of uppercase, lowercase, digits and symbols.</p>
           </div>
           <div class="field">
             <label for="setup-confirm" data-i18n="setup.confirm">Confirm password</label>
-            <input id="setup-confirm" name="confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="200">
+            <input id="setup-confirm" name="confirm" type="password" autocomplete="new-password" required minlength="8" maxlength="200">
           </div>
           <button id="setup-submit" class="btn primary block" type="submit">
             <span class="btn-label" data-i18n="setup.submit">Create owner account</span>
@@ -486,23 +486,6 @@
             </div>
           </form>
           <p id="agent-message" class="form-message" role="status" aria-live="polite"></p>
-        </section>
-        <section id="pricing-settings" class="card" aria-labelledby="pricing-heading">
-          <header class="card-head">
-            <div>
-              <p class="eyebrow" data-i18n="pricing.kicker">Estimation</p>
-              <h2 id="pricing-heading" data-i18n="pricing.title">Model price catalog</h2>
-            </div>
-            <span id="pricing-badge" class="badge" data-state="disabled" data-i18n="pricing.badge.missing">Not loaded</span>
-          </header>
-          <p id="pricing-status" class="lede"></p>
-          <p id="pricing-detail" class="hint"></p>
-          <div class="actions">
-            <button id="pricing-refresh" class="btn ghost small" type="button">
-              <span class="btn-label" data-i18n="pricing.refresh">Refresh prices</span>
-            </button>
-          </div>
-          <p id="pricing-message" class="form-message" role="status" aria-live="polite"></p>
         </section>
         <section id="channels-section" class="card" aria-labelledby="channels-heading">
           <header class="card-head">

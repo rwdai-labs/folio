@@ -131,7 +131,7 @@ no usage at all — the dashboard shows how many runs reported and how many did
 not instead of estimating the difference. Task details also show an estimated
 cost when the model and provider match the public [models.dev](https://models.dev)
 catalog (`https://models.dev/api.json`); the catalog is cached under the private
-runtime and can be refreshed under Settings. The estimate uses list prices per
+runtime and refreshed automatically in the background. The estimate uses list prices per
 million tokens and excludes cache writes, context-length tiers and subscription
 discounts, so it is explicitly labelled estimated. Unknown models keep token
 counts and show “price unavailable” rather than a guessed number. The window is
@@ -177,9 +177,9 @@ unrelated secrets off the service account and volume, and expose the Web UI only
 through loopback, an SSH tunnel, or an authenticated HTTPS reverse proxy.
 
 On the first start that has no owner account, the console shows a setup form
-from the local or private network. The owner chooses a username and password;
-only the PBKDF2 hash is stored in the private SQLite database at
-`/data/folio.db` (mode 0600). There is no default password, generated password,
+from the local or private network. The owner chooses a username and password (8–200 characters, at least three of
+uppercase, lowercase, digits and symbols); only the PBKDF2 hash is stored in
+the private SQLite database at `/data/folio.db` (mode 0600). There is no default password, generated password,
 or printed setup code. Sessions last 30 days of activity with a 90-day absolute
 limit, and survive service restarts.
 

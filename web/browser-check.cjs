@@ -124,8 +124,6 @@ async function main() {
           if (req.method() === 'POST') body = { configured: true, available: true, kind: 'openai', provider: 'deepseek', base_url: 'https://api.deepseek.com/v1', model: 'synthetic-model', key_present: true, timeout_seconds: 120 };
           else body = { configured: false, available: false, kind: 'command', command: '/data/agent/runtime', key_present: false, timeout_seconds: 120 };
         }
-        else if (endpoint === '/api/pricing') body = { configured: true, stale: false, source: 'models.dev', models: 3, providers: 2, fetched_at: new Date().toISOString(), currency: 'USD' };
-        else if (endpoint === '/api/pricing/refresh') body = { configured: true, stale: false, source: 'models.dev', models: 3, providers: 2, fetched_at: new Date().toISOString(), currency: 'USD' };
         else if (endpoint === '/api/quotas') body = quotaSnapshot();
         else if (endpoint === '/api/quotas/refresh') { quotaRefreshes++; body = quotaSnapshot(); }
         else if (endpoint === '/api/weixin') body = weixinStatus({ configured: weixinConfigured, enabled: weixinRunning, running: weixinRunning, owner_id: weixinOwner, login: weixinLogin, diagnostics: weixinDiagnostics });
@@ -183,9 +181,6 @@ async function main() {
       await page.locator('#agent-save').click();
       await page.waitForFunction(() => document.getElementById('agent-badge').dataset.state === 'enabled');
       assert.equal(await page.locator('#agent-key-hint').textContent(), language === 'zh' ? '已保存 key。留空则保持不变。' : 'A key is stored. Leave the field blank to keep it.');
-      await page.locator('#pricing-refresh').click();
-      await page.waitForFunction(() => !document.getElementById('pricing-refresh').disabled);
-      assert.equal(await page.locator('#pricing-badge').getAttribute('data-state'), 'enabled');
       // WeChat: the QR renders, the phone asks for digits, the owner decides, then
       // the channel starts without a restart.
       await visible(page, '#weixin-section');

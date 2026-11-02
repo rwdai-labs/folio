@@ -67,8 +67,6 @@
     tasksBusy: "",
     agent: null,
     agentBusy: false,
-    pricing: null,
-    pricingBusy: false,
     modelValues: { codex: "", dsh: "" },
     modelMenuOpen: false,
     modelActive: -1,
@@ -101,7 +99,6 @@
     tasks: { element: "tasks-message", data: null },
     chat: { element: "chat-message", data: null },
     agent: { element: "agent-message", data: null },
-    pricing: { element: "pricing-message", data: null },
     actions: { element: "actions-message", data: null },
     review: { element: "review-message", data: null },
     app: { element: "app-message", data: null },
@@ -454,8 +451,18 @@
       setMessage("setup", "setup.fields_required", { error: true });
       return;
     }
-    if (password.length < 12) {
+    if ([...password].length < 8) {
       setMessage("setup", "setup.password_short", { error: true });
+      return;
+    }
+    const classes = [
+      /\p{Ll}/u.test(password),
+      /\p{Lu}/u.test(password),
+      /\p{Nd}/u.test(password),
+      /[\p{P}\p{S}]/u.test(password),
+    ].filter(Boolean).length;
+    if (classes < 3) {
+      setMessage("setup", "setup.password_weak", { error: true });
       return;
     }
     if (password !== confirm) {
@@ -848,7 +855,7 @@
   const views = ["dashboard", "chat", "actions", "runs", "review", "settings"];
   const sectionViews = {
     "repository-section": "settings", "runner-settings": "settings",
-    "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings", "pricing-settings": "settings",
+    "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings",
     "automation-section": "runs", "tasks-section": "dashboard", "usage-section": "dashboard", "run-options": "dashboard",
   };
 
@@ -1075,7 +1082,7 @@
     refreshQuotas();
     await Promise.allSettled([
       loadTaskKinds(), refreshAutomation({ silent: true }), refreshChannels(),
-      refreshHooks(), refreshUsage(), refreshTasks(), loadWeixin(), loadAgentConfig(), loadPricing(),
+      refreshHooks(), refreshUsage(), refreshTasks(), loadWeixin(), loadAgentConfig(),
     ]);
     renderHooks({ hooks: state.hooks });
   }
@@ -1535,69 +1542,6 @@
     const value = costValue(cost.total_cost);
     if (!value) return t("cost.unavailable");
     return cost.partial ? t("cost.partial", { value }) : value;
-  }
-
-  function renderPricing(data) {
-    state.pricing = data || null;
-    const badge = $("pricing-badge");
-    const status = $("pricing-status");
-    const detail = $("pricing-detail");
-    if (badge) {
-      if (!data || !data.configured) {
-        badge.dataset.state = "disabled";
-        badge.textContent = t("pricing.badge.missing");
-      } else if (data.stale) {
-        badge.dataset.state = "stale";
-        badge.textContent = t("pricing.badge.stale");
-      } else {
-        badge.dataset.state = "enabled";
-        badge.textContent = t("pricing.badge.loaded");
-      }
-    }
-    if (status) {
-      if (!data || !data.configured) status.textContent = t("pricing.status.missing");
-      else status.textContent = t("pricing.status.loaded", {
-        models: usageNumber(data.models), providers: usageNumber(data.providers),
-        time: data.fetched_at ? formatTime(data.fetched_at) || data.fetched_at : "—",
-      });
-    }
-    if (detail) {
-      const parts = [];
-      if (data && data.source) parts.push(t("pricing.source", { source: data.source }));
-      if (data && data.stale) parts.push(t("pricing.stale"));
-      if (data && data.error) parts.push(t(`pricing.error.${data.error}`) === `pricing.error.${data.error}` ? t("pricing.failed") : t(`pricing.error.${data.error}`));
-      detail.textContent = parts.join(" · ");
-    }
-  }
-
-  async function loadPricing() {
-    try {
-      const data = await api("/api/pricing");
-      renderPricing(data);
-    } catch (error) {
-      if (error.code === "authentication_required") return;
-      renderPricing(null);
-      setMessage("pricing", "pricing.failed", { error: true });
-    }
-  }
-
-  async function refreshPricing() {
-    if (state.pricingBusy) return;
-    state.pricingBusy = true;
-    const button = $("pricing-refresh");
-    setBusy(button, "pricing.refreshing");
-    setMessage("pricing", null);
-    try {
-      const data = await api("/api/pricing/refresh", { method: "POST", body: {} });
-      renderPricing(data);
-      setMessage("pricing", data && data.error ? "pricing.failed" : "pricing.refreshed", { error: Boolean(data && data.error) });
-    } catch (error) {
-      if (error.code === "pricing_refresh_limited") setMessage("pricing", "pricing.limited", { error: true });
-      else setMessage("pricing", "pricing.failed", { error: true });
-    } finally {
-      state.pricingBusy = false;
-      clearBusy(button);
-    }
   }
 
   /* ----------------------------------------------------------------- usage */
@@ -3731,7 +3675,6 @@
   on("agent-kind", "change", agentKindChanged);
   on("agent-provider", "change", agentProviderChanged);
   on("agent-form", "submit", saveAgentConfig);
-  on("pricing-refresh", "click", refreshPricing);
   on("actions-refresh", "click", loadActions);
   on("action-validate", "click", validateAction);
   on("action-save", "click", saveAction);
@@ -3839,7 +3782,6 @@
     state.tasks = null;
     state.channels = null;
     state.agent = null;
-    state.pricing = null;
     state.weixin = null;
     stopWeixinPoll();
     if ($("weixin-section")) $("weixin-section").hidden = true;

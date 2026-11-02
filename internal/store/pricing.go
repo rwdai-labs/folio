@@ -14,14 +14,16 @@ import (
 )
 
 const (
-	defaultPricingURL   = "https://models.dev/api.json"
-	maxPricingBytes     = 16 * 1024 * 1024
-	maxPricingFile      = 8 * 1024 * 1024
-	pricingTTL          = 24 * time.Hour
-	pricingRefreshGap   = 30 * time.Second
-	pricingHTTPTimeout  = 30 * time.Second
-	maxPricingProviders = 500
-	maxPricingModels    = 20000
+	defaultPricingURL    = "https://models.dev/api.json"
+	maxPricingBytes      = 16 * 1024 * 1024
+	maxPricingFile       = 8 * 1024 * 1024
+	pricingTTL           = 24 * time.Hour
+	pricingRefreshGap    = 30 * time.Second
+	pricingCheckInterval = 6 * time.Hour
+	pricingRetryInterval = 30 * time.Minute
+	pricingHTTPTimeout   = 30 * time.Second
+	maxPricingProviders  = 500
+	maxPricingModels     = 20000
 )
 
 var pricingDateSuffixRE = regexp.MustCompile(`-(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{8})$`)
@@ -121,17 +123,32 @@ func (s *Store) pricingStatusLocked() map[string]any {
 	return result
 }
 
-// StartPricingRefresh refreshes a missing or stale catalog in the background.
-// It never blocks service startup and never fails a task or agent turn.
+// StartPricingRefresh keeps the optional catalog warm without a settings page.
+// A missing or stale cache is fetched at startup; later checks use a bounded
+// timer. Failures retry sooner but never block service startup, tasks or turns.
 func (s *Store) StartPricingRefresh(ctx context.Context) {
-	status := s.PricingStatus()
-	if status["stale"] != true {
-		return
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	go func() {
-		refreshCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		defer cancel()
-		_, _ = s.RefreshPricing(refreshCtx)
+		for {
+			delay := pricingCheckInterval
+			if s.PricingStatus()["stale"] == true {
+				refreshCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+				status, _ := s.RefreshPricing(refreshCtx)
+				cancel()
+				if status["error"] != nil {
+					delay = pricingRetryInterval
+				}
+			}
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
 	}()
 }
 

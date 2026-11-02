@@ -36,8 +36,8 @@ Inherit `../AGENTS.md`.
 - Task/run details show reported tokens and, when available, an estimated cost;
   the usage dashboard adds a cost tile and column. Label cost as an estimate,
   keep unknown prices visibly unavailable, and never derive token counts from
-  cost. The settings price card shows source/age/model count and a manual
-  refresh; render errors as translated text, not raw upstream bodies.
+  cost. The catalog is an automatic background input, not a settings card;
+  render cost errors as translated text, not raw upstream bodies.
 - The dashboard board groups queued/running/failed/finished records into four
   columns, with a separately labelled human-review snapshot in Needs attention.
   Preserve backend priorities and wait/pause semantics; no drag-to-complete or
