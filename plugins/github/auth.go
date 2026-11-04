@@ -85,7 +85,23 @@ func (p *Plugin) pollAuth(ctx context.Context, request plugin.Request) (map[stri
 		return map[string]any{"status": "error", "message": "GitHub sign-in could not be checked"}, nil
 	}
 	if token, ok := result["access_token"].(string); ok && tokenRE.MatchString(token) {
-		if err := p.storeToken(ctx, request.Exec, token); err != nil {
+		// A concurrent refresh must not interleave with a new sign-in: the
+		// last writer would otherwise replace the credential with the older
+		// account state.
+		p.credMu.Lock()
+		storeErr := p.storeToken(ctx, request.Exec, token)
+		if storeErr == nil {
+			// An expiring token comes with a rotating refresh token. Persisting
+			// it keeps the owner signed in after the access token expires; a
+			// long-lived token has no refresh state to keep.
+			if cred, refreshable := credentialFromResponse(result); refreshable {
+				storeErr = p.saveCredential(cred)
+			} else {
+				p.clearCredential()
+			}
+		}
+		p.credMu.Unlock()
+		if storeErr != nil {
 			p.clearFlow()
 			return map[string]any{"status": "error", "message": "GitHub sign-in could not be stored"}, nil
 		}
@@ -112,15 +128,24 @@ func (p *Plugin) logout(ctx context.Context, request plugin.Request) (map[string
 	p.mu.Lock()
 	p.clearFlow()
 	p.mu.Unlock()
+	// Sign-out and refresh both write the credential, so they share the lock:
+	// a refresh that finished last would otherwise sign the owner back in.
+	p.credMu.Lock()
+	p.clearCredential()
+	var logoutErr error
 	if gh, err := request.Exec.LookPath("gh"); err == nil {
 		// gh auth logout has no confirmation flag: with --hostname and a single
 		// stored account it signs out without prompting, even without a TTY.
 		out, runErr := request.Exec.Exec(ctx, []string{gh, "auth", "logout", "--hostname", credentialHost}, p.dataDir, "", 30*time.Second)
 		if runErr != nil || out.Code != 0 {
-			// A missing session is already signed out.
-			if p.authMode(ctx, request.Exec) != "missing" {
-				return nil, errors.New("GitHub sign-out did not complete")
-			}
+			logoutErr = errors.New("GitHub sign-out did not complete")
+		}
+	}
+	p.credMu.Unlock()
+	if logoutErr != nil {
+		// A missing session is already signed out.
+		if p.authMode(ctx, request.Exec) != "missing" {
+			return nil, logoutErr
 		}
 	}
 	p.invalidateStatus()
@@ -182,6 +207,9 @@ func (p *Plugin) authMode(ctx context.Context, exec storage.Executor) string {
 	if cached != "" && time.Since(at) < 10*time.Second {
 		return cached
 	}
+	// A short-lived OAuth token is renewed before its status is reported, so
+	// the card never claims a signed-out state that a refresh already fixed.
+	_ = p.ensureCredential(ctx, exec)
 	mode := "missing"
 	if p.ghSignedIn(ctx, exec) {
 		mode = "gh"

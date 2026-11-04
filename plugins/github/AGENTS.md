@@ -8,6 +8,13 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - Support both owner device login and unattended token setup. Credentials stay
   in private runtime files/helpers, never in responses, command arguments,
   model environments, logs or fixtures. Report only masked authentication state.
+- GitHub can issue eight-hour access tokens with a six-month rotating refresh
+  token (new OAuth apps enable this by default). Keep the refresh token and both
+  expiries in `secrets/github-credentials.json` (0600, atomic replace), renew
+  through the device-flow token endpoint before the access token expires (no
+  client secret), and write the new access token back through `gh`; status and
+  every remote operation renew first. A rejected refresh clears the file and
+  reports GitHub as signed out. Never expose or log either token.
 - Use the host `storage.Executor` for subprocesses. Folio owns local checkout
   validation, commits, rollback and auditing; this plugin owns remote identity,
   authentication, sync and verified publication.

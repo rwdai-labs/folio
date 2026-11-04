@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,6 +63,12 @@ func TestLogoutRunsSupportedCommandAndSignsOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := item.saveCredential(&oauthCredential{
+		RefreshToken:    "ghr_" + strings.Repeat("r", 36),
+		AccessExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	exec := &fakeGH{signedIn: true, token: "gho_" + strings.Repeat("b", 36)}
 	result, err := item.logout(context.Background(), plugin.Request{Exec: exec})
 	if err != nil {
@@ -72,6 +79,9 @@ func TestLogoutRunsSupportedCommandAndSignsOut(t *testing.T) {
 	}
 	if exec.signedIn {
 		t.Fatal("gh session survived logout")
+	}
+	if _, statErr := os.Stat(item.oauthPath); !os.IsNotExist(statErr) {
+		t.Fatalf("refresh credential survived logout: %v", statErr)
 	}
 	if mode := item.authMode(context.Background(), exec); mode != "missing" {
 		t.Fatalf("auth mode after logout=%q", mode)
@@ -202,6 +212,9 @@ func TestDeviceFlowStoresTokenAndListsRepositories(t *testing.T) {
 	if !exec.signedIn {
 		t.Fatal("token was not stored through gh")
 	}
+	if _, statErr := os.Stat(item.oauthPath); !os.IsNotExist(statErr) {
+		t.Fatalf("long-lived sign-in created refresh state: %v", statErr)
+	}
 	list, err := item.repositories(context.Background(), plugin.Request{Exec: exec})
 	if err != nil || list["count"] != 1 || list["private"] != 1 {
 		t.Fatalf("repositories=%v err=%v", list, err)
@@ -281,6 +294,166 @@ func TestRepositoriesIncludePrivateAndEveryPage(t *testing.T) {
 	}
 	if older["private"] != true {
 		t.Fatalf("older private entry=%v", older)
+	}
+}
+
+// GitHub issues expiring OAuth access tokens (eight hours) with a rotating
+// refresh token to apps that opt in, and new apps opt in by default. The device
+// flow must keep that refresh token and use it instead of making the owner sign
+// in again after every expiry.
+func TestDeviceFlowPersistsRefreshTokenAndRefreshes(t *testing.T) {
+	t.Setenv("GIT_AUTH_TOKEN", "")
+	const (
+		firstAccess  = "gho_" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		firstRefresh = "ghr_" + "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+		nextAccess   = "gho_" + "cccccccccccccccccccccccccccccccccccc"
+		nextRefresh  = "ghr_" + "ssssssssssssssssssssssssssssssssssss"
+	)
+	var mu sync.Mutex
+	refreshCalls := 0
+	deviceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/login/device/code":
+			_, _ = io.WriteString(w, `{"device_code":"dev-code-123","user_code":"ABCD-1234","verification_uri":"https://github.com/login/device","expires_in":900,"interval":1}`)
+		case "/login/oauth/access_token":
+			switch r.Form.Get("grant_type") {
+			case "urn:ietf:params:oauth:grant-type:device_code":
+				_, _ = io.WriteString(w, `{"access_token":"`+firstAccess+`","expires_in":28800,"refresh_token":"`+firstRefresh+`","refresh_token_expires_in":15897600,"token_type":"bearer","scope":"repo"}`)
+			case "refresh_token":
+				mu.Lock()
+				refreshCalls++
+				mu.Unlock()
+				if got := r.Form.Get("client_secret"); got != "" {
+					t.Errorf("refresh sent a client secret")
+				}
+				if got := r.Form.Get("refresh_token"); got != firstRefresh {
+					t.Errorf("refresh token=%q", got)
+				}
+				_, _ = io.WriteString(w, `{"access_token":"`+nextAccess+`","expires_in":28800,"refresh_token":"`+nextRefresh+`","refresh_token_expires_in":15897600,"token_type":"bearer"}`)
+			default:
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer deviceServer.Close()
+
+	var apiMu sync.Mutex
+	var seen []string
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiMu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		apiMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"full_name":"owner/context","private":true,"archived":false,"default_branch":"main"}]`)
+	}))
+	defer apiServer.Close()
+
+	original := []string{deviceURL, deviceTokenURL, apiURL}
+	t.Cleanup(func() { deviceURL, deviceTokenURL, apiURL = original[0], original[1], original[2] })
+	deviceURL = deviceServer.URL + "/login/device/code"
+	deviceTokenURL = deviceServer.URL + "/login/oauth/access_token"
+	apiURL = apiServer.URL
+
+	item, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := &fakeGH{}
+	started, err := item.startAuth(context.Background(), plugin.Request{Exec: exec})
+	if err != nil || started["status"] != "pending" {
+		t.Fatalf("start=%v err=%v", started, err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	authorized, err := item.pollAuth(context.Background(), plugin.Request{Exec: exec})
+	if err != nil || authorized["status"] != "authenticated" {
+		t.Fatalf("poll=%v err=%v", authorized, err)
+	}
+	if exec.token != firstAccess {
+		t.Fatalf("stored token=%q", exec.token)
+	}
+	cred, ok := item.loadCredential()
+	if !ok || cred.RefreshToken != firstRefresh {
+		t.Fatalf("credential=%+v ok=%v", cred, ok)
+	}
+	info, statErr := os.Stat(item.oauthPath)
+	if statErr != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("credential file mode=%v err=%v", info, statErr)
+	}
+
+	// Expire the access token. The next status or repository read must rotate
+	// both tokens instead of reporting the owner as signed out.
+	cred.AccessExpiresAt = time.Now().Add(-time.Minute)
+	if err := item.saveCredential(cred); err != nil {
+		t.Fatal(err)
+	}
+	item.invalidateStatus()
+	if mode := item.authMode(context.Background(), exec); mode != "gh" {
+		t.Fatalf("auth mode after refresh=%q", mode)
+	}
+	if exec.token != nextAccess {
+		t.Fatalf("refreshed token=%q", exec.token)
+	}
+	list, err := item.repositories(context.Background(), plugin.Request{Exec: exec})
+	if err != nil || list["count"] != 1 {
+		t.Fatalf("repositories=%v err=%v", list, err)
+	}
+	apiMu.Lock()
+	last := seen[len(seen)-1]
+	apiMu.Unlock()
+	if last != "Bearer "+nextAccess {
+		t.Fatalf("API authorization=%q", last)
+	}
+	rotated, ok := item.loadCredential()
+	if !ok || rotated.RefreshToken != nextRefresh {
+		t.Fatalf("rotated credential=%+v ok=%v", rotated, ok)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls=%d", refreshCalls)
+	}
+}
+
+func TestRejectedRefreshClearsCredential(t *testing.T) {
+	t.Setenv("GIT_AUTH_TOKEN", "")
+	deviceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/login/oauth/access_token" || r.Form.Get("grant_type") != "refresh_token" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"error":"bad_refresh_token","error_description":"expired"}`)
+	}))
+	defer deviceServer.Close()
+	original := deviceTokenURL
+	t.Cleanup(func() { deviceTokenURL = original })
+	deviceTokenURL = deviceServer.URL + "/login/oauth/access_token"
+
+	item, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := item.saveCredential(&oauthCredential{
+		RefreshToken:    "ghr_" + strings.Repeat("r", 36),
+		AccessExpiresAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exec := &fakeGH{signedIn: true, token: "gho_" + strings.Repeat("b", 36)}
+	if err := item.ensureCredential(context.Background(), exec); !errors.Is(err, errCredentialRejected) {
+		t.Fatalf("refresh error=%v", err)
+	}
+	if _, statErr := os.Stat(item.oauthPath); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected refresh kept state: %v", statErr)
 	}
 }
 

@@ -56,9 +56,14 @@ type Plugin struct {
 	secretsDir string
 	authPath   string
 	credPath   string
+	oauthPath  string
 
 	mu      sync.Mutex
 	pending *deviceFlow
+
+	// credMu serializes refresh-token rotation. It is separate from mu because
+	// the device flow holds mu while it asks for the auth mode.
+	credMu sync.Mutex
 
 	// statusMu guards the short-lived auth-mode cache. It is separate from mu
 	// because the device flow holds mu while it asks for the auth mode.
@@ -77,6 +82,7 @@ func New(dataDir string) (*Plugin, error) {
 		secretsDir: filepath.Join(dataDir, "secrets"),
 		authPath:   filepath.Join(dataDir, "secrets", "github-auth.json"),
 		credPath:   filepath.Join(dataDir, "secrets", "git-credentials"),
+		oauthPath:  filepath.Join(dataDir, "secrets", "github-credentials.json"),
 	}
 	if err := os.MkdirAll(plugin.secretsDir, 0o700); err != nil {
 		return nil, errors.New("github secret directory is unavailable")
@@ -158,6 +164,9 @@ func (p *Plugin) ghSignedIn(ctx context.Context, exec storage.Executor) bool {
 func (p *Plugin) ghToken(ctx context.Context, exec storage.Executor) (string, error) {
 	if token := p.tokenFromEnv(); token != "" {
 		return token, nil
+	}
+	if err := p.ensureCredential(ctx, exec); err != nil {
+		return "", err
 	}
 	gh, err := exec.LookPath("gh")
 	if err != nil {

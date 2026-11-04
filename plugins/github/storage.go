@@ -58,6 +58,9 @@ func (p *Plugin) Sync(ctx context.Context, exec storage.Executor, opts storage.O
 	if opts.Dir == "" {
 		return storage.SyncResult{}, errors.New("checkout path is invalid")
 	}
+	if err := p.ensureCredential(ctx, exec); err != nil {
+		return storage.SyncResult{}, err
+	}
 	credential := p.credentialArgs(exec)
 	if _, err := os.Lstat(opts.Dir); os.IsNotExist(err) {
 		if opts.Remote == "" {
@@ -132,6 +135,9 @@ func (p *Plugin) Sync(ctx context.Context, exec storage.Executor, opts storage.O
 
 // Head reads the remote branch head without touching the checkout.
 func (p *Plugin) Head(ctx context.Context, exec storage.Executor, opts storage.Options) (string, error) {
+	if err := p.ensureCredential(ctx, exec); err != nil {
+		return "", err
+	}
 	remote := strings.TrimSpace(opts.Remote)
 	if remote == "" && opts.Dir != "" {
 		out, err := exec.Git(ctx, opts.Dir, nil, 2*time.Minute, []string{"remote", "get-url", "origin"})
@@ -154,6 +160,9 @@ func (p *Plugin) Head(ctx context.Context, exec storage.Executor, opts storage.O
 func (p *Plugin) Publish(ctx context.Context, exec storage.Executor, opts storage.Options) (string, error) {
 	if opts.Dir == "" || opts.Remote == "" {
 		return "", errors.New("remote is not configured")
+	}
+	if err := p.ensureCredential(ctx, exec); err != nil {
+		return "", err
 	}
 	branch, err := p.branch(ctx, exec, opts.Dir, opts.Branch)
 	if err != nil {

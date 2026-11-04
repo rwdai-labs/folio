@@ -46,7 +46,10 @@ first-class paths:
 
 **Sign in on the Web page.** Open the GitHub card and enter the device code at
 `github.com/login/device`. The plugin stores the token through `gh`, so git and
-the API share it, and the repository picker lists your repositories.
+the API share it, and the repository picker lists your repositories. When
+GitHub issues an expiring OAuth token, the plugin keeps the rotating refresh
+token in the private volume and renews it automatically; the owner signs in
+again only after a sign-out or a rejected refresh.
 
 **Or set a deployment token**, for an unattended deployment. Put it in `.env`
 next to `compose.yaml`:

@@ -70,6 +70,12 @@ gate, the commit, the rollback, and the audit record. A plugin owns the remote
 side and the credential. Swapping GitHub for S3 means implementing six methods,
 not editing the maintenance worker.
 
+The built-in GitHub plugin also owns OAuth renewal. When GitHub issues an
+expiring device-flow token, the plugin keeps the rotating refresh token in its
+private data directory and renews the access token before expiry; a rejected
+refresh becomes a normal signed-out status. Host code still never sees either
+token.
+
 ### The browser host surface
 
 A built-in plugin's frontend is served from its embedded `Assets()` at

@@ -199,7 +199,10 @@ drive, an S3 bucket) without touching the maintenance worker.
 Two ways to authenticate, both first class:
 
 1. Sign in on the Web page (device code → `gh auth login`). This is the
-   original flow and the one to use when you want the full experience.
+   original flow and the one to use when you want the full experience. When
+   GitHub issues an expiring OAuth token, the plugin keeps the rotating refresh
+   token in the private volume and renews the access token automatically; only
+   a sign-out or a rejected refresh asks for a new device sign-in.
 2. Set `GIT_AUTH_TOKEN` for a non-interactive deployment. The token is written
    once to `data/secrets/git-credentials` (0600) and used through
    `git-credential-store`; it never enters a model environment or a command
