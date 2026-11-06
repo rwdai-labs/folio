@@ -207,10 +207,10 @@
     "run.model_summary": "Original model summary",
     "run.outcome": "This run changed {count} documents. Review findings and remaining work are shown below.",
     // App / global
-    "app.title": "Folio · Context maintainer",
-    "app.tagline": "Context maintenance console",
+    "app.title": "Folio · Personal assistant and task center",
+    "app.tagline": "Personal assistant · task center",
     "app.skip": "Skip to content",
-    "app.footer": "Runs locally. Automatic maintenance pulls, organizes, validates, and pushes on its own schedule.",
+    "app.footer": "Runs locally. Folio turns owner intent and trusted events into bounded tasks, with private context and evidence at the center.",
 
     // Status / language
     "status.online": "Signed in to Folio",
@@ -839,10 +839,10 @@
     "run.model_summary": "模型原始说明",
     "run.outcome": "本次自动修改 {count} 份文档。人工复核与剩余任务见下方。",
     // App / global
-    "app.title": "Folio · 上下文维护台",
-    "app.tagline": "上下文维护控制台",
+    "app.title": "Folio · 个人助手与任务中心",
+    "app.tagline": "个人助手 · 任务中心",
     "app.skip": "跳到正文",
-    "app.footer": "本地运行。自动维护会按计划拉取、整理、校验并推送上下文。",
+    "app.footer": "本地运行。Folio 将所有者意图和可信事件转成受约束的任务，以私有上下文和可核查证据为中心。",
 
     // Status / language
     "status.online": "Folio 已登录",

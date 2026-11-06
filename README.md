@@ -1,13 +1,20 @@
-# Folio Service
+# Folio
 
-A self-hosted maintenance service for a private Markdown context repository.
-Its first assistant scenario is automatic personal-context organization:
-section cleanup preserving existing text, exact deduplication, extractive
-summaries and local navigation, with conflicts and candidate decisions left
-for owner review.
-See [the maintenance contract](docs/context-maintenance.md) for scope,
-incremental checkpoints and acceptance checks.
-It provides a small Web UI for repository setup and automatic maintenance: pull
+Folio is a self-hosted personal assistant, task center, and owner-controlled
+digital counterpart. It turns owner intent and trusted events into bounded
+tasks, uses private personal context when needed, executes configured runtime
+actions, and returns evidence through the Web console or optional channels.
+See the [product definition](docs/product-definition.md) for the shared product
+language and boundaries.
+
+Automatic personal-context organization is Folio's first shipped assistant
+scenario: section cleanup preserving existing text, exact deduplication,
+extractive summaries and local navigation, with conflicts and candidate
+decisions left for owner review. See [the maintenance contract](docs/context-maintenance.md)
+for its scope, incremental checkpoints and acceptance checks.
+
+It provides a Web UI for repository setup, task management, assistant chat,
+configured actions, usage and owner review. The maintenance worker can pull
 the latest checkout, ask a model
 runner for bounded Markdown edits, validate them, commit, and push. Every run is
 recorded with its changes, reasons, and diffs for later inspection.

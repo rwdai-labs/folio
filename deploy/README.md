@@ -1,4 +1,10 @@
-# Folio Service container
+# Folio container
+
+Folio is a self-hosted personal assistant, task center, and owner-controlled
+digital counterpart. The private Markdown context repository is its memory
+foundation; context maintenance is one capability within the wider task and
+assistant control plane. See the [product definition](../docs/product-definition.md)
+for the shared product language.
 
 Image: `ghcr.io/rwdai-labs/folio-service:main` (AMD64 and ARM64).
 The public image contains the compiled service, Web assets, and runtime tools

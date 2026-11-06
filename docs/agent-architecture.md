@@ -12,7 +12,9 @@ source, running a shell, and deploying a binary are out of scope.
 
 ## 1. Summary
 
-Folio keeps the Go control plane: durable tasks, audit, Git transactions,
+Folio's product shape is a personal assistant and task center built around an
+owner-controlled digital counterpart; see [the product definition](product-definition.md).
+The runtime architecture keeps the Go control plane: durable tasks, audit, Git transactions,
 channels, and the console. Two things change:
 
 1. **Actions become runtime data.** An action is an ordered list of bounded

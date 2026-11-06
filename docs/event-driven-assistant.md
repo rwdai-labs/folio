@@ -15,9 +15,12 @@ semantics; historical tables below also contain future design proposals.
 
 ## 1. What actually changes
 
-Folio today is **one nightly job**. The target is **a small automation platform**
-where work is caused by something happening, costs money you can watch, and
-runs at the cheapest acceptable moment.
+Folio is now framed as a personal assistant and task center whose first shipped
+scenario was context maintenance. This note preserves the historical evolution
+from that narrow worker toward event-driven, owner-controlled automation; it is
+not a claim that the remaining target rows are shipped. The target is **a small
+automation platform** where work is caused by something happening, costs money
+you can watch, and runs at the cheapest acceptable moment.
 
 | Today | Target |
 | --- | --- |

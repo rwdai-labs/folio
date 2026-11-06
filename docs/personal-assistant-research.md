@@ -37,8 +37,9 @@ main agent 使用 pi，DSH 保留为维护/报告 runner；本文 §3 的 DSH �
 | Hermes Agent（MIT） | CLI/TUI + 消息网关（Telegram/Discord/Slack/WhatsApp/Signal/Email）+ cron 带投递 + 记忆提醒 + skills | "cron 结果投递到渠道"和"定期提醒自己落盘"成本极低、价值很高 |
 
 共同点：**目标 → 计划 → 执行 → 学习 → 继续**，加上真实执行环境和权限边界。
-Folio 今天是 **定时 → pull → 改 Markdown → 校验 → commit**，是同一个循环的
-一个很窄的实例，"执行"这一步被写死成维护文档。
+Folio 的产品定义已经扩展为个人助手、任务中心和受所有者控制的数字分身；
+上下文维护是首个已交付场景，而不是产品边界。本文记录的历史基线仍是
+**定时 → pull → 改 Markdown → 校验 → commit**，也就是把“执行”写死成维护文档的窄循环。
 
 ## 2. 现状与差距
 

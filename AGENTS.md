@@ -2,8 +2,11 @@
 
 ## Scope and reading order
 
-Folio is the public Go service for maintaining a separate private Markdown
-context repository. Read `README.md` for supported behaviour. This file applies
+Folio is a public Go service for a self-hosted personal assistant, task center,
+and owner-controlled digital counterpart, with a separate private Markdown
+context repository as its memory foundation. Read `README.md` and
+`docs/product-definition.md` for supported behaviour and shared product language.
+This file applies
 to the whole repository; directory `AGENTS.md` files add local rules. Read the
 ancestor instructions and only the children relevant to the task. Do not load
 all source or documentation by default.
