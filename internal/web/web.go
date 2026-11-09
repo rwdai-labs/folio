@@ -1152,15 +1152,16 @@ func (s *Server) actionAdmin(w http.ResponseWriter, r *http.Request, payload map
 		}
 		value, err := backend.RunAction(parts[0], fields)
 		if err != nil {
-			status := http.StatusBadRequest
-			code := "action_input_invalid"
+			// Only fixed client outcomes stay 4xx; storage, configuration and
+			// dispatch failures are internal and must not look like bad input.
+			status, code := http.StatusInternalServerError, "action_unavailable"
 			switch err.Error() {
 			case "action_unknown":
 				status, code = http.StatusNotFound, "action_unknown"
 			case "action_disabled":
 				status, code = http.StatusConflict, "action_disabled"
-			case "actions are invalid", "actions are unavailable":
-				status, code = http.StatusInternalServerError, "action_unavailable"
+			case "action_input_invalid":
+				status, code = http.StatusBadRequest, "action_input_invalid"
 			}
 			s.writeError(w, status, code)
 			return true

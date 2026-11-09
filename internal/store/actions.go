@@ -88,6 +88,11 @@ func builtinActionPlan(id string) (actionPlan, error) {
 // and dispatch. Runtime actions win over a legacy kind with the same id; a
 // disabled action is not a silent fallback to a legacy executor.
 func (s *Store) resolveTaskAction(id string) (actionPlan, error) {
+	// Feedback planning is an internal reserved kind; owner actions must never
+	// shadow it with arbitrary pipeline steps.
+	if id == taskKindFeedbackPlan {
+		return actionPlanForKind(feedbackPlanKind())
+	}
 	file, err := s.loadPipelines()
 	if err != nil {
 		return actionPlan{}, err
@@ -103,6 +108,11 @@ func (s *Store) resolveTaskAction(id string) (actionPlan, error) {
 	}
 	kind, err := s.taskKindFor(id)
 	if err != nil {
+		// The scheduler and catalog may still use maintenance when the owner
+		// removes its kind from task-kinds.json.
+		if id == taskKindMaintenance {
+			return builtinActionPlan(id)
+		}
 		return actionPlan{}, err
 	}
 	return actionPlanForKind(kind)

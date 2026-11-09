@@ -123,11 +123,14 @@ const syntheticCatalog = () => [
   {
     id: 'report', label: 'Create background report', label_key: 'catalog.report.label',
     description: 'Ask the report model to answer a specific owner request.', description_key: 'catalog.report.description',
-    priority: 'P1', enabled: true, group: 'daily', order: 1,
+    priority: 'P2', enabled: true, group: 'daily', order: 1,
     submit_label: 'Queue report', submit_label_key: 'catalog.report.submit',
     fields: [{
       name: 'request', label: 'What should the report answer?', type: 'textarea',
       required: true, max_length: 4000, placeholder: 'Describe the report request',
+    }, {
+      name: 'priority', label: 'Priority', type: 'select', required: false,
+      options: [{ value: 'P0', label: 'P0' }, { value: 'P1', label: 'P1' }, { value: 'P2', label: 'P2' }, { value: 'P3', label: 'P3' }],
     }],
     requires: ['report'], legacy: false,
   },
@@ -464,6 +467,7 @@ async function main() {
       assert.equal(await reportAction.locator('h4').textContent(), language === 'zh' ? '创建后台报告' : 'Create background report');
       const reportInput = reportAction.locator('textarea');
       assert.equal(await reportInput.getAttribute('maxlength'), '4000');
+      assert.equal(await reportAction.locator('select[data-catalog-field="priority"]').inputValue(), 'P2');
       await reportAction.locator('button[type="submit"]').click();
       assert.equal(catalogRequests.length, 0, 'catalog report requires an explicit owner request');
       assert.equal(await reportAction.locator('[data-catalog-message]').getAttribute('data-error'), 'true');
@@ -475,18 +479,32 @@ async function main() {
       await visible(page, '[data-catalog-action="report"] [data-chat-task]');
       assert.equal(catalogRequests[0].id, 'report');
       assert.equal(catalogRequests[0].fields.request, 'Summarize synthetic context <script>alert(1)</script>');
+      assert.equal(catalogRequests[0].fields.priority, 'P2');
       assert.match(await reportAction.locator('[data-catalog-message]').textContent(), language === 'zh' ? /尚未完成/ : /not completed/);
       assert.equal(await page.locator('[data-catalog-action="report"] script').count(), 0, 'catalog copy is text, not HTML');
+      // The configured priority survives form.reset() so a second submit keeps P2.
+      await page.waitForFunction(() => {
+        const button = document.querySelector('[data-catalog-action="report"] button[type="submit"]');
+        return button && !button.disabled;
+      });
+      assert.equal(await reportAction.locator('select[data-catalog-field="priority"]').inputValue(), 'P2');
+      const secondReport = page.waitForResponse((response) => response.url().endsWith('/api/actions/report/run') && response.request().method() === 'POST');
+      await reportInput.fill('Second synthetic report request');
+      await reportAction.locator('button[type="submit"]').click();
+      await secondReport;
+      assert.equal(catalogRequests.length, 2);
+      assert.equal(catalogRequests[1].id, 'report');
+      assert.equal(catalogRequests[1].fields.priority, 'P2');
       // Optional select fields stay out of the request; booleans are explicit.
       const maintenanceAction = page.locator('[data-catalog-action="maintenance"]');
       assert.equal(await maintenanceAction.locator('input[data-catalog-field="note"]').getAttribute('maxlength'), '120');
       await maintenanceAction.locator('input[data-catalog-field="note"]').fill('Synthetic maintenance note');
       await maintenanceAction.locator('button[type="submit"]').click();
       await visible(page, '[data-catalog-action="maintenance"] [data-chat-task]');
-      assert.equal(catalogRequests[1].id, 'maintenance');
-      assert.equal(catalogRequests[1].fields.note, 'Synthetic maintenance note');
-      assert.equal(Object.prototype.hasOwnProperty.call(catalogRequests[1].fields, 'scope'), false);
-      assert.equal(catalogRequests[1].fields.dry_run, false);
+      assert.equal(catalogRequests[2].id, 'maintenance');
+      assert.equal(catalogRequests[2].fields.note, 'Synthetic maintenance note');
+      assert.equal(Object.prototype.hasOwnProperty.call(catalogRequests[2].fields, 'scope'), false);
+      assert.equal(catalogRequests[2].fields.dry_run, false);
       tasks = tasks.filter(task => task.id !== 'maintenance-task');
       await page.evaluate(() => window.folio.refreshTasks());
       // Report result, fallback and follow-up still use the one task dialog.

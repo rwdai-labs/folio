@@ -18,6 +18,11 @@ const (
 	kindActionMaintenance = "maintenance"
 	kindActionReport      = "report"
 
+	// taskKindFeedbackPlan is an internal, reserved report kind used by the
+	// feedback gate. It is not listed as a task kind and cannot be shadowed by
+	// an owner action.
+	taskKindFeedbackPlan = "feedback-plan"
+
 	maxKinds            = 32
 	maxKindBytes        = 64 * 1024
 	maxKindLabelRunes   = 64
@@ -165,6 +170,13 @@ func genericReportKind() taskKind {
 		Prompt: "Complete the owner's report request in the task payload. Use only supplied information and model knowledge; clearly state missing sources and uncertainty. Do not claim to have browsed or executed tools."}
 }
 
+// feedbackPlanKind is an in-memory report plan. Keeping it out of the owner
+// catalog prevents a configured report action from intercepting feedback plans.
+func feedbackPlanKind() taskKind {
+	return taskKind{ID: taskKindFeedbackPlan, Label: "Feedback plan", Action: kindActionReport, Priority: "P1",
+		Prompt: "Produce the plan requested in the payload. Do not edit files, run commands, deploy, or ask clarifying questions."}
+}
+
 func defaultTaskKinds() *taskKindsFile {
 	return &taskKindsFile{Version: 1, Kinds: []taskKind{{
 		ID: taskKindMaintenance, Label: "Context maintenance", Action: kindActionMaintenance, Priority: "P2",
@@ -184,7 +196,7 @@ func validateTaskKinds(file *taskKindsFile) error {
 		kind.Priority = strings.TrimSpace(kind.Priority)
 		kind.Runner = strings.TrimSpace(kind.Runner)
 		kind.Model = strings.TrimSpace(kind.Model)
-		if !taskKindRE.MatchString(kind.ID) || seen[kind.ID] {
+		if !taskKindRE.MatchString(kind.ID) || seen[kind.ID] || kind.ID == taskKindFeedbackPlan {
 			return errStore("task kinds are invalid")
 		}
 		seen[kind.ID] = true

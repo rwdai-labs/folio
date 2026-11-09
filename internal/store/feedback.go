@@ -57,20 +57,21 @@ type FeedbackInput struct {
 }
 
 type feedbackRecord struct {
-	ID         string `json:"id"`
-	Title      string `json:"title"`
-	Area       string `json:"area"`
-	Current    string `json:"current"`
-	Expected   string `json:"expected"`
-	Acceptance string `json:"acceptance"`
-	Priority   string `json:"priority"`
-	Status     string `json:"status"`
-	Reason     string `json:"reason,omitempty"`
-	HasImage   bool   `json:"has_image"`
-	ImageBytes int    `json:"image_bytes,omitempty"`
-	CreatedAt  string `json:"created_at"`
-	TaskID     string `json:"task_id,omitempty"`
-	RunID      string `json:"run_id,omitempty"`
+	ID         string         `json:"id"`
+	Title      string         `json:"title"`
+	Area       string         `json:"area"`
+	Current    string         `json:"current"`
+	Expected   string         `json:"expected"`
+	Acceptance string         `json:"acceptance"`
+	Priority   string         `json:"priority"`
+	Status     string         `json:"status"`
+	Reason     string         `json:"reason,omitempty"`
+	HasImage   bool           `json:"has_image"`
+	ImageBytes int            `json:"image_bytes,omitempty"`
+	CreatedAt  string         `json:"created_at"`
+	TaskID     string         `json:"task_id,omitempty"`
+	RunID      string         `json:"run_id,omitempty"`
+	GateUsage  map[string]any `json:"gate_usage,omitempty"`
 }
 
 func (record feedbackRecord) public() map[string]any {
@@ -89,6 +90,9 @@ func (record feedbackRecord) public() map[string]any {
 	}
 	if record.RunID != "" {
 		value["run_id"] = record.RunID
+	}
+	if len(record.GateUsage) > 0 {
+		value["gate_usage"] = record.GateUsage
 	}
 	return value
 }
@@ -133,7 +137,8 @@ func (s *Store) CreateFeedback(input FeedbackInput, image []byte) (map[string]an
 		record.Reason = "gate_unavailable"
 		return s.saveFeedbackOutcome(record, image)
 	} else if binding != nil {
-		ready, reason := s.feedbackGate(binding, input)
+		ready, reason, usage := s.feedbackGate(binding, input)
+		record.GateUsage = usage
 		if !ready {
 			record.Status = "rejected"
 			record.Reason = reason
@@ -144,7 +149,7 @@ func (s *Store) CreateFeedback(input FeedbackInput, image []byte) (map[string]an
 	if len([]rune(title)) > maxTaskTitleRunes {
 		title = string([]rune(title)[:maxTaskTitleRunes])
 	}
-	task, taskErr := s.CreateTask("report", "manual", title, input.Priority, map[string]any{"request": planPrompt})
+	task, taskErr := s.CreateTask(taskKindFeedbackPlan, "manual", title, input.Priority, map[string]any{"request": planPrompt})
 	if taskErr != nil {
 		return nil, taskErr
 	}
@@ -283,19 +288,21 @@ func prepareFeedbackImage(imageBytes []byte) ([]byte, error) {
 	return output.Bytes(), nil
 }
 
-func (s *Store) feedbackGate(binding *resolvedModelBinding, input FeedbackInput) (bool, string) {
+func (s *Store) feedbackGate(binding *resolvedModelBinding, input FeedbackInput) (bool, string, map[string]any) {
 	result, err := s.callTaskModel(binding, feedbackGatePrompt(input), 30, 512, "feedback-gate")
+	// Usage is bounded counters only; raw model text is never persisted.
+	usage := reportUsage(result.Usage)
 	if err != nil {
-		return false, "gate_unavailable"
+		return false, "gate_unavailable", usage
 	}
 	ready, reason, err := parseFeedbackGate(result.Text)
 	if err != nil {
-		return false, "gate_unavailable"
+		return false, "gate_unavailable", usage
 	}
 	if ready {
-		return true, "ok"
+		return true, "ok", usage
 	}
-	return false, reason
+	return false, reason, usage
 }
 
 func feedbackGatePrompt(input FeedbackInput) string {

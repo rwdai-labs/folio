@@ -88,7 +88,11 @@ func TestActionCatalogIncludesLegacyAndConfiguredActions(t *testing.T) {
 	}
 	priority := fields[1].(map[string]any)
 	options := priority["options"].([]any)
-	if priority["name"] != "priority" || len(options) != 2 || options[1].(map[string]any)["value"] != "P2" {
+	optionValues := make([]string, 0, len(options))
+	for _, option := range options {
+		optionValues = append(optionValues, option.(map[string]any)["value"].(string))
+	}
+	if priority["name"] != "priority" || strings.Join(optionValues, ",") != "P0,P1,P2,P3" {
 		t.Fatalf("priority field=%v", priority)
 	}
 	custom := catalogEntryByID(t, store, "custom")
@@ -275,6 +279,40 @@ func TestActionPresentationRejectsUnknownFields(t *testing.T) {
 	}
 	if _, err := store.loadPipelines(); err == nil {
 		t.Fatal("unknown presentation field was accepted")
+	}
+}
+
+func TestCustomReportKindPrioritySelection(t *testing.T) {
+	store := newTestStore(t)
+	kinds := &taskKindsFile{Version: 1, Kinds: []taskKind{
+		{ID: taskKindMaintenance, Label: "Context maintenance", Action: kindActionMaintenance, Priority: "P2"},
+		{ID: "triage", Label: "Triage", Action: kindActionReport, Priority: "P3", Prompt: "Synthetic triage prompt."},
+	}}
+	if err := store.writeTaskKinds(taskKindsPathFor(store.dataDir), kinds); err != nil {
+		t.Fatal(err)
+	}
+	entry := catalogEntryByID(t, store, "triage")
+	if entry["priority"] != "P3" {
+		t.Fatalf("custom report priority=%v", entry)
+	}
+	fields := entry["fields"].([]any)
+	priority := fields[1].(map[string]any)
+	found := false
+	for _, raw := range priority["options"].([]any) {
+		if raw.(map[string]any)["value"] == "P3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("configured priority missing from select: %v", priority)
+	}
+	result, err := store.RunAction("triage", map[string]any{"request": "Synthetic custom report request.", "priority": "P3"})
+	if err != nil {
+		t.Fatalf("run custom report: %v", err)
+	}
+	task := result["task"].(map[string]any)
+	if task["kind"] != "triage" || task["priority"] != "P3" {
+		t.Fatalf("custom report task=%v", task)
 	}
 }
 
@@ -468,6 +506,53 @@ func TestOwnerActionPayloadSurvivesTaskReload(t *testing.T) {
 	t.Fatalf("owner action task %s was dropped on reload", id)
 }
 
+func TestOwnerActionPayloadMaxBytesSurvivesTaskReload(t *testing.T) {
+	store := newTestStore(t)
+	fields := make([]pipelineField, 7)
+	values := map[string]any{}
+	for index := range fields {
+		name := fmt.Sprintf("field%d", index)
+		fields[index] = pipelineField{Name: name, Label: "Field", Type: "textarea", Required: true, MaxLength: maxActionCatalogTextLength}
+		values[name] = strings.Repeat(string(rune('a'+index)), maxActionCatalogTextLength)
+	}
+	definition := validPipelineDefinition()
+	definition.ID = "owner-many"
+	definition.Label = "Owner many"
+	definition.Presentation = &pipelinePresentation{Fields: fields}
+	if err := store.PutAction(definition); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.RunAction("owner-many", values)
+	if err != nil {
+		t.Fatalf("run owner action: %v", err)
+	}
+	id := result["task"].(map[string]any)["id"].(string)
+	store.taskMu.Lock()
+	store.tasksCache = nil
+	file, err := store.loadTasksLocked()
+	store.taskMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Tasks) != 1 {
+		t.Fatalf("owner action task was dropped on reload: %v", file.Tasks)
+	}
+	task := file.Tasks[0]
+	if task.ID != id {
+		t.Fatalf("unexpected task=%v", task)
+	}
+	size := 0
+	for key, value := range values {
+		if task.Payload[key] != value {
+			t.Fatalf("owner action field %s did not survive reload: %d runes", key, len([]rune(task.Payload[key].(string))))
+		}
+		size += len(key) + 8 + payloadSize(value)
+	}
+	if size <= 28_000 || size > maxActionPayloadBytes {
+		t.Fatalf("owner action payload size=%d", size)
+	}
+}
+
 func TestRunActionRejectsUnavailableWorkshopRequirement(t *testing.T) {
 	store := newTestStore(t)
 	definition := validPipelineDefinition()
@@ -479,5 +564,57 @@ func TestRunActionRejectsUnavailableWorkshopRequirement(t *testing.T) {
 	}
 	if _, err := store.RunAction("workshop-run", nil); err == nil || err.Error() != "action_disabled" {
 		t.Fatalf("workshop action err=%v", err)
+	}
+}
+
+func TestFeedbackPlanKindCannotBeShadowedOrConfigured(t *testing.T) {
+	store := newTestStore(t)
+	definition := validPipelineDefinition()
+	definition.ID = "report"
+	definition.Label = "Custom report"
+	if err := store.PutAction(definition); err != nil {
+		t.Fatal(err)
+	}
+	value, err := store.CreateFeedback(validFeedbackInput(), nil)
+	if err != nil {
+		t.Fatalf("feedback: %v", err)
+	}
+	task := value["task"].(map[string]any)
+	if task["kind"] != taskKindFeedbackPlan {
+		t.Fatalf("feedback plan was intercepted: %v", task)
+	}
+	reserved := validPipelineDefinition()
+	reserved.ID = taskKindFeedbackPlan
+	reserved.Label = "Reserved"
+	if err := store.ValidateAction(reserved); err == nil {
+		t.Fatal("configured feedback-plan action was accepted")
+	}
+	if err := store.PutAction(reserved); err == nil {
+		t.Fatal("configured feedback-plan action was written")
+	}
+	kinds := &taskKindsFile{Version: 1, Kinds: []taskKind{{ID: taskKindFeedbackPlan, Label: "Reserved", Action: kindActionReport}}}
+	if err := validateTaskKinds(kinds); err == nil {
+		t.Fatal("reserved feedback-plan kind was accepted in task-kinds")
+	}
+}
+
+func TestMaintenanceFallsBackWhenKindRemoved(t *testing.T) {
+	store := newTestStore(t)
+	kinds := &taskKindsFile{Version: 1, Kinds: []taskKind{
+		{ID: "report", Label: "Report", Action: kindActionReport, Priority: "P1"},
+	}}
+	if err := store.writeTaskKinds(taskKindsPathFor(store.dataDir), kinds); err != nil {
+		t.Fatal(err)
+	}
+	catalog := catalogEntryByID(t, store, "maintenance")
+	if catalog["id"] != "maintenance" {
+		t.Fatalf("maintenance catalog=%v", catalog)
+	}
+	result, err := store.RunAction("maintenance", nil)
+	if err != nil {
+		t.Fatalf("maintenance fallback: %v", err)
+	}
+	if result["task"].(map[string]any)["kind"] != "maintenance" {
+		t.Fatalf("maintenance task=%v", result)
 	}
 }

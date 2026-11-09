@@ -47,11 +47,14 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   tool-free adapter with a strict JSON-only sufficiency prompt (30s, <=512
   output), extract the first balanced object, reject extra/missing/wrong-typed
   fields, accept ready=true only with reason `ok`, map unknown reasons to
-  `ambiguous`, and record `gate_unavailable` on any call/parse failure; never
+  `ambiguous`, record only normalized bounded `gate_usage` counters (also on
+  parse failure), and record `gate_unavailable` on any call/parse failure; never
   persist raw gate output. No report binding skips the gate without inventing a
   model. Rejections (`too_broad`, `ambiguous`, `not_actionable`, `unsafe_scope`,
   `gate_unavailable`, defensive `too_long`) are recorded with status rejected
-  and returned as normal accepted=false outcomes. Acceptance builds a bounded
+  and returned as normal accepted=false outcomes. Acceptance uses the reserved
+  internal `feedback-plan` report kind (never listed or configurable, so a
+  configured `report` action cannot intercept it) to build a bounded
   plan-only report task (`Plan: ` title, payload request, no edits/deploy, no
   clarifying questions) and stores task_id. Listing returns at most 50 newest
   summaries; detail/image are ID-only.
@@ -65,6 +68,8 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   bounds tool text and marks truncation.
 - Kinds are configuration mapped to implemented actions. Reject unknown kinds
   both at hook setup and dispatch. A `report` action has no repository writes.
+  The built-in maintenance plan stays runnable and catalog-visible when its
+  task-kinds.json entry is removed; other unknown kinds still fail closed.
   The dispatcher must go through `resolveTaskAction` and `runAction`; legacy
   kinds stay one-step, runtime actions use the validated pipeline. Event route
   targets come from trusted ingress configuration or the built-in route table,

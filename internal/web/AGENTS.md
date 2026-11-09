@@ -70,10 +70,12 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   `requireSession`/CSRF but before `requestBody` JSON parsing; bound the total
   body with `MaxBytesReader` at 8 MiB. Create returns 201
   `{accepted:true,feedback,task}` or 200 `{accepted:false,feedback}` for a
-  recorded gate rejection. Malformed input returns 400 `feedback_invalid`, with a
-  fixed `reason` such as `title_short`/`image_invalid` when available. Image
-  responses are ID-only PNG bytes with `no-store`, `nosniff` and inline
-  disposition; only `has_image` records serve them. Never accept caller paths.
+  recorded gate rejection. Records may carry bounded normalized `gate_usage`
+  counters from the gate call, never raw gate text. Malformed input returns 400
+  `feedback_invalid`, with a fixed `reason` such as `title_short`/`image_invalid`
+  when available. Image responses are ID-only PNG bytes with `no-store`,
+  `nosniff` and inline disposition; only `has_image` records serve them. Never
+  accept caller paths.
 - The optional `QuotaBackend` contract exposes session-protected
   `GET /api/quotas` and CSRF-protected `POST /api/quotas/refresh`. Responses are
   bounded maps, never raw magpie bodies, key paths, or credentials. A

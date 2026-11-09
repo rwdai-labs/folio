@@ -56,6 +56,8 @@ func TestHTTPActionCatalogAndRun(t *testing.T) {
 		{"action_unknown", http.StatusNotFound, "action_unknown"},
 		{"action_disabled", http.StatusConflict, "action_disabled"},
 		{"action_input_invalid", http.StatusBadRequest, "action_input_invalid"},
+		{"tasks are unavailable", http.StatusInternalServerError, "action_unavailable"},
+		{"tasks could not be stored", http.StatusInternalServerError, "action_unavailable"},
 	}
 	for _, test := range cases {
 		backend.runActionErr = errors.New(test.err)

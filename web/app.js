@@ -2894,6 +2894,15 @@
       const node = catalogFieldNode(field);
       if (node) fieldset.appendChild(node);
     });
+    const priorityControl = fieldset.querySelector('select[data-catalog-field="priority"]');
+    if (priorityControl && typeof action.priority === "string") {
+      const option = Array.from(priorityControl.options).find((item) => item.value === action.priority);
+      if (option) {
+        // Keep the catalog default across form.reset() after a submitted action.
+        Array.from(priorityControl.options).forEach((item) => { item.defaultSelected = item === option; });
+        priorityControl.value = action.priority;
+      }
+    }
     const actions = document.createElement("div");
     actions.className = "actions";
     const submit = document.createElement("button");

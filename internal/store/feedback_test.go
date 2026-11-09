@@ -96,7 +96,7 @@ func TestCreateFeedbackAcceptsWithoutModelBinding(t *testing.T) {
 			break
 		}
 	}
-	if task == nil || task["kind"] != "report" || task["source"] != "manual" || task["priority"] != "P1" {
+	if task == nil || task["kind"] != taskKindFeedbackPlan || task["source"] != "manual" || task["priority"] != "P1" {
 		t.Fatalf("planning task=%v", task)
 	}
 	if !strings.HasPrefix(task["title"].(string), "Plan: ") || len([]rune(task["title"].(string))) > maxTaskTitleRunes {
@@ -302,7 +302,7 @@ func TestFeedbackModelGate(t *testing.T) {
 					w.WriteHeader(test.status)
 					return
 				}
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + string(jsonText(t, test.body)) + `},"finish_reason":"stop"}]}`))
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + string(jsonText(t, test.body)) + `},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":30}}}`))
 			}))
 			defer server.Close()
 			bindSyntheticService(t, store, server.URL, map[string]any{"report": syntheticBinding("group/gate")}, nil)
@@ -314,6 +314,26 @@ func TestFeedbackModelGate(t *testing.T) {
 				t.Fatalf("accepted=%v want %v value=%v", value["accepted"], test.accepted, value)
 			}
 			record := value["feedback"].(map[string]any)
+			persisted, err := os.ReadFile(filepath.Join(store.feedbackDirFor(record["id"].(string)), "feedback.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored map[string]any
+			if err := json.Unmarshal(persisted, &stored); err != nil {
+				t.Fatal(err)
+			}
+			if test.status == http.StatusOK {
+				usage, ok := record["gate_usage"].(map[string]any)
+				if !ok || usage["input_tokens"] != int64(70) || usage["cached_tokens"] != int64(30) || usage["total_tokens"] != int64(120) {
+					t.Fatalf("gate usage=%v", record["gate_usage"])
+				}
+				storedUsage, ok := stored["gate_usage"].(map[string]any)
+				if !ok || storedUsage["total_tokens"] != float64(120) {
+					t.Fatalf("persisted gate usage=%v", stored["gate_usage"])
+				}
+			} else if record["gate_usage"] != nil || stored["gate_usage"] != nil {
+				t.Fatalf("failed call without a response invented usage: %v", record)
+			}
 			if test.accepted {
 				if record["status"] != "accepted" || record["task_id"] == nil {
 					t.Fatalf("accepted record=%v", record)
@@ -322,10 +342,6 @@ func TestFeedbackModelGate(t *testing.T) {
 			}
 			if record["status"] != "rejected" || record["reason"] != test.wantReason {
 				t.Fatalf("rejected record=%v", record)
-			}
-			persisted, err := os.ReadFile(filepath.Join(store.feedbackDirFor(record["id"].(string)), "feedback.json"))
-			if err != nil {
-				t.Fatal(err)
 			}
 			if strings.Contains(string(persisted), "maybe") || strings.Contains(string(persisted), "the request is fine") {
 				t.Fatalf("raw gate output persisted: %s", persisted)

@@ -177,6 +177,14 @@ func configuredCatalogEntry(definition pipelineDefinition) catalogEntry {
 	return entry
 }
 
+func catalogPriorityOptions() []pipelineOption {
+	options := make([]pipelineOption, 0, 4)
+	for _, priority := range []string{"P0", "P1", "P2", "P3"} {
+		options = append(options, pipelineOption{Value: priority, Label: priority})
+	}
+	return options
+}
+
 func legacyCatalogEntry(kind taskKind) catalogEntry {
 	entry := catalogEntry{
 		ID: kind.ID, Label: kind.Label, Priority: kindDefaultPriority(kind),
@@ -194,7 +202,7 @@ func legacyCatalogEntry(kind taskKind) catalogEntry {
 		entry.Description = "Ask Folio for a focused report."
 		entry.Fields = []pipelineField{
 			{Name: "request", Label: "Request", Type: "textarea", Required: true, MaxLength: maxActionCatalogTextLength, Placeholder: "What should Folio report on?"},
-			{Name: "priority", Label: "Priority", Type: "select", Options: []pipelineOption{{Value: "P1", Label: "P1"}, {Value: "P2", Label: "P2"}}},
+			{Name: "priority", Label: "Priority", Type: "select", Options: catalogPriorityOptions()},
 		}
 		entry.Requires = []string{"report"}
 		if kind.ID == "report" {

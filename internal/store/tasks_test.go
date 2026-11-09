@@ -283,12 +283,13 @@ func TestUnknownTaskKindIsRejectedAndFailsWithoutLooping(t *testing.T) {
 	if _, err := store.CreateTask("issue-triage", "manual", "Triage", "P1", nil); err == nil {
 		t.Fatal("a kind that is not configured was accepted")
 	}
-	if _, err := store.CreateTask("maintenance", "manual", "Clean up", "P1", nil); err != nil {
+	writeTaskKinds(t, store, taskKind{ID: "triage", Label: "Issue triage", Action: kindActionReport, Prompt: "Summarize {{payload.title}}"})
+	if _, err := store.CreateTask("triage", "manual", "Triage", "P1", nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	// The owner removes the kind between queueing and dispatch. The task must
 	// fail once with a clear reason instead of spinning or guessing an action.
-	writeTaskKinds(t, store, taskKind{ID: "triage", Label: "Issue triage", Action: kindActionReport, Prompt: "Summarize {{payload.title}}"})
+	writeTaskKinds(t, store, genericReportKind())
 	result, err := store.DispatchDue()
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -300,6 +301,36 @@ func TestUnknownTaskKindIsRejectedAndFailsWithoutLooping(t *testing.T) {
 	task := listing["tasks"].([]any)[0].(map[string]any)
 	if task["status"] != "failed" || task["reason"] != "kind_unknown" {
 		t.Fatalf("task=%v", task)
+	}
+}
+
+func TestMaintenanceDispatchFallsBackWhenKindRemoved(t *testing.T) {
+	store := newTestStore(t)
+	writeTaskPolicy(t, store, map[string]bool{}, "00:00", "00:00", 0)
+	if _, err := store.CreateTask("maintenance", "manual", "Clean up", "P1", nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Maintenance stays runnable even when its kind is removed from
+	// task-kinds.json. Without a repository it skips instead of failing as an
+	// unknown kind.
+	writeTaskKinds(t, store, genericReportKind())
+	result, err := store.DispatchDue()
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if result["dispatched"] != 1 || result["run_id"] == nil {
+		t.Fatalf("maintenance fallback did not dispatch: %v", result)
+	}
+	if result["reason"] == "kind_unknown" {
+		t.Fatalf("maintenance fallback was treated as unknown: %v", result)
+	}
+	if result["run_status"] != "skipped" || result["reason"] != "repository_not_connected" {
+		t.Fatalf("maintenance fallback result=%v", result)
+	}
+	listing, _ := store.ListTasks()
+	task := listing["tasks"].([]any)[0].(map[string]any)
+	if task["status"] != "failed" || task["reason"] != "repository_not_connected" {
+		t.Fatalf("maintenance task=%v", task)
 	}
 }
 
