@@ -9,15 +9,38 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
 | `tasks.go`, `kinds.go`, `hooks.go`, `actions.go`, `events.go`, `routes.go`, `action_config.go`, `action_pipeline.go` | Durable queue, data-defined actions, internal action plans, signed events, event routes and the runtime action registry/pipeline |
 | `agent.go`, `agent_config.go`, `agent_openai.go`, `agent_tools.go` | Main-agent runtime boundary, validated owner configuration, OpenAI-compatible and command adapters, bounded sessions, owner/observer tool grants and agent run audit |
-| `report.go`, `usage.go`, `channels.go`, `models.go`, `quota.go`, `pricing.go` | Reports, usage and estimated cost, notifications, runner catalogs, the optional quota snapshot and the cached model price catalog |
+| `model_services.go`, `model_execution.go` | Reusable model connections, task bindings, secret files, bounded catalog tests and tool-free report calls |
+| `report.go`, `report_result.go`, `readiness.go`, `usage.go`, `channels.go`, `models.go`, `quota.go`, `pricing.go` | Reports and bounded result reads, capability readiness, usage and estimated cost, notifications, runner catalogs, the optional quota snapshot and the cached model price catalog |
 | `inbound.go`, `weixin_push.go` | Explicit Weixin owner authorization, bounded read-only answers and the optional outbound push |
 
 - A task is durable intent; a run is one attempt. Preserve single-writer
   checkout access, priority/off-peak policies, pause/hold/cancel/run-now
   behaviour, deduplication, and recovery of interrupted tasks after restart.
-  Queue maintenance uses runner `codex` with no explicit model override. Its
-  run records carry `task_id` from the first persisted running snapshot, just
+  Queue maintenance uses runner `codex`; absent a model-service assignment it
+  inherits legacy routing. An assigned maintenance connection/model uses only a
+  trusted per-call child environment, preserving structural validation/rollback
+  and never mutating runner profiles. Its run records carry `task_id` from the
+  first persisted running snapshot, just
   like report runs; each retry keeps the task identity and creates a new run.
+- State exposes independent assistant/report/maintenance/context readiness as
+  local configuration only (`verification: unknown`), never a credential or
+  inference check. Standalone chat/report need no repository; maintenance and
+  context do. State reads atomic snapshots without the repository writer lock.
+- Generic `report` is a P1 kind, additive in memory for old kinds files; preserve
+  owner-defined kinds and explicit report configuration. Carry the owner request
+  in `payload.request`, with an explicit 4000-rune bound for manual/agent report
+  requests; reject excess rather than dropping intent. Hook/other scalar payload
+  projection retains its 512-rune bound. Report deduplication includes title and payload,
+  while maintenance event coalescing keeps its existing semantics. All sources,
+  including assistant tasks, use the ordinary independent queue dispatcher.
+- Reports use immutable `run-<run_id>.md` names. Result reads accept a run ID only,
+  validate successful run ownership of its exact report filename, reject paths,
+  symlinks and secret-shaped content, and bound regular-file reads to 64 KiB.
+  Historical `task-<task_id>.md`/`action-<task_id>.md` artifacts were mutable:
+  serve only the run's saved `report_text` with `historical_snapshot: true` and
+  conservative `truncated: true`, or fail unavailable if absent. Never attribute
+  a later attempt's file bytes to an older run. Owner-only `report.get` further
+  bounds tool text and marks truncation.
 - Kinds are configuration mapped to implemented actions. Reject unknown kinds
   both at hook setup and dispatch. A `report` action has no repository writes.
   The dispatcher must go through `resolveTaskAction` and `runAction`; legacy
@@ -42,7 +65,23 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   The built-in OpenAI-compatible adapter and the optional command adapter at
   `/data/agent/runtime` share the same gateway and bounds. Tool-call ids must
   pair the assistant message with each tool result; a real pi wrapper remains
-  unverified, so tests use a synthetic endpoint or executable.
+  unverified, so tests use a synthetic endpoint or executable. Successful
+  `task.create` emits bounded `task.created` task ID/title/status metadata;
+  session history restores associations from retained durable task sources.
+  Context answers must cite returned source paths and distinguish missing
+  context; report follow-ups cite the inspected report run ID.
+- `model_services.go` owns private `runtime/model-services.json` and write-only
+  `secrets/model-services/<id>` keys (0600); validate whole configs and reject
+  symlinks, public HTTP and malformed bindings. Default assistant/report/maintenance
+  assignments and per-report/action overrides select an exact model or group ID;
+  Folio does not implement cost-preference or account/fallback scheduling.
+  Unbound uses preserve legacy config; malformed saved state fails closed.
+  Catalog tests make bounded GET requests without redirects or inference.
+  Bound reports/pipeline agents use a tool-free call; the main agent keeps its
+  authorized tool loop. A selected assistant route failure must not bypass the
+  gateway via the Weixin legacy runner. Keep requested aliases distinct from
+  actual served metadata in `model_usage`; CLI routes lacking attribution remain
+  unpriced. Retain HTTP reported usage even when content validation rejects it.
 - Model prices are an optional external estimate, never billing truth. Fetch the
   models.dev JSON over HTTPS with bounded size/time, cache a compact projection
   under `data/runtime`, and keep the last good catalog on failure. Price only

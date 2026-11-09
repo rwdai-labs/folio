@@ -23,6 +23,34 @@ The service never runs code from the cloned context repository. Personal
 context, credentials, run audits, and runtime state stay in the private data
 volume. This repository contains only generic service code and Web assets.
 
+## Start using Folio
+
+1. Create the owner account, then open **Settings → Model services**. Add a
+   connection and assign a model to the assistant and/or reports. Chat and
+   API-backed reports can work before a context repository or CLI runner is
+   configured. A connection test lists models; complete an actual conversation
+   or small report to check inference support.
+2. Use the dashboard shortcuts to ask about your context, submit a background
+   report, or organize your context. A report needs a concrete request; its task
+   card shows queue state, waiting rules, attempts and results. Creating a task
+   means it has been accepted, not that the work has finished.
+3. For personal-context answers and organization, authorize GitHub and connect
+   the private Markdown repository. Organization also needs the Codex worker
+   and its configured model route. Missing optional channels do not block chat
+   or the task board.
+4. Open a completed report from its task or run, then use the follow-up entry
+   to ask the assistant about that run. New reports retain a separate artifact
+   for each attempt. Older reports may expose only a marked, potentially
+   truncated audit snapshot; an overwritten task file is never presented as an
+   exact historical result. Context answers should cite the source paths
+   returned by search; unavailable context must stay explicit.
+
+The settings and dashboard show separate readiness for assistant, reports and
+maintenance. Readiness describes local configuration, not verified credentials
+or a successful model call. Queue pause and off-peak policies still apply to
+background tasks. Deployment and optional notification setup are described in
+[deploy/README.md](deploy/README.md).
+
 ## Image
 
 `ghcr.io/rwdai-labs/folio-service:main` (AMD64 and ARM64).
@@ -67,11 +95,11 @@ Scheduled jobs pull first, then accept at most eight Markdown files from the
 runner, reject sensitive or non-canonical paths, verify that the checkout
 contains only those edits, commit, and push. A failed validation or push is
 rolled back and recorded; it never leaves a partial commit. Automatic runs use
-Codex by default. An operator can trigger a run with Codex or DSH from the Web
-UI when its headless profile is installed; both accept a selected model, and
-the field remains free-form for ids not in the suggestions. Codex suggestions
-come from the installed CLI catalog; DSH suggestions come from the actual
-mounted profile patch. See `deploy/README.md` for DSH and host-config setup.
+Codex by default. The daily UI runs maintenance using its saved task binding;
+model/group IDs remain free-form in Settings → Model connections. Existing
+Codex/DSH API and CLI selections remain available for legacy configurations;
+DSH needs an installed headless profile. See `deploy/README.md` for model-service,
+DSH and host-config setup.
 
 Each run stores status (`pushed`, `no_changes`, `skipped`, `failed`), runner and
 model, pull and push evidence, commit, summary, per-file reasons and diffs under
@@ -195,6 +223,30 @@ An existing `/data/secrets/admin-password` or `admin-password.hash` from an
 older deployment is imported once as the `admin` account (the plaintext file is
 removed); `ADMIN_PASSWORD_FILE` can seed that legacy import for an unattended
 deployment. After setup the database is authoritative.
+
+## Model services and task assignments
+
+Settings → Model services manages reusable named OpenAI-compatible connections
+(base URL and a write-only API key). Assign a connection and an exact model ID or
+routing-group ID such as `group/reports` separately to assistant chat, reports,
+and context maintenance. Individual report kinds and runtime actions can override
+that report default. Folio dispatches to the configured route; account selection,
+model fallback and cost preferences belong to the gateway. Task priority still
+controls execution order and the owner's off-peak window.
+
+Configuration is private at `data/runtime/model-services.json`; keys live in
+`data/secrets/model-services/` with mode 0600 and are never returned. HTTPS is
+supported; plain HTTP is limited to loopback or private IP endpoints. Testing a
+connection lists its available model IDs without an inference call, so a passing
+connection test does not prove that a model or group can complete a task.
+Unassigned uses retain the existing runner or agent configuration; malformed
+saved model-service configuration fails closed.
+
+Reported usage remains the source of token counts. A gateway may return actual
+served provider/model metadata; Folio keeps it distinct from the requested group
+for cost estimation. An unresolved group has no invented price. The homepage
+work card begins with a compact token, estimated-cost and subscription-status
+bar; detailed usage and subscription readings remain expandable.
 
 ## Credentials and integrations
 

@@ -19,11 +19,12 @@ import (
 )
 
 type testBackend struct {
-	taskCreates []string
-	dispatches  int
-	mu          sync.Mutex
-	maintenance []struct{ mode, model, runner string }
-	preview     []struct {
+	taskCreates  []string
+	taskPayloads []map[string]any
+	dispatches   int
+	mu           sync.Mutex
+	maintenance  []struct{ mode, model, runner string }
+	preview      []struct {
 		reportID string
 		index    int
 		target   string
@@ -40,6 +41,18 @@ type testBackend struct {
 	pricingCalls int
 	quotaCalls   []bool
 	quotaValue   quota.Snapshot
+	reportResult map[string]any
+	reportErr    error
+}
+
+func (b *testBackend) ReportResult(runID string) (map[string]any, error) {
+	if b.reportErr != nil {
+		return nil, b.reportErr
+	}
+	if runID != "20261020T000000.000000000Z-abcdef12" {
+		return nil, errors.New("report_result_unavailable")
+	}
+	return b.reportResult, nil
 }
 
 func (b *testBackend) Executor() storage.Executor { return nil }
@@ -317,6 +330,7 @@ func (b *testBackend) ListTasks() (map[string]any, error) {
 
 func (b *testBackend) CreateTask(kind, source, title, priority string, payload map[string]any) (map[string]any, error) {
 	b.taskCreates = append(b.taskCreates, kind+"|"+source+"|"+priority)
+	b.taskPayloads = append(b.taskPayloads, payload)
 	return map[string]any{
 		"task": map[string]any{
 			"id": "t-000000000001", "kind": kind, "title": title, "source": source,
@@ -752,6 +766,10 @@ func TestAutomationEndpointsExposeAuditAndAcceptRun(t *testing.T) {
 	if status != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated automation status=%d", status)
 	}
+	status, _, _ = client.request(t, http.MethodGet, "/api/automation/runs/20261020T000000.000000000Z-abcdef12/result", nil, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated report result status=%d", status)
+	}
 	client.login(t, password)
 
 	status, _, listing := client.request(t, http.MethodGet, "/api/automation", nil, "")
@@ -781,6 +799,20 @@ func TestAutomationEndpointsExposeAuditAndAcceptRun(t *testing.T) {
 		t.Fatalf("invalid run id status=%d", status)
 	}
 
+	backend.reportResult = map[string]any{"run_id": runID, "task_id": "t-000000000001", "format": "markdown", "text": "# Report\n\nBounded result."}
+	status, _, result := client.request(t, http.MethodGet, "/api/automation/runs/"+runID+"/result", nil, "")
+	if status != http.StatusOK || result["text"] != "# Report\n\nBounded result." || result["format"] != "markdown" {
+		t.Fatalf("report result status=%d result=%v", status, result)
+	}
+	status, _, result = client.request(t, http.MethodGet, "/api/automation/runs/20261020T000000.000000000Z-deadbeef/result", nil, "")
+	if status != http.StatusNotFound || result["error"] != "report_result_unavailable" {
+		t.Fatalf("missing report status=%d result=%v", status, result)
+	}
+	status, _, _ = client.request(t, http.MethodGet, "/api/automation/runs/not-a-run/result", nil, "")
+	if status != http.StatusNotFound {
+		t.Fatalf("invalid report id status=%d", status)
+	}
+
 	origin := server.URL
 	status, _, accepted := client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "codex", "model": "gpt-test"}, origin)
 	if status != http.StatusAccepted {
@@ -802,9 +834,9 @@ func TestAutomationEndpointsExposeAuditAndAcceptRun(t *testing.T) {
 	if len(backend.automation) != 2 || backend.automation[1].runner != "dsh" || backend.automation[1].model != "example-large" {
 		t.Fatalf("dsh automation calls=%v", backend.automation)
 	}
-	status, _, result := client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "other"}, origin)
-	if status != http.StatusBadRequest || result["error"] != "invalid_runner" {
-		t.Fatalf("bad runner status=%d result=%v", status, result)
+	status, _, badRunner := client.request(t, http.MethodPost, "/api/automation/run", map[string]any{"runner": "other"}, origin)
+	if status != http.StatusBadRequest || badRunner["error"] != "invalid_runner" {
+		t.Fatalf("bad runner status=%d result=%v", status, badRunner)
 	}
 }
 
@@ -981,6 +1013,39 @@ func TestTaskKindsAreSessionProtected(t *testing.T) {
 	}
 	if kinds[1].(map[string]any)["label"] != "Issue triage" {
 		t.Fatalf("label=%v", kinds[1])
+	}
+}
+
+func TestTaskCreateRequiresAuthCSRFAndAssignsManualSource(t *testing.T) {
+	backend := &testBackend{}
+	server, password := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+	payload := map[string]any{"kind": "report", "title": "Release report", "priority": "P1", "source": "agent:spoofed", "payload": map[string]any{"request": "Summarize the release."}}
+	status, _, _ := client.request(t, http.MethodPost, "/api/tasks", payload, server.URL)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated create=%d", status)
+	}
+	client.login(t, password)
+	csrf := client.csrf
+	client.csrf = ""
+	status, _, _ = client.request(t, http.MethodPost, "/api/tasks", payload, server.URL)
+	if status != http.StatusForbidden || len(backend.taskCreates) != 0 {
+		t.Fatalf("missing CSRF create=%d calls=%v", status, backend.taskCreates)
+	}
+	client.csrf = csrf
+	status, _, created := client.request(t, http.MethodPost, "/api/tasks", payload, server.URL)
+	if status != http.StatusCreated || created["created"] != true || created["task"].(map[string]any)["source"] != "manual" {
+		t.Fatalf("create=%d value=%v", status, created)
+	}
+	if len(backend.taskCreates) != 1 || backend.taskCreates[0] != "report|manual|P1" || backend.taskPayloads[0]["request"] != "Summarize the release." {
+		t.Fatalf("create args=%v payload=%v", backend.taskCreates, backend.taskPayloads)
+	}
+	for _, invalid := range []map[string]any{{"kind": 7}, {"kind": "report", "payload": "wrong type"}, {"kind": "report", "priority": 3}} {
+		status, _, value := client.request(t, http.MethodPost, "/api/tasks", invalid, server.URL)
+		if status != http.StatusBadRequest || value["error"] != "task_invalid" {
+			t.Fatalf("invalid create=%d value=%v", status, value)
+		}
 	}
 }
 

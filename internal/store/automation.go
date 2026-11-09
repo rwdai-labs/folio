@@ -135,6 +135,10 @@ func (s *Store) runAutomation(trigger, runner, model, taskID string) (map[string
 }
 
 func (s *Store) runAutomationLocked(trigger, runner, model, taskID string) (map[string]any, error) {
+	binding, bindingErr := s.resolveModelBinding("maintenance", "")
+	if binding != nil {
+		runner, model = "codex", binding.Model
+	}
 	started := time.Now()
 	runID, err := newAutoRunID()
 	if err != nil {
@@ -197,6 +201,12 @@ func (s *Store) runAutomationLocked(trigger, runner, model, taskID string) (map[
 		return run, nil
 	}
 
+	if bindingErr != nil {
+		return finish("failed", "configuration", "model_services_invalid", nil)
+	}
+	if binding != nil {
+		run["connection"] = binding.Connection
+	}
 	if err := s.requireRepository(); err != nil {
 		return finish("skipped", "repository", "repository_not_connected", nil)
 	}
@@ -256,9 +266,25 @@ func (s *Store) runAutomationLocked(trigger, runner, model, taskID string) (map[
 	}
 
 	run["stage"] = "organize"
-	report, err := s.runAutoAgentLocked(runner, model)
+	report, err := s.runAutoAgentLocked(runner, model, binding)
 	if err != nil {
 		return finish("failed", "organize", automationFailureReason(err), nil)
+	}
+	if report.Usage != nil {
+		run["usage"] = map[string]any{
+			"input_tokens":  report.Usage.Input,
+			"cached_tokens": report.Usage.Cached,
+			"output_tokens": report.Usage.Output,
+			"total_tokens":  report.Usage.Total,
+			"requests":      report.Usage.Requests,
+			"source":        "reported",
+			"origin":        report.Usage.Origin,
+		}
+	}
+	if binding != nil && report.Usage != nil {
+		// CLI workers cannot expose per-request gateway headers. Keep the
+		// requested route visible without inventing physical model attribution.
+		run["model_usage"] = []any{map[string]any{"provider": "", "model": "", "requested_model": binding.Model, "usage": run["usage"]}}
 	}
 	if secretMaterialRE.MatchString(report.Summary) {
 		return finish("failed", "organize", "content_rejected", nil)
@@ -297,17 +323,7 @@ func (s *Store) runAutomationLocked(trigger, runner, model, taskID string) (map[
 	}
 	run["summary"] = publicText(report.Summary, maxAutoSummaryRunes)
 	run["input_digest"] = publicText(report.InputDigest, 64)
-	if report.Usage != nil {
-		run["usage"] = map[string]any{
-			"input_tokens":  report.Usage.Input,
-			"cached_tokens": report.Usage.Cached,
-			"output_tokens": report.Usage.Output,
-			"total_tokens":  report.Usage.Total,
-			"requests":      report.Usage.Requests,
-			"source":        "reported",
-			"origin":        report.Usage.Origin,
-		}
-	}
+
 	run["stage"] = "validate"
 	if err := s.saveAutomationRun(run); err != nil {
 		return nil, err
@@ -543,7 +559,7 @@ func (s *Store) applyAutoEditsLocked(edits []autoEdit, runID string) (autoApplyR
 	return autoApplyResult{commit: newHead, branch: branch}, audit, "done", nil
 }
 
-func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
+func (s *Store) runAutoAgentLocked(runner, model string, binding *resolvedModelBinding) (autoReport, error) {
 	command, err := s.installedFolioCommand()
 	if err != nil {
 		return autoReport{}, err
@@ -574,6 +590,11 @@ func (s *Store) runAutoAgentLocked(runner, model string) (autoReport, error) {
 	}
 	for key, value := range dshRunnerEnv() {
 		env[key] = value
+	}
+	if binding != nil {
+		env["FOLIO_MODEL_BASE_URL"] = binding.BaseURL
+		env["FOLIO_MODEL_ID"] = binding.Model
+		env["FOLIO_MODEL_KEY"] = binding.Key
 	}
 	s.modelMu.Lock()
 	result, runErr := s.runCommand(command, s.toolRoot, "", 20*time.Minute, false, env)

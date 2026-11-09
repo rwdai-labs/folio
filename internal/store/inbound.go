@@ -57,6 +57,10 @@ func (h *weixinHandler) HandleMessage(ctx context.Context, m channel.Message) (s
 		}
 		return "Folio 在线，Context 仓库尚未连接。微信入口仅支持只读回答。", nil
 	default:
+		binding, bindingErr := h.store.resolveModelBinding("assistant", "")
+		if bindingErr != nil {
+			return "", &channelFailure{class: "runner_unavailable"}
+		}
 		// The owner gets the main agent when a runtime is configured. The
 		// session key comes from the authenticated identity, never from the
 		// transport session ID. Without a runtime, keep the existing bounded
@@ -70,6 +74,11 @@ func (h *weixinHandler) HandleMessage(ctx context.Context, m channel.Message) (s
 			if err == nil && strings.TrimSpace(result.Text) != "" {
 				return result.Text, nil
 			}
+		}
+		// A selected model service is an explicit route. Failure must not
+		// silently spend another runner's credentials or bypass gateway policy.
+		if binding != nil && routed && target == "agent:main" {
+			return "", &channelFailure{class: "runner_failed"}
 		}
 		return h.store.channelReport(ctx, m.Text)
 	}

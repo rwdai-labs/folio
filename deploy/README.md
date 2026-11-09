@@ -85,10 +85,62 @@ Alternatively provision the supported provider configuration and credentials
 inside `/data/codex` through your secret manager. Do not put secrets in Compose,
 the context repository or chat. Inspect the Web model status after setup.
 
-## Main agent and price estimates
+## First useful task
 
-The Assistant view uses a configurable main-agent runtime. Open **Settings →
-Main agent runtime** and choose one of two modes:
+After creating the owner account, configure the assistant and/or report model
+under **Settings → Model services**. A private repository and Codex login are
+not prerequisites for API-backed chat or reports. The dashboard and settings
+show separate capability readiness; these checks describe local configuration,
+not verified provider credentials.
+
+Use **Background report** on the dashboard, enter a concrete request and submit
+it. Open the accepted task to see its queue state and eventual report. A paused
+queue or an off-peak priority can delay execution; acceptance is not completion.
+Read the result and use its follow-up entry to ask about the same run. This small
+report is also an inference check that **Test connection** cannot provide.
+
+To ask about personal context, connect the private repository. To organize it,
+finish the Codex worker setup and maintenance model assignment as well. Optional
+Weixin/Bark setup can follow once the Web flow works. If a task fails, inspect
+its fixed failure status and configuration before retrying; preserve the private
+data volume when upgrading or restarting.
+
+## Model services and task assignments
+
+Open **Settings → Model services** to add a named OpenAI-compatible connection,
+then assign its connection and exact model/group ID separately to assistant chat,
+reports and maintenance. A report kind or runtime action may override the report
+default. For a gateway, enter its advertised ID (for example `group/reports`);
+configure account selection, cost preferences and fallback at that gateway.
+Folio's existing task priorities and time windows still control execution order.
+
+The base URL normally ends in `/v1`. HTTPS is supported; plain HTTP is accepted
+only for loopback or private IP addresses. Use a private IP URL for a local gateway
+that has no HTTPS endpoint. Keep public HTTP endpoints out of configuration.
+The write-only key field stays blank on reload; leaving it blank retains the
+saved key. Configuration lives at `/data/runtime/model-services.json` and keys at
+`/data/secrets/model-services/<connection-id>`, all with mode 0600. Keep these
+paths in the persistent private data volume and out of images and source control.
+
+**Test connection** performs a bounded `GET /models` with no inference request.
+It checks connectivity/authentication and can offer model/group suggestions; it
+does not prove that a selected route supports tools, Responses, or a particular
+task. Verify a noncritical report before switching production uses. Maintenance
+retains the Codex execution and structural-validation/rollback boundaries while
+using its assigned connection; reports use a bounded tool-free API call.
+
+Unassigned uses preserve the existing agent/runner configuration below. Clearing
+an assignment restores that fallback; malformed saved configuration fails closed.
+Do not remove existing credentials until assigned uses have passed acceptance.
+Reported tokens and actual served provider/model, when supplied by the gateway,
+feed the existing estimated-cost view. Requested group IDs are not prices, and
+unknown attribution remains unpriced.
+
+## Legacy main-agent runtime and price estimates
+
+The Assistant view also supports the existing configurable main-agent runtime
+when no assistant model-service assignment is present. Under **Advanced →
+Main agent runtime**, choose one of two modes:
 
 - **OpenAI-compatible API (recommended).** Pick a provider preset (DeepSeek,
   OpenAI or OpenRouter), or enter a custom HTTPS base URL. Folio

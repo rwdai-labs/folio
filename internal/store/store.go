@@ -54,22 +54,24 @@ var (
 // Store owns only the external runtime state of the maintainer. The cloned
 // repository is treated as untrusted input and is never used as a tool root.
 type Store struct {
-	dataDir       string
-	toolRoot      string
-	repositoryDir string
-	runtimeDir    string
-	runsDir       string
-	reviewsDir    string
-	pendingDir    string
-	reportsDir    string
-	codexDir      string
-	dshDir        string
-	secretsDir    string
-	ghConfigDir   string
-	homeDir       string
-	hooksDir      string
-	statePath     string
-	lockPath      string
+	dataDir                 string
+	toolRoot                string
+	repositoryDir           string
+	runtimeDir              string
+	runsDir                 string
+	reviewsDir              string
+	pendingDir              string
+	reportsDir              string
+	codexDir                string
+	dshDir                  string
+	secretsDir              string
+	modelServicesPath       string
+	modelServicesSecretsDir string
+	ghConfigDir             string
+	homeDir                 string
+	hooksDir                string
+	statePath               string
+	lockPath                string
 
 	// remote is the storage plugin that owns the code host. Folio keeps the
 	// checkout, the commit, and the audit trail; the plugin owns the remote.
@@ -130,6 +132,10 @@ type Store struct {
 	tasksPath        string
 	policyPath       string
 
+	// Owner model connections use an independent lock. Configuration writers
+	// never acquire agentMu, so there is no turn/configuration lock inversion.
+	modelServicesMu sync.Mutex
+
 	modelCatalogMu   sync.Mutex
 	modelCatalogAt   time.Time
 	modelCatalogData map[string]any
@@ -165,37 +171,39 @@ func New(dataDir, toolRoot string, remote storage.Remote) (*Store, error) {
 		return nil, errStore("runtime data must be outside the tool root")
 	}
 	s := &Store{
-		dataDir:         data,
-		toolRoot:        tools,
-		repositoryDir:   filepath.Join(data, "repository"),
-		runtimeDir:      filepath.Join(data, "runtime"),
-		runsDir:         filepath.Join(data, "runtime", "runs"),
-		reviewsDir:      filepath.Join(data, "runtime", "reviews"),
-		pendingDir:      filepath.Join(data, "runtime", "pending-reviews"),
-		reportsDir:      filepath.Join(data, "runtime", "reports"),
-		codexDir:        filepath.Join(data, "codex"),
-		dshDir:          filepath.Join(data, "dsh"),
-		secretsDir:      filepath.Join(data, "secrets"),
-		ghConfigDir:     filepath.Join(data, "secrets", "gh"),
-		homeDir:         filepath.Join(data, "home"),
-		hooksDir:        filepath.Join(data, "git-hooks"),
-		statePath:       filepath.Join(data, "state.json"),
-		lockPath:        filepath.Join(data, "store.lock"),
-		channelsPath:    filepath.Join(data, "secrets", "channels.json"),
-		deliveriesPath:  filepath.Join(data, "runtime", "notifications.jsonl"),
-		hooksPath:       filepath.Join(data, "secrets", "hooks.json"),
-		tasksPath:       filepath.Join(data, "runtime", "tasks.json"),
-		policyPath:      policyPathFor(data),
-		agentConfigPath: filepath.Join(data, "agent", "config.json"),
-		pricingPath:     filepath.Join(data, "runtime", "model-prices.json"),
-		pricingURL:      defaultPricingURL,
-		agentKeyPath:    filepath.Join(data, "secrets", "agent-api-key"),
-		agentSessions:   filepath.Join(data, "runtime", "agent", "sessions"),
-		replayPath:      filepath.Join(data, "runtime", "hook-replay.json"),
-		remote:          remote,
-		quotaService:    quota.New(data),
-		notifyLast:      map[string]time.Time{},
-		hookCalls:       map[string][]time.Time{},
+		dataDir:                 data,
+		toolRoot:                tools,
+		repositoryDir:           filepath.Join(data, "repository"),
+		runtimeDir:              filepath.Join(data, "runtime"),
+		runsDir:                 filepath.Join(data, "runtime", "runs"),
+		reviewsDir:              filepath.Join(data, "runtime", "reviews"),
+		pendingDir:              filepath.Join(data, "runtime", "pending-reviews"),
+		reportsDir:              filepath.Join(data, "runtime", "reports"),
+		codexDir:                filepath.Join(data, "codex"),
+		dshDir:                  filepath.Join(data, "dsh"),
+		secretsDir:              filepath.Join(data, "secrets"),
+		modelServicesPath:       filepath.Join(data, "runtime", "model-services.json"),
+		modelServicesSecretsDir: filepath.Join(data, "secrets", "model-services"),
+		ghConfigDir:             filepath.Join(data, "secrets", "gh"),
+		homeDir:                 filepath.Join(data, "home"),
+		hooksDir:                filepath.Join(data, "git-hooks"),
+		statePath:               filepath.Join(data, "state.json"),
+		lockPath:                filepath.Join(data, "store.lock"),
+		channelsPath:            filepath.Join(data, "secrets", "channels.json"),
+		deliveriesPath:          filepath.Join(data, "runtime", "notifications.jsonl"),
+		hooksPath:               filepath.Join(data, "secrets", "hooks.json"),
+		tasksPath:               filepath.Join(data, "runtime", "tasks.json"),
+		policyPath:              policyPathFor(data),
+		agentConfigPath:         filepath.Join(data, "agent", "config.json"),
+		pricingPath:             filepath.Join(data, "runtime", "model-prices.json"),
+		pricingURL:              defaultPricingURL,
+		agentKeyPath:            filepath.Join(data, "secrets", "agent-api-key"),
+		agentSessions:           filepath.Join(data, "runtime", "agent", "sessions"),
+		replayPath:              filepath.Join(data, "runtime", "hook-replay.json"),
+		remote:                  remote,
+		quotaService:            quota.New(data),
+		notifyLast:              map[string]time.Time{},
+		hookCalls:               map[string][]time.Time{},
 	}
 	if err := s.ensureDirs(); err != nil {
 		return nil, err
@@ -223,7 +231,9 @@ func New(dataDir, toolRoot string, remote storage.Remote) (*Store, error) {
 
 // State returns a bounded operational snapshot and never returns credentials.
 func (s *Store) State() (map[string]any, error) {
-	return s.withLock(func() (map[string]any, error) {
+	// State is an atomic-file snapshot, not a repository transaction. Keep it
+	// responsive while a model or a repository operation holds the writer lock.
+	return func() (map[string]any, error) {
 		saved := s.loadState()
 		repository := mapValue(saved, "repository")
 		maintenance := mapValue(saved, "maintenance")
@@ -232,7 +242,8 @@ func (s *Store) State() (map[string]any, error) {
 			"version": 1,
 			// "auth", not "credential": the response redactor treats any
 			// credential-shaped key as secret, and this is a status string.
-			"storage": s.storageStatus(),
+			"storage":      s.storageStatus(),
+			"capabilities": s.capabilityReadiness(s.repositoryConnected(repository)),
 			"repository": map[string]any{
 				"connected": s.repositoryConnected(repository),
 				"full_name": publicText(repository["full_name"], 201),
@@ -259,7 +270,7 @@ func (s *Store) State() (map[string]any, error) {
 				"trigger":     publicText(scheduler["trigger"], 16),
 			},
 		}, nil
-	})
+	}()
 }
 
 func (s *Store) withLock(fn func() (map[string]any, error)) (result map[string]any, err error) {

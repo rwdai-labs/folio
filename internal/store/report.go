@@ -80,6 +80,27 @@ func (s *Store) runReportTask(kind taskKind, task taskRecord) (map[string]any, e
 		return result
 	}
 
+	binding, bindingErr := s.resolveModelBinding("report", kind.ID)
+	if bindingErr != nil {
+		return finish("failed", "model_services_invalid"), nil
+	}
+	if binding != nil {
+		run["connection"] = binding.Connection
+		run["model_available"] = true
+		result, callErr := s.callTaskModel(binding, renderKindPrompt(kind, task), kind.Timeout(), maxReportTextBytes, runID)
+		attachTaskModelUsage(run, result)
+		if callErr != nil {
+			return finish("failed", callErr.Error()), nil
+		}
+		reportFile := "run-" + runID + ".md"
+		if err := writePrivateFile(filepath.Join(s.reportsDir, reportFile), []byte(result.Text+"\n")); err != nil {
+			return finish("failed", "report_write_failed"), nil
+		}
+		run["summary"] = publicText(firstParagraph(result.Text), maxReportSummary)
+		run["report_file"] = reportFile
+		run["report_text"] = publicText(result.Text, maxKindReportRunes)
+		return finish("reported", ""), nil
+	}
 	if !s.runnerAvailable(runner) {
 		return finish("failed", "model_unavailable"), nil
 	}
@@ -145,7 +166,7 @@ func (s *Store) runReportTask(kind taskKind, task taskRecord) (map[string]any, e
 	if text == "" || len(text) > maxReportTextBytes || secretMaterialRE.MatchString(text) {
 		return finish("failed", "report_rejected"), nil
 	}
-	reportFile := "task-" + task.ID + ".md"
+	reportFile := "run-" + runID + ".md"
 	if err := writePrivateFile(filepath.Join(s.reportsDir, reportFile), []byte(text+"\n")); err != nil {
 		return finish("failed", "report_write_failed"), nil
 	}

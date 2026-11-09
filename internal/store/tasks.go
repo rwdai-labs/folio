@@ -38,6 +38,9 @@ const (
 	maxTaskPayloadBytes = 4096
 	maxTaskPayloadKeys  = 16
 	maxTaskPayloadRunes = 512
+	// The authenticated owner report request has its own bound; hook values
+	// retain the existing small flat projection.
+	maxReportRequestRunes = 4000
 )
 
 var (
@@ -277,6 +280,23 @@ func validPayloadValue(value any) bool {
 	return false
 }
 
+func ownerTaskSource(source string) bool {
+	return source == "manual" || strings.HasPrefix(source, "agent:")
+}
+
+func snapshotTaskPayload(task taskRecord) map[string]any {
+	payload := projectTaskPayload(task.Payload)
+	if ownerTaskSource(task.Source) {
+		if request, ok := task.Payload["request"].(string); ok && len([]rune(request)) <= maxReportRequestRunes {
+			if payload == nil {
+				payload = map[string]any{}
+			}
+			payload["request"] = request
+		}
+	}
+	return payload
+}
+
 func newTaskID() (string, error) {
 	buffer := make([]byte, 6)
 	if _, err := rand.Read(buffer); err != nil {
@@ -334,6 +354,11 @@ func validTaskRecord(task taskRecord) bool {
 		return false
 	}
 	for key, value := range task.Payload {
+		if key == "request" && ownerTaskSource(task.Source) {
+			if request, ok := value.(string); ok && len([]rune(request)) <= maxReportRequestRunes {
+				continue
+			}
+		}
 		if !taskPayloadKeyRE.MatchString(key) || !validPayloadValue(value) {
 			return false
 		}
@@ -420,6 +445,7 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 	kind = strings.TrimSpace(kind)
 	source = strings.TrimSpace(source)
 	title = strings.TrimSpace(title)
+	rawPayload := payload
 	payload = projectTaskPayload(payload)
 	if !taskKindRE.MatchString(kind) {
 		return nil, errStore("invalid_task_kind")
@@ -427,6 +453,20 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 	definition, err := s.resolveTaskAction(kind)
 	if err != nil {
 		return nil, errStore("invalid_task_kind")
+	}
+	if definition.Legacy && len(definition.Steps) == 1 && definition.Steps[0].Type == actionStepReport && ownerTaskSource(source) {
+		if raw, exists := rawPayload["request"]; exists {
+			request, ok := raw.(string)
+			if !ok || strings.TrimSpace(request) == "" || len([]rune(request)) > maxReportRequestRunes {
+				return nil, errStore("report_request_invalid")
+			}
+			if payload == nil {
+				payload = map[string]any{}
+			}
+			payload["request"] = request
+		} else if definition.Steps[0].Report == genericReportKind() {
+			return nil, errStore("report_request_invalid")
+		}
 	}
 	if priority == "" {
 		priority = definition.defaultPriority()
@@ -448,7 +488,13 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 		// Changes received after an organizer's pull need a following pass.
 		// Coalesce them into one queued task instead of consuming the event
 		// against the already-running snapshot.
-		if task.Kind == kind && task.Source == source && (task.Status == taskStatusQueued || task.Status == taskStatusRunning && !definition.hasMaintenance()) {
+		sameRequest := true
+		if definition.Legacy && len(definition.Steps) == 1 && definition.Steps[0].Type == actionStepReport {
+			left, _ := json.Marshal(task.Payload)
+			right, _ := json.Marshal(payload)
+			sameRequest = task.Title == title && string(left) == string(right)
+		}
+		if task.Kind == kind && task.Source == source && sameRequest && (task.Status == taskStatusQueued || task.Status == taskStatusRunning && !definition.hasMaintenance()) {
 			return map[string]any{"task": publicTask(task), "created": false}, nil
 		}
 	}
@@ -730,7 +776,7 @@ func (s *Store) DispatchDue() (map[string]any, error) {
 		return map[string]any{"dispatched": 0, "reason": "kind_unknown"}, nil
 	}
 	snapshot := *task
-	snapshot.Payload = projectTaskPayload(task.Payload)
+	snapshot.Payload = snapshotTaskPayload(*task)
 	task.Status = taskStatusRunning
 	task.Attempts++
 	task.UpdatedAt = nowString()

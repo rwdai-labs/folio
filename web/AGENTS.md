@@ -18,12 +18,29 @@ Inherit `../AGENTS.md`.
   must not show a green connected badge.
   A configured deployment token does not prove live repository access.
 - Daily navigation is dashboard (tasks and usage), assistant chat, actions,
-  run history, owner review, and settings. With no ready repository/
-  authorization/installed runner, default to settings; configured sessions
-  default to the dashboard. Setup state is derived from server data, not a
-  persistent browser completion flag. Keep the GitHub plugin mounts, repository
-  picker, notifications and hooks in settings; optional integrations never block
-  the dashboard. Runner availability is not provider credential verification.
+  run history, owner review, and settings. `/api/state.capabilities` independently
+  describes `assistant`, `report`, `maintenance`, and `context` with `available`,
+  fixed `reason`, and `verification`. Availability means configured readiness,
+  never live provider acceptance. Any usable daily capability defaults to the
+  dashboard; otherwise default to settings. Legacy responses fall back to saved
+  agent/model bindings and repository/runner metadata. Setup state is derived
+  from server data, not a persistent browser completion flag. Keep the GitHub
+  plugin mounts, repository picker, notifications and hooks in settings; optional
+  integrations never block the dashboard. Runner availability is not provider credential verification.
+- Dashboard shortcuts prefill source-aware context chat, create a report from a
+  required owner request (at most 4,000 characters) via `POST /api/tasks`
+  (`kind: report`, `priority`, `title`, `payload.request`), and reuse existing maintenance. Creation means
+  accepted into the queue, not completed; retain pause/window/attempt semantics.
+  Structured `task.created` SSE events carry `task_id`, `title`, and `status`;
+  session history's top-level `tasks` restores durable task cards. Cards open
+  the existing task dialog. Results use authenticated
+  `/api/automation/runs/{runID}/result` (`run_id`, `format`, `text`) and follow-up
+  chat names the stable run ID for `report.get`. Always fetch the result artifact;
+  audit `report_text` is only a labelled fallback preview on result failure.
+  Label `historical_snapshot`/`truncated` results as partial historical evidence.
+  Use session epochs for asynchronous history/results so logout and a later login
+  cannot restore old responses. Render report Markdown as readable safe text;
+  never infer completion from task acceptance.
 - The assistant view renders only server text/tool events as text nodes. Keep
   the SSE reader bounded, show unavailable/error states, and never put raw model
   output or tool arguments into the page as HTML. Settings includes the
@@ -38,8 +55,11 @@ Inherit `../AGENTS.md`.
   keep unknown prices visibly unavailable, and never derive token counts from
   cost. The catalog is an automatic background input, not a settings card;
   render cost errors as translated text, not raw upstream bodies.
-- The dashboard board groups queued/running/failed/finished records into four
-  columns, with a separately labelled human-review snapshot in Needs attention.
+- The dashboard work console keeps a compact status bar (tokens, estimated cost,
+  subscription allowance and selectable 7/30/90-day window) above detailed usage
+  and quota readings. Its board groups queued/running records as current work,
+  failed records as Needs attention, and done/canceled records as recently finished,
+  with a separately labelled human-review snapshot in Needs attention.
   Preserve backend priorities and wait/pause semantics; no drag-to-complete or
   fabricated approvals. Include unmatched recent direct runs. Live task attempts
   correlate through `run.task_id`; a retry's old `task.run_id` is historical until
@@ -49,7 +69,7 @@ Inherit `../AGENTS.md`.
 - Owner review uses `/api/automation.review_run`, the last retained successful
   maintenance snapshot, not the selected historical run or a live approval queue.
   Explain the snapshot timestamp and the external repository review workflow.
-  Recheck runs maintenance (which already pulls) with the dashboard runner/model;
+  Recheck runs maintenance (which already pulls) using the maintenance task binding;
   show token implications, busy/failure states and preserve prior findings on
   failure. Do not invent an approve/dismiss action or promote candidates.
   Fixed GitHub input links require `run.repository.plugin/full_name` and a valid
@@ -75,6 +95,7 @@ Inherit `../AGENTS.md`.
   as text nodes, show `text`/`unlimited` windows without a fake percentage,
   keep source errors and stale cards visible, and never put a quota key or URL
   in the page, storage or logs.
+- Settings model connections use `/api/model-services` GET/POST and `/api/model-services/test` POST. Keep connection IDs/names/base URLs and task bindings (`assistant`, `report`, `maintenance`) generic; task values are `connection/model`, report overrides retain `overrides.report[action_id]`. API keys are write-only and blank preserves a saved secret. A test may report endpoint reachability and model IDs without claiming inference acceptance; local-network HTTP is valid when the host can reach it.
 - Render repository/model/hook/report/diff text through safe text nodes.
   Never interpret it as HTML. Keep transient passwords and one-time hook
   secrets out of persistent browser storage and logs.
@@ -119,6 +140,8 @@ keyboard repository selection, default routes, optional settings, board grouping
 search/priority filters, attempt drawer and keyboard return, pause/resume,
 review snapshots and safe links, recheck success/failure, subscription-quota
 cards and refresh, usage errors/recovery, both languages, mobile overflow,
-state-load failure and session expiry. Set
+state-load failure, capability-specific readiness without repository/Codex,
+source-aware chat prefill, structured task cards, required report requests,
+run-ID report results and follow-up, and session expiry. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed
 provider authorization and external manual review still need runtime acceptance.

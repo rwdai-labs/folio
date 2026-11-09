@@ -32,7 +32,15 @@ Non-goals: multi-tenant access, executing code from the context repository or
 an integration payload, a general-purpose workflow language, and editing or
 deploying Folio's source code from an agent turn.
 
-## 2. Current state
+## 2. Historical starting point
+
+The following list describes the baseline before phases 1–4, not the current
+service. Runtime actions, event routing, console sessions and owner tools now
+exist. The daily-use interface adds independent capability readiness, durable
+report creation, task associations in assistant events/history, and bounded
+run-owned report retrieval through the console and `report.get`. These remain
+subject to the runtime acceptance limits in the status block; configuration
+readiness does not verify model credentials or inference support.
 
 - `data/task-kinds.json` maps one kind to one of two hardcoded actions.
 - `DispatchDue` has two branches: `report`, and everything else (maintenance).
@@ -347,7 +355,17 @@ Rules:
 - The channel reply is the turn result. Proactive messages use `push.send` and
   the delivery ledger.
 
-Two adapters implement the boundary:
+The primary Settings → Model connections form manages reusable connections
+and independent assistant/report/maintenance assignments, with per-report/action
+overrides. An assistant assignment constructs the bounded HTTP adapter for that
+turn; an unassigned assistant uses the legacy configuration below. Assignments
+select exact model/group IDs; account/fallback/cost-preference scheduling stays
+in the gateway. Reports use a separate tool-free HTTP call, while assigned
+maintenance retains the Codex worker and transaction boundary. Runtime actions,
+queue priorities and tool authorization are unchanged. See the
+[deployment contract](../deploy/README.md#model-services-and-task-assignments).
+
+Two adapters implement the main-agent boundary:
 
 - **OpenAI-compatible HTTP (built in).** Settings → Main agent runtime stores
   `/data/agent/config.json` and a write-only key at

@@ -147,8 +147,8 @@ jobs:
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
-            org.opencontainers.image.title=Folio Service
-            org.opencontainers.image.description=Self-hosted maintenance service for private Markdown context repositories
+            org.opencontainers.image.title=Folio
+            org.opencontainers.image.description=Self-hosted personal assistant and task center with private context
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 

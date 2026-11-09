@@ -16,8 +16,10 @@ Inherit `../AGENTS.md`.
   push/remote acceptance remain unverified. Keep its status block and decision
   log accurate, and do not cite unverified behaviour as accepted.
 - `subscription-quota.md` covers subscription allowance/quota management: what
-  to borrow from magpie, the implemented read-only panel, and the unshipped
-  gateway/deferral phases. Keep its status block accurate as phases land.
+  to borrow from magpie, the implemented read-only panel and generic connection/
+  task bindings, and the unshipped quota-deferral/budget phases. Deployment README
+  owns model-service setup; Folio does not reproduce gateway account/cost routing.
+  Keep its status block accurate as phases land.
 - `context-maintenance.md` is the automatic organization contract: complete
   incremental input, structural edit limits, checkpoint/backlog semantics,
   persistent owner-review findings and focused acceptance checks.

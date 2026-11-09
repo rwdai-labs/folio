@@ -18,8 +18,11 @@ func TestTaskKindsDefaultAndCustomFile(t *testing.T) {
 		t.Fatalf("kinds: %v", err)
 	}
 	kinds := listing["kinds"].([]any)
-	if len(kinds) != 1 || kinds[0].(map[string]any)["id"] != "maintenance" {
+	if len(kinds) != 2 || kinds[0].(map[string]any)["id"] != "maintenance" || kinds[1].(map[string]any)["id"] != "report" {
 		t.Fatalf("kinds=%v", listing)
+	}
+	if kinds[1].(map[string]any)["priority"] != "P1" {
+		t.Fatalf("generic report priority=%v", kinds[1])
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0o600 {
@@ -166,7 +169,7 @@ func TestHookActionIsATaskKind(t *testing.T) {
 	}
 	listing, _ := store.ListHooks()
 	actions := listing["actions"].([]any)
-	if len(actions) != 2 || actions[0] != "maintenance" || actions[1] != "triage" {
+	if len(actions) != 3 || actions[0] != "maintenance" || actions[1] != "report" || actions[2] != "triage" {
 		t.Fatalf("actions=%v", actions)
 	}
 }

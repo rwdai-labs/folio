@@ -48,7 +48,12 @@ access.
 The current service includes the Web task and usage dashboard, assistant chat,
 runtime action registry, event hooks and schedules, context maintenance and
 read-only reports, owner review snapshots, optional Bark and native Weixin
-channels, and a GitHub storage plugin. Some future architecture described in
+channels, and a GitHub storage plugin. Daily shortcuts cover context questions,
+background reports and context organization. Assistant and report configuration
+can be used without a connected repository; context-dependent work has separate
+requirements. Task acceptance, execution evidence and run-owned report results
+remain distinct. See [Start using Folio](../README.md#start-using-folio).
+Some future architecture described in
 the design notes remains explicitly planned or unverified; those notes do not
 expand the shipped contract.
 

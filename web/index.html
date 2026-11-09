@@ -106,21 +106,46 @@
             <p id="dashboard-repository" class="hint"></p></div>
             <a class="btn ghost" href="#runs" data-i18n="dashboard.results">View results</a>
           </header>
+          <section class="card" aria-labelledby="daily-heading">
+            <h2 id="daily-heading" data-i18n="daily.title">Your daily assistant</h2>
+            <div class="daily-shortcuts">
+              <div><button id="daily-ask" class="btn primary" type="button" data-i18n="daily.ask">Ask my context</button><p id="daily-chat-ready" class="hint"></p><a href="#model-services-settings" data-i18n="daily.setup_chat">Set up assistant</a></div>
+              <div><button id="daily-report" class="btn primary" type="button" data-i18n="daily.report">Create background report</button><p id="daily-report-ready" class="hint"></p><a href="#model-services-settings" data-i18n="daily.setup_report">Set up reports</a></div>
+              <div><button id="daily-organize" class="btn primary" type="button" data-i18n="daily.organize">Organize context</button><p id="daily-maintenance-ready" class="hint"></p><a href="#repository-section" data-i18n="daily.setup_context">Set up context</a></div>
+            </div>
+            <form id="report-form" class="form" hidden>
+              <label for="report-request" data-i18n="daily.request">What should the report answer?</label>
+              <textarea id="report-request" rows="3" maxlength="4000" required></textarea>
+              <label for="report-priority" data-i18n="board.priority">Priority</label>
+              <select id="report-priority"><option value="P1" data-i18n="daily.immediate">P1 · Next available slot</option><option value="P2" data-i18n="daily.window">P2 · Off-peak window</option></select>
+              <button id="report-submit" class="btn primary" type="submit"><span class="btn-label" data-i18n="daily.submit">Queue report</span></button>
+            </form>
+            <p id="report-message" class="form-message" role="status" aria-live="polite"></p>
+            <div id="report-created"></div>
+          </section>
           <a id="dashboard-review" class="notice review-notice" href="#review" hidden></a>
-        <section id="usage-section" class="card" aria-labelledby="usage-heading">
+        <section id="dashboard-work-card" class="card work-card" aria-labelledby="work-console-heading">
+           <h2 id="work-console-heading" class="sr-only" data-i18n="work.title">Work console</h2>
+           <section id="work-status-bar" class="work-status-bar" aria-label="Current usage and allowance" data-i18n-aria-label="work.status_label">
+             <div class="work-status-item"><span class="work-status-label" data-i18n="usage.total">Tokens</span><strong id="work-status-tokens">—</strong></div>
+             <div class="work-status-item"><span class="work-status-label" data-i18n="usage.cost">Estimated cost</span><strong id="work-status-cost">—</strong></div>
+             <button id="work-allowance-open" class="work-status-item btn ghost" type="button" aria-controls="work-usage-details"><span class="work-status-label" data-i18n="quota.title">Subscription allowance</span><strong id="work-status-allowance">—</strong></button>
+             <label class="usage-window-field work-window"><span data-i18n="usage.window">Time window</span>
+               <select id="usage-window">
+                 <option value="7" data-i18n="usage.days7">Last 7 days</option>
+                 <option value="30" selected data-i18n="usage.days30">Last 30 days</option>
+                 <option value="90" data-i18n="usage.days90">Last 90 days</option>
+               </select>
+             </label>
+           </section>
+         <details id="work-usage-details" class="usage-breakdown"><summary data-i18n="work.usage_details">Usage and subscription details</summary>
+         <section id="usage-section" class="card" aria-labelledby="usage-heading">
           <header class="card-head">
             <div>
               <p class="eyebrow" data-i18n="usage.kicker">Usage</p>
               <h2 id="usage-heading" data-i18n="usage.title">Token usage</h2>
             </div>
-            <label class="usage-window-field">
-              <span data-i18n="usage.window">Window</span>
-              <select id="usage-window">
-                <option value="7" data-i18n="usage.days7">Last 7 days</option>
-                <option value="30" selected data-i18n="usage.days30">Last 30 days</option>
-                <option value="90" data-i18n="usage.days90">Last 90 days</option>
-              </select>
-            </label>
+
           </header>
           <p class="lede" data-i18n="usage.lead">
             Every number below was reported by the runner itself. A run that called no model
@@ -195,6 +220,7 @@
           <p id="quotas-message" class="form-message" role="status" aria-live="polite"></p>
         </section>
 
+        </details>
         <section id="tasks-section" class="card" aria-labelledby="tasks-heading">
           <header class="card-head">
             <div>
@@ -216,7 +242,7 @@
             priority first, and a deferrable priority waits for the off-peak window instead of
             spending tokens when you are working. Pausing never drops work.
           </p>
-          <details id="run-options" class="run-options"><summary id="run-options-summary" data-i18n="board.run_options">Runner and model</summary>
+          <details id="run-options" class="run-options" hidden><summary id="run-options-summary" data-i18n="board.run_options">Runner and model</summary>
           <form id="automation-form" class="form form-inline" novalidate>
             <div class="field">
               <label for="runner-select" data-i18n="automation.runner">Runner</label>
@@ -253,6 +279,7 @@
           <p id="tasks-message" class="form-message" role="status" aria-live="polite"></p>
         </section>
 
+        </section>
         </section>
         <section id="runs-view" class="page-view" aria-labelledby="runs-page-heading" hidden>
           <header class="page-heading"><h1 id="runs-page-heading" tabindex="-1" data-i18n="nav.runs">Run history</h1>
@@ -328,6 +355,8 @@
           <section class="card">
             <div id="chat-log" class="chat-log" aria-live="polite"></div>
             <p id="chat-config-hint" class="hint" hidden><a href="#agent-settings" data-i18n="chat.configure">Configure the main agent runtime in Settings.</a></p>
+            <p id="chat-source-hint" class="hint"></p>
+            <p id="chat-followup" class="notice" hidden></p>
             <p id="chat-message" class="form-message" role="status" aria-live="polite"></p>
             <form id="chat-form" class="chat-form">
               <label class="hint" for="chat-input" data-i18n="chat.input">Message</label>
@@ -364,9 +393,15 @@
           <header class="page-heading"><div><p class="eyebrow" data-i18n="setup.kicker">Get started</p>
             <h1 id="settings-heading" tabindex="-1" data-i18n="nav.settings">Settings</h1>
             <p class="lede" data-i18n="setup.lead">Connect a repository and check your runner. Notifications and event triggers are optional.</p></div></header>
+          <div class="card capability-setup">
+            <h2 data-i18n="daily.title">Your daily assistant</h2>
+            <p><a href="#model-services-settings" data-i18n="daily.setup_chat">Assistant setup</a> · <span id="settings-chat-ready"></span></p>
+            <p><a href="#model-services-settings" data-i18n="daily.setup_report">Report model setup</a> · <span id="settings-report-ready"></span></p>
+            <p><a href="#repository-section" data-i18n="daily.setup_context">Repository and context setup</a> · <span id="settings-maintenance-ready"></span></p>
+          </div>
           <nav class="setup-steps" aria-label="Setup steps" data-i18n-aria-label="setup.steps">
             <a href="#repository-section"><span data-i18n="setup.repository">1 · GitHub and repository</span><strong id="setup-repository-state"></strong></a>
-            <a href="#runner-settings"><span data-i18n="setup.runner">2 · Model runner</span><strong id="setup-runner-state"></strong></a>
+            <a href="#model-services-settings"><span data-i18n="setup.runner">2 · Model runner</span><strong id="setup-runner-state"></strong></a>
             <a href="#channels-section"><span data-i18n="setup.notifications">3 · Notifications</span><strong data-i18n="setup.optional">Optional</strong></a>
             <a href="#hooks-section"><span data-i18n="setup.triggers">4 · Event triggers</span><strong data-i18n="setup.optional">Optional</strong></a>
           </nav>
@@ -414,12 +449,26 @@
             <pre id="repository-output" class="output raw-output"></pre>
           </details>
         </section>
-          <section id="runner-settings" class="card">
+          <section id="runner-settings" class="card" hidden>
             <h2 data-i18n="setup.runner">2 · Model runner</h2>
             <p id="setup-runner-detail" class="lede"></p>
             <p class="hint" data-i18n="setup.runner_hint">Runner installation and provider credentials are configured on the host. Availability does not verify provider login. The dashboard lets you select a runner and model; your first run checks the connection.</p>
           </section>
-        <section id="agent-settings" class="card" aria-labelledby="agent-heading">
+        <section id="model-services-settings" class="card" aria-labelledby="model-services-heading">
+           <header class="card-head"><div><p class="eyebrow" data-i18n="model_services.kicker">Connections</p><h2 id="model-services-heading" data-i18n="model_services.title">Model connections</h2></div><span id="model-services-badge" class="badge" data-state="unknown" data-i18n="model_services.loading">Loading…</span></header>
+           <p class="lede" data-i18n="model_services.lead">Name reusable HTTP connections and assign a model to each Folio task. Keys are write-only; blank keeps a saved key.</p>
+           <form id="model-services-form" class="form" novalidate><div class="field"><label for="model-service-select" data-i18n="model_services.connection_name">Connection</label><select id="model-service-select"></select></div>
+             <details><summary data-i18n="common.details">Technical details</summary><div class="field"><label for="model-service-id" data-i18n="model_services.connection_id">Connection ID</label><input id="model-service-id" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="local-assistant"></div></details>
+             <div class="field"><label for="model-service-name" data-i18n="model_services.connection_name">Name</label><input id="model-service-name" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Local assistant"></div>
+             <div class="field"><label for="model-service-url" data-i18n="model_services.base_url">Base URL</label><input id="model-service-url" type="url" maxlength="2048" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.20:8000/v1"><p class="hint" data-i18n="model_services.base_url_hint">Private HTTP endpoints are supported when the Folio host can reach them on your local network.</p></div>
+             <div class="field"><label for="model-service-key" data-i18n="model_services.api_key">API key</label><input id="model-service-key" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false"><p id="model-service-key-hint" class="hint" data-i18n="model_services.key_hint">Write-only. Blank keeps the saved secret; it is never stored in this browser.</p></div>
+             <fieldset><legend data-i18n="model_services.assignments">Task assignments</legend><div class="field"><label for="model-task-assistant" data-i18n="model_services.assistant">Assistant</label><select id="model-task-assistant-connection" aria-label="Connection"></select><input id="model-task-assistant" type="text" maxlength="200" autocomplete="off" data-i18n-aria-label="model_services.model" data-i18n-placeholder="model_services.model" aria-label="Model or group" placeholder="Model or group"></div><div class="field"><label for="model-task-report" data-i18n="model_services.report">Report</label><select id="model-task-report-connection" aria-label="Connection"></select><input id="model-task-report" type="text" maxlength="200" autocomplete="off" data-i18n-aria-label="model_services.model" data-i18n-placeholder="model_services.model" aria-label="Model or group" placeholder="Model or group"></div><div class="field"><label for="model-task-maintenance" data-i18n="model_services.maintenance">Maintenance</label><select id="model-task-maintenance-connection" aria-label="Connection"></select><input id="model-task-maintenance" type="text" maxlength="200" autocomplete="off" data-i18n-aria-label="model_services.model" data-i18n-placeholder="model_services.model" aria-label="Model or group" placeholder="Model or group"></div></fieldset>
+             <details class="model-overrides"><summary data-i18n="model_services.overrides">Report task overrides</summary><p class="hint" data-i18n="model_services.overrides_hint">Optional per-task bindings. Empty rows are not saved.</p><div id="model-overrides-list"></div><datalist id="model-task-kind-options"></datalist><datalist id="model-service-model-options"></datalist><button id="model-override-add" class="btn ghost small" type="button" data-i18n="model_services.override_add">Add task override</button></details>
+             <div class="actions"><button id="model-services-save" class="btn primary" type="submit"><span class="btn-label" data-i18n="model_services.save">Save connections</span></button><button id="model-services-test" class="btn ghost" type="button" data-i18n="model_services.test">Test connection</button></div>
+           </form><p id="model-services-message" class="form-message" role="status" aria-live="polite"></p><p id="model-services-test-result" class="hint"></p>
+         </section>
+         <details id="advanced-settings" class="advanced-settings"><summary data-i18n="settings.advanced">Advanced legacy runtime</summary>
+         <section id="agent-settings" class="card" aria-labelledby="agent-heading">
           <header class="card-head">
             <div>
               <p class="eyebrow" data-i18n="agent.kicker">Control plane</p>
@@ -487,7 +536,8 @@
           </form>
           <p id="agent-message" class="form-message" role="status" aria-live="polite"></p>
         </section>
-        <section id="channels-section" class="card" aria-labelledby="channels-heading">
+        </details>
+         <section id="channels-section" class="card" aria-labelledby="channels-heading">
           <header class="card-head">
             <div>
               <p class="eyebrow" data-i18n="channels.kicker">Delivery</p>

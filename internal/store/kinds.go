@@ -134,6 +134,14 @@ func (s *Store) loadTaskKinds() (*taskKindsFile, error) {
 	if err := validateTaskKinds(&file); err != nil {
 		return nil, err
 	}
+	// Old private files keep their kinds; the generic report is an additive
+	// built-in fallback and does not rewrite owner configuration.
+	for _, kind := range file.Kinds {
+		if kind.ID == "report" {
+			return &file, nil
+		}
+	}
+	file.Kinds = append(file.Kinds, genericReportKind())
 	return &file, nil
 }
 
@@ -152,10 +160,15 @@ func (s *Store) writeTaskKinds(path string, file *taskKindsFile) error {
 	return nil
 }
 
+func genericReportKind() taskKind {
+	return taskKind{ID: "report", Label: "Report", Action: kindActionReport, Priority: "P1",
+		Prompt: "Complete the owner's report request in the task payload. Use only supplied information and model knowledge; clearly state missing sources and uncertainty. Do not claim to have browsed or executed tools."}
+}
+
 func defaultTaskKinds() *taskKindsFile {
 	return &taskKindsFile{Version: 1, Kinds: []taskKind{{
 		ID: taskKindMaintenance, Label: "Context maintenance", Action: kindActionMaintenance, Priority: "P2",
-	}}}
+	}, genericReportKind()}}
 }
 
 func validateTaskKinds(file *taskKindsFile) error {
@@ -297,7 +310,11 @@ func sanitizePromptPayload(payload map[string]any) map[string]string {
 		}
 		switch typed := value.(type) {
 		case string:
-			clean[key] = notify.ClampRunes(typed, maxTaskPayloadRunes)
+			limit := maxTaskPayloadRunes
+			if key == "request" {
+				limit = maxReportRequestRunes
+			}
+			clean[key] = notify.ClampRunes(typed, limit)
 		case float64:
 			clean[key] = jsonNumber(typed)
 		case bool:

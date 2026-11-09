@@ -23,6 +23,14 @@ entrypoint and optional read-only host-config mounts.
   runs interactively as the service user against the same private volume while
   the poller is stopped. The runtime must include the Weixin/QR dependency
   license notice; no Weixin sidecar is needed.
+- Generic model connections/task bindings live at `/data/runtime/model-services.json`
+  and keys at `/data/secrets/model-services/<id>` (0600), not Compose or images.
+  Settings assigns exact model/group IDs for assistant/report/maintenance and
+  report/action overrides; gateway account/fallback/cost preference stays external.
+  HTTPS and private-IP/loopback HTTP are allowed. Catalog tests do not prove
+  inference support. Unbound uses preserve legacy runner/agent configuration.
+  Maintenance uses a trusted per-call worker connection override and still
+  requires Codex; never mutate or replace imported profiles for a binding.
 - Main-agent configuration is owner data in `/data`, not Compose state. The
   settings form may write `/data/agent/config.json` and
   `/data/secrets/agent-api-key`; headless deployments may set

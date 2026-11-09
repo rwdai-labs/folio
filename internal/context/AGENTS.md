@@ -38,6 +38,12 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   explicitly selected and forward only validated `model_reasoning_effort`
   values from the same Codex configuration; a selected model overrides only
   the model. Provider credential variable names cannot select proxy settings.
+- A service task can override its Codex connection with the trusted per-call
+  `FOLIO_MODEL_BASE_URL`, `FOLIO_MODEL_ID`, and `FOLIO_MODEL_KEY` environment.
+  Validate the whole override before spawning the runner; HTTPS or private-IP/
+  loopback HTTP only, no URL credentials/query/fragment. Forward only the selected
+  key to the worker and never put its value in argv or modify the legacy profile.
+  A partial/invalid override fails closed; absence preserves imported routing.
 - Usage comes from actual runner events. A missing usage record stays missing;
   preserve cached/input/output semantics across the worker and store ledger.
 - Changes to CLI output, packet/worker/report schemas or runner flags require

@@ -28,12 +28,13 @@ const (
 var pipelineTemplateRE = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}`)
 
 type pipelineStepResult struct {
-	Output   string
-	Usage    map[string]any
-	ExitCode int
-	Runner   string
-	Model    string
-	Provider string
+	Output         string
+	Usage          map[string]any
+	ExitCode       int
+	Runner         string
+	Model          string
+	Provider       string
+	RequestedModel string
 }
 
 // runPipeline executes one configured action and records a single run with
@@ -116,6 +117,27 @@ func (s *Store) runPipeline(plan actionPlan, task taskRecord) (map[string]any, e
 		if result.ExitCode != 0 {
 			record["exit_code"] = result.ExitCode
 		}
+		if result.Usage != nil {
+			mergePipelineUsage(usage, result.Usage)
+			run["usage"] = pipelineUsageMap(usage)
+			record["usage"] = result.Usage
+			entry := map[string]any{"usage": result.Usage}
+			if result.RequestedModel != "" {
+				entry["requested_model"] = result.RequestedModel
+				record["requested_model"] = result.RequestedModel
+			}
+			if result.Runner != "" {
+				entry["runner"] = result.Runner
+			}
+			if result.Model != "" {
+				entry["model"] = result.Model
+			}
+			if result.Provider != "" {
+				entry["provider"] = result.Provider
+			}
+			modelUsage = append(modelUsage, entry)
+			run["model_usage"] = modelUsage
+		}
 		if stepErr != nil {
 			record["status"] = "failed"
 			record["reason"] = stepErr.Error()
@@ -137,23 +159,7 @@ func (s *Store) runPipeline(plan actionPlan, task taskRecord) (map[string]any, e
 			outputs[spec.ID] = result.Output
 			lastOutput = result.Output
 		}
-		if result.Usage != nil {
-			mergePipelineUsage(usage, result.Usage)
-			run["usage"] = pipelineUsageMap(usage)
-			record["usage"] = result.Usage
-			entry := map[string]any{"usage": result.Usage}
-			if result.Runner != "" {
-				entry["runner"] = result.Runner
-			}
-			if result.Model != "" {
-				entry["model"] = result.Model
-			}
-			if result.Provider != "" {
-				entry["provider"] = result.Provider
-			}
-			modelUsage = append(modelUsage, entry)
-			run["model_usage"] = modelUsage
-		}
+
 		steps = append(steps, record)
 		run["steps"] = steps
 		_ = s.saveAutomationRun(run)
@@ -170,7 +176,7 @@ func (s *Store) runPipeline(plan actionPlan, task taskRecord) (map[string]any, e
 			return finish("failed", "report_empty")
 		}
 		text = notify.ClampBytes(text, pipelineReportLimit)
-		reportFile := "action-" + task.ID + ".md"
+		reportFile := "run-" + runID + ".md"
 		if err := writePrivateFile(filepath.Join(s.reportsDir, reportFile), []byte(text+"\n")); err != nil {
 			return finish("failed", "report_write_failed")
 		}
@@ -202,11 +208,15 @@ func (s *Store) runPipelineStep(spec *pipelineStep, plan actionPlan, task taskRe
 		if err != nil {
 			return pipelineStepResult{}, err
 		}
-		result, err := s.runPipelineAgent(prompt, spec, limit)
+		binding, err := s.resolveModelBinding("report", plan.ID)
 		if err != nil {
 			return pipelineStepResult{}, err
 		}
-		return result, nil
+		if binding != nil {
+			result, callErr := s.callTaskModel(binding, prompt, spec.TimeoutSeconds, limit, runID+"-"+spec.ID)
+			return pipelineStepResult{Output: result.Text, Usage: result.Usage, Runner: "api", Model: result.Model, Provider: result.Provider, RequestedModel: binding.Model}, callErr
+		}
+		return s.runPipelineAgent(prompt, spec, limit)
 	case "script":
 		return s.runPipelineScript(spec, plan, task, values, runID, limit)
 	case "push":

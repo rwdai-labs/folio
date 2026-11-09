@@ -66,9 +66,11 @@ type AgentToolCall struct {
 }
 
 type AgentResponse struct {
-	Text      string          `json:"text"`
-	ToolCalls []AgentToolCall `json:"tool_calls,omitempty"`
-	Usage     map[string]any  `json:"usage,omitempty"`
+	Text           string          `json:"text"`
+	ToolCalls      []AgentToolCall `json:"tool_calls,omitempty"`
+	Usage          map[string]any  `json:"usage,omitempty"`
+	ServedProvider string          `json:"served_provider,omitempty"`
+	ServedModel    string          `json:"served_model,omitempty"`
 }
 
 type AgentEvent struct {
@@ -79,6 +81,8 @@ type AgentEvent struct {
 	Summary string
 	Code    string
 	RunID   string
+	TaskID  string
+	Title   string
 }
 
 func (e AgentEvent) Map() map[string]any {
@@ -100,6 +104,10 @@ func (e AgentEvent) Map() map[string]any {
 	}
 	if e.RunID != "" {
 		value["run_id"] = e.RunID
+	}
+	if e.TaskID != "" {
+		value["task_id"] = e.TaskID
+		value["title"] = e.Title
 	}
 	return value
 }
@@ -127,7 +135,8 @@ func (s *Store) SetAgentRuntime(runtime AgentRuntime) {
 func (s *Store) AgentAvailable() bool {
 	s.agentMu.Lock()
 	defer s.agentMu.Unlock()
-	return s.agentRuntime != nil && s.agentRuntime.Available()
+	runtime, _, err := s.boundAgentRuntime()
+	return err == nil && runtime != nil && runtime.Available()
 }
 
 // AgentHistory returns bounded persisted messages for one console session.
@@ -152,7 +161,18 @@ func (s *Store) AgentHistory(session string) (map[string]any, error) {
 			"role": message.Role, "name": message.Name, "content": message.Content,
 		})
 	}
-	return map[string]any{"session": session, "messages": messages, "updated_at": file.UpdatedAt}, nil
+	tasks := []any{}
+	s.taskMu.Lock()
+	queue, queueErr := s.loadTasksLocked()
+	if queueErr == nil {
+		for _, task := range queue.Tasks {
+			if task.Source == "agent:"+session {
+				tasks = append(tasks, map[string]any{"task_id": task.ID, "title": publicText(task.Title, maxTaskTitleRunes), "status": task.Status})
+			}
+		}
+	}
+	s.taskMu.Unlock()
+	return map[string]any{"session": session, "messages": messages, "tasks": tasks, "updated_at": file.UpdatedAt}, nil
 }
 
 // AgentTurnMap adapts the typed event stream to the Web boundary.
@@ -187,7 +207,8 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 	}
 	s.agentMu.Lock()
 	defer s.agentMu.Unlock()
-	if s.agentRuntime == nil || !s.agentRuntime.Available() {
+	runtime, runtimeConfig, runtimeErr := s.boundAgentRuntime()
+	if runtimeErr != nil || runtime == nil || !runtime.Available() {
 		return AgentTurnResult{}, errStore("agent_unavailable")
 	}
 	send := func(event AgentEvent) {
@@ -208,6 +229,7 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 	history = append(history, AgentMessage{Role: "user", Content: text})
 	tools := s.agentTools(trust)
 	toolAudit := make([]any, 0, maxAgentToolCalls)
+	modelUsage := make([]any, 0, maxAgentRounds)
 	usage := map[string]int64{}
 	send(AgentEvent{Type: "turn.started"})
 	run := map[string]any{
@@ -223,10 +245,10 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 		"summary":     "",
 		"duration_ms": 0,
 	}
-	if s.agentConfig != nil {
-		run["model"] = s.agentConfig.Model
-		run["provider"] = s.agentConfig.Provider
-		run["agent_kind"] = s.agentConfig.Kind
+	if runtimeConfig != nil {
+		run["model"] = runtimeConfig.Model
+		run["provider"] = runtimeConfig.Provider
+		run["agent_kind"] = runtimeConfig.Kind
 	}
 	finish := func(status, reason, final string) (AgentTurnResult, error) {
 		run["status"] = status
@@ -250,6 +272,9 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 			usageMap = pipelineUsageMap(usage)
 			run["usage"] = usageMap
 		}
+		if len(modelUsage) > 0 {
+			run["model_usage"] = modelUsage
+		}
 		_ = s.saveAutomationRun(run)
 		send(AgentEvent{Type: "turn.finished", Status: status, Code: reason, RunID: runID})
 		return AgentTurnResult{Text: final, RunID: runID, Usage: usageMap}, nil
@@ -258,13 +283,19 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 		if ctx.Err() != nil {
 			return finish("canceled", "agent_canceled", "")
 		}
-		response, callErr := s.agentRuntime.Turn(ctx, AgentRequest{
+		response, callErr := runtime.Turn(ctx, AgentRequest{
 			Session: session,
 			Input:   text,
 			History: history,
 			Tools:   tools,
 			Event:   map[string]any{"type": "owner.message", "trust": trust},
 		})
+		if normalized := reportUsage(response.Usage); normalized != nil {
+			mergePipelineUsage(usage, normalized)
+			if runtimeConfig != nil && runtimeConfig.Kind == "openai" {
+				modelUsage = append(modelUsage, map[string]any{"provider": response.ServedProvider, "model": response.ServedModel, "requested_model": runtimeConfig.Model, "usage": normalized})
+			}
+		}
 		if callErr != nil {
 			code := "agent_runtime_failed"
 			if strings.Contains(callErr.Error(), "timed out") {
@@ -278,9 +309,7 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 				return finish("failed", "agent_output_too_large", "")
 			}
 		}
-		if normalized := reportUsage(response.Usage); normalized != nil {
-			mergePipelineUsage(usage, normalized)
-		}
+
 		if len(response.ToolCalls) == 0 {
 			final := strings.TrimSpace(response.Text)
 			if final == "" {
@@ -317,6 +346,14 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 				status = "failed"
 			} else if ok, _ := result["ok"].(bool); !ok {
 				status = "failed"
+			}
+			if call.Name == "task.create" && status == "completed" {
+				created := mapValue(result, "value")
+				task := mapValue(created, "task")
+				id := responseString(task, "id")
+				if taskIDRE.MatchString(id) {
+					send(AgentEvent{Type: "task.created", TaskID: id, Title: publicText(task["title"], maxTaskTitleRunes), Status: responseString(task, "status")})
+				}
 			}
 			resultText, _ := json.Marshal(result)
 			if len(resultText) > maxAgentToolResult {

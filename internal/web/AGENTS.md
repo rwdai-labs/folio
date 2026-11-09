@@ -33,6 +33,15 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   kind, provider, base URL, model and key presence, never the key or key path.
   Map validation failures to fixed `agent_config_invalid`/`agent_key_invalid`
   codes.
+- The optional `ModelServicesBackend` serves session-protected
+  `GET /api/model-services` and CSRF-protected `POST /api/model-services` and
+  `POST /api/model-services/test`. Store owns reusable connections, write-only
+  keys, default assistant/report/maintenance bindings and per-report/action
+  overrides. Return safe metadata and key presence only. Test checks a bounded
+  model catalog without paid inference; never report it as inference acceptance.
+  Map configuration and upstream failures to fixed `model_services_*` or
+  `model_service_*` codes, never upstream text. Legacy agent/runner APIs remain
+  compatible; the daily UI uses task bindings instead of model overrides.
 - The optional `PricingBackend` serves session-protected `GET /api/pricing` and
   CSRF-protected `POST /api/pricing/refresh`. Status is bounded metadata;
   refresh is rate limited and returns 429 with `Retry-After`, otherwise 200 with
@@ -68,6 +77,27 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   (`source`, `reason`). These are private authenticated audit data. Consumers
   must tolerate their absence on old runs and report runs; findings are not
   approvals and a successful structural edit does not resolve a factual conflict.
+- Session/CSRF-protected `POST /api/tasks` accepts `kind`, optional `title`,
+  `priority`, and bounded flat `payload`. The server assigns `source: manual`;
+  caller source values never select trust. Return `{task, created}` with 201 for
+  new intent or 200 for deduplication. A report's owner `payload.request` permits
+  at most 4000 runes; excess/type errors return 400 `report_request_invalid`.
+- `/api/state.capabilities` separates assistant/report/maintenance/context
+  configuration readiness (`available`, `reason`, `verification: unknown`).
+  Readiness is never an upstream authentication or inference verification.
+  Standalone assistant/report do not require repository connection.
+- Optional `ReportResultBackend` serves session-protected
+  `GET /api/automation/runs/{run_id}/result`: `run_id`, optional `task_id`,
+  `format: markdown`, and bounded `text`. The store owns filename association,
+  regular-file, size, symlink and content checks; failures return fixed 404
+  `report_result_unavailable`. No caller-supplied path is accepted. Historical
+  mutable task-named files use only run audit text, marked
+  `historical_snapshot: true`, `truncated: true`; consumers label it as a partial
+  historical snapshot rather than an exact artifact.
+- Agent SSE passes through response redaction and adds `task.created` events
+  with `task_id`, `title`, `status`. History responses add a `tasks` array of
+  those associations reconstructed from retained durable task records; clients
+  must tolerate empty history/associations. Task acceptance is not completion.
 - Queue-created maintenance and report runs include `task_id` from their first
   running audit record. Consumers can correlate a running task with its current
   attempt before the task's final `run_id` is saved; historical runs may omit it.

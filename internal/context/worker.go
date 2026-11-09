@@ -580,6 +580,9 @@ var providerNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // from the external config. MCP, plugin, experimental token, and user
 // instruction settings are intentionally ignored.
 func CodexConnectionArgs() ([]string, string, error) {
+	if args, providerEnv, configured, err := taskModelConnectionArgs(); configured || err != nil {
+		return args, providerEnv, err
+	}
 	configHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if configHome == "" {
 		home, err := os.UserHomeDir()

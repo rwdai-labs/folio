@@ -213,14 +213,18 @@ func (s *Store) AgentConfig() map[string]any {
 }
 
 func (s *Store) agentConfigLocked() map[string]any {
-	cfg := s.agentConfig
+	runtime, cfg, bindingErr := s.boundAgentRuntime()
 	status := map[string]any{
-		"configured": cfg != nil, "available": s.agentRuntime != nil && s.agentRuntime.Available(),
+		"configured": cfg != nil, "available": bindingErr == nil && runtime != nil && runtime.Available(),
 		"kind": "custom", "provider": "", "base_url": "", "model": "",
 		"timeout_seconds": defaultAgentTimeout, "max_output_tokens": defaultAgentOutput,
 		"command": "", "args": []string{}, "key_present": s.hasAgentKey(),
 	}
-	if s.agentConfigError != "" {
+	if bindingErr != nil {
+		status["error"] = "model_services_invalid"
+	} else if cfg != nil && cfg.source == "model-services" {
+		status["key_present"] = runtime != nil && runtime.Available()
+	} else if s.agentConfigError != "" {
 		status["error"] = s.agentConfigError
 	}
 	if cfg == nil {

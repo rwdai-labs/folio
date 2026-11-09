@@ -88,6 +88,11 @@ type Backend interface {
 	SchedulerTick() (map[string]any, error)
 }
 
+// ReportResultBackend exposes only bounded report content selected by run ID.
+type ReportResultBackend interface {
+	ReportResult(runID string) (map[string]any, error)
+}
+
 // QuotaBackend is the optional subscription-allowance contract. The source is
 // external and optional; a backend without it keeps the core adapter usable.
 type QuotaBackend interface {
@@ -175,6 +180,14 @@ type AgentBackend interface {
 type AgentConfigBackend interface {
 	AgentConfig() map[string]any
 	PutAgentConfig(payload map[string]any) (map[string]any, error)
+}
+
+// ModelServicesBackend manages reusable model connections and task bindings.
+// Keys are write-only; listing and testing return bounded public metadata.
+type ModelServicesBackend interface {
+	ModelServices() (map[string]any, error)
+	PutModelServices(payload map[string]any) (map[string]any, error)
+	TestModelService(payload map[string]any) (map[string]any, error)
 }
 
 // PricingBackend is the optional model-price catalog. The source is external
@@ -1086,7 +1099,7 @@ func (s *Server) agentStream(w http.ResponseWriter, r *http.Request, backend Age
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	write := func(event map[string]any) {
-		raw, err := json.Marshal(event)
+		raw, err := json.Marshal(safeMap(event))
 		if err != nil {
 			return
 		}
@@ -1131,7 +1144,7 @@ func taskErrorCode(err error) string {
 		return "task_invalid"
 	}
 	switch err.Error() {
-	case "task_not_found", "task_busy", "task_canceled":
+	case "task_not_found", "task_busy", "task_canceled", "report_request_invalid":
 		return err.Error()
 	default:
 		return "task_invalid"
@@ -1628,6 +1641,21 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		runID := strings.TrimPrefix(path, "/api/automation/runs/")
+		if strings.HasSuffix(runID, "/result") {
+			runID = strings.TrimSuffix(runID, "/result")
+			backend, supported := s.store.(ReportResultBackend)
+			if !supported || !safeReportID.MatchString(runID) {
+				s.writeError(w, http.StatusNotFound, "report_result_unavailable")
+				return
+			}
+			value, err := backend.ReportResult(runID)
+			if err != nil {
+				s.writeError(w, http.StatusNotFound, "report_result_unavailable")
+				return
+			}
+			s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+			return
+		}
 		if !safeReportID.MatchString(runID) {
 			s.writeError(w, http.StatusNotFound, "not_found")
 			return
@@ -1678,6 +1706,14 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 		state = safeMap(state)
 		state["service"] = map[string]any{"scheduler_enabled": s.opts.SchedulerEnabled, "scheduler_interval_seconds": int(s.opts.SchedulerInterval / time.Second), "scheduler_next_at": s.schedulerNextAt(), "dispatcher_interval_seconds": int(s.opts.DispatcherInterval / time.Second), "jobs": s.jobs.summary()}
 		s.writeJSON(w, http.StatusOK, state, nil)
+	case "/api/model-services":
+		backend, ok := s.store.(ModelServicesBackend)
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "model_services_unavailable")
+			return
+		}
+		value, err := backend.ModelServices()
+		s.writeModelServicesResult(w, value, err)
 	case "/api/agent/config":
 		backend, ok := s.agentConfigBackend()
 		if !ok {
@@ -1876,6 +1912,44 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/tasks":
+		backend, ok := s.taskBackend()
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "task_unavailable")
+			return
+		}
+		kind, kindOK := payload["kind"].(string)
+		title, titleOK := payload["title"].(string)
+		priority, priorityOK := payload["priority"].(string)
+		data, dataOK := payload["payload"].(map[string]any)
+		if !kindOK || strings.TrimSpace(kind) == "" || payload["title"] != nil && !titleOK || payload["priority"] != nil && !priorityOK || payload["payload"] != nil && !dataOK {
+			s.writeError(w, http.StatusBadRequest, "task_invalid")
+			return
+		}
+		value, err := backend.CreateTask(kind, "manual", title, priority, data)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, taskErrorCode(err))
+			return
+		}
+		status := http.StatusOK
+		if created, _ := value["created"].(bool); created {
+			status = http.StatusCreated
+		}
+		s.writeJSON(w, status, safeMap(value), nil)
+	case "/api/model-services", "/api/model-services/test":
+		backend, ok := s.store.(ModelServicesBackend)
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "model_services_unavailable")
+			return
+		}
+		var value map[string]any
+		var callErr error
+		if r.URL.Path == "/api/model-services/test" {
+			value, callErr = backend.TestModelService(payload)
+		} else {
+			value, callErr = backend.PutModelServices(payload)
+		}
+		s.writeModelServicesResult(w, value, callErr)
 	case "/api/agent/config":
 		backend, ok := s.agentConfigBackend()
 		if !ok {

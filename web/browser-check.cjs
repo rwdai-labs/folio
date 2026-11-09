@@ -66,7 +66,11 @@ async function main() {
       let authenticated = false, authorized = false, connected = false, paused = false;
       let usageError = false, stateError = false, expired = false, jobFailed = false;
       let run = maintenance(), reviewRun = null, runRequests = [], jobRequests = 0, quotaRefreshes = 0;
-      let tasks = [];
+      let tasks = [], capabilities = null, chatRequests = [], reportRequests = [], resultError = false, runnerInstalled = true, historyTasks = [], historicalResult = false;
+      let holdHistory = false, holdResult = false, releaseHistory, releaseResult;
+      const reportID = "synthetic-report-run";
+      let serviceConfig = { version: 1, connections: { local: { name: "Synthetic local", base_url: "http://127.0.0.1:8000/v1", key_present: true } }, defaults: {}, overrides: {} };
+      const serviceRequests = [];
       let weixinLogin = null, weixinConfigured = false, weixinRunning = false, weixinOwner = '';
       let weixinDiagnostics = null;
       const taskListing = () => ({ tasks, paused, counts: {}, policy: { defer: { P2: true }, in_window: false, window_start: '00:30', window_end: '07:30' } });
@@ -83,9 +87,9 @@ async function main() {
         else if (endpoint === '/api/logout') { authenticated = false; }
         else if (endpoint === '/api/state') {
           if (stateError) { status = 503; body = { error: 'service_unavailable' }; }
-          else body = { storage: { plugin: 'github', auth: authorized ? 'gh' : 'missing' },
+          else body = { capabilities: capabilities === false ? undefined : capabilities || { assistant: { available: false, reason: "agent_unavailable" }, report: { available: connected && authorized, reason: "model_unavailable" }, maintenance: { available: connected && authorized, reason: "repository_unavailable" } }, storage: { plugin: 'github', auth: authorized ? 'gh' : 'missing' },
             repository: { connected, full_name: 'example/context', branch: 'main', head: sha },
-            model: { available: true }, runners: { codex: { available: true }, dsh: { available: false } }, service: {} };
+            model: { available: true }, runners: { codex: { available: runnerInstalled }, dsh: { available: false } }, service: {} };
         }
         else if (endpoint === '/api/plugins') body = { plugins: [{ id: 'github' }] };
         else if (endpoint.endsWith('/auth/start')) body = { status: 'pending', user_code: 'SYNTHETIC', interval: 30 };
@@ -95,6 +99,13 @@ async function main() {
         else if (endpoint === '/api/repository/connect') { connected = true; body = { connected: true }; }
         else if (endpoint === '/api/task-kinds') body = { kinds: [{ id: 'maintenance', label: 'Maintenance' }] };
         else if (endpoint === '/api/automation') body = { latest: reviewRun ? run : null, review_run: reviewRun, runs: reviewRun ? [run] : [], models: { codex: [] } };
+        else if (endpoint.endsWith('/result')) {
+          const oldSession = holdResult;
+          if (holdResult) { holdResult = false; await new Promise(resolve => { releaseResult = resolve; }); }
+          if (oldSession) body = { run_id: reportID, format: 'markdown', text: 'OLD SESSION REPORT CONTENT' };
+          else if (resultError) { status = 404; body = { error: 'report_result_unavailable' }; }
+          else body = { run_id: reportID, format: 'markdown', text: '# Synthetic report\n<img src=x onerror=alert(1)>\nA readable result.', historical_snapshot: historicalResult, truncated: historicalResult };
+        }
         else if (endpoint.startsWith('/api/automation/runs/')) body = run;
         else if (endpoint === '/api/automation/run') { runRequests.push(req.postDataJSON()); body = { job_id: 'maintenance' }; }
         else if (endpoint.startsWith('/api/jobs/')) {
@@ -117,9 +128,37 @@ async function main() {
           if (action === 'run') { task.not_before = ''; task.due = true; }
           body = taskListing();
         }
-        else if (endpoint === '/api/tasks') body = taskListing();
+        else if (endpoint === '/api/tasks') {
+          if (req.method() === 'POST') {
+            const payload = req.postDataJSON(); reportRequests.push(payload);
+            const task = { id: 'report-task', ...payload, status: 'queued', enabled: true, source: 'manual' };
+            tasks.push(task); body = task;
+          } else body = taskListing();
+        }
+        else if (endpoint.startsWith('/api/agent/sessions/')) {
+          if (holdHistory) { holdHistory = false; await new Promise(resolve => { releaseHistory = resolve; }); body = { messages: [{ role: 'assistant', content: 'OLD SESSION CHAT CONTENT' }], tasks: [] }; }
+          else body = { messages: [], tasks: historyTasks };
+        }
+        else if (endpoint === '/api/agent/turns') {
+          chatRequests.push(req.postDataJSON());
+          const task = { id: 'assistant-task', title: '<img src=x onerror=alert(1)>', kind: 'report', status: 'queued', enabled: true, priority: 'P2', source: 'agent:console-main' };
+          tasks.push(task); historyTasks = [{ task_id: task.id, title: task.title, status: task.status }];
+          return route.fulfill({ contentType: 'text/event-stream', body: [
+            { type: 'turn.started' }, { type: 'task.created', task_id: task.id, title: task.title, status: task.status },
+            { type: 'text.delta', text: 'Synthetic task accepted.' }, { type: 'turn.finished', status: 'completed' }
+          ].map(event => 'data: ' + JSON.stringify(event) + '\n\n').join('') });
+        }
         else if (endpoint === '/api/channels') body = { bark: { configured: false }, deliveries: [] };
         else if (endpoint === '/api/hooks') body = { hooks: [] };
+        else if (endpoint === '/api/model-services') {
+          if (req.method() === 'POST') {
+            const payload = req.postDataJSON(); serviceRequests.push(payload);
+            Object.values(payload.connections).forEach(connection => assert.equal('key_present' in connection, false));
+            serviceConfig = { ...payload, connections: Object.fromEntries(Object.entries(payload.connections).map(([id, entry]) => [id, { name: entry.name, base_url: entry.base_url, key_present: Boolean(entry.api_key) || Boolean(serviceConfig.connections[id] && serviceConfig.connections[id].key_present) }])) };
+          }
+          body = serviceConfig;
+        }
+        else if (endpoint === '/api/model-services/test') body = { reachable: true, models: [{ id: 'synthetic-model' }], checked_at: new Date().toISOString(), inference_tested: false };
         else if (endpoint === '/api/agent/config') {
           if (req.method() === 'POST') body = { configured: true, available: true, kind: 'openai', provider: 'deepseek', base_url: 'https://api.deepseek.com/v1', model: 'synthetic-model', key_present: true, timeout_seconds: 120 };
           else body = { configured: false, available: false, kind: 'command', command: '/data/agent/runtime', key_present: false, timeout_seconds: 120 };
@@ -170,8 +209,38 @@ async function main() {
       await page.locator('#gh-connect').click();
       await page.waitForFunction(() => !document.getElementById('run-now-button').disabled);
       assert.equal(await page.locator('#settings-view').isVisible(), true, 'setup must not disappear after connecting');
+      await page.locator('#model-services-save').click();
+      await page.waitForFunction(() => document.getElementById('model-services-save').disabled === false);
+      assert.deepEqual(serviceRequests.at(-1).defaults.assistant, {});
+      await page.locator('#model-service-select').selectOption('');
+      await page.locator('#model-services-form > details').first().evaluate(node => { node.open = true; });
+      await page.locator('#model-service-id').fill('second');
+      await page.locator('#model-service-name').fill('Second synthetic');
+      await page.locator('#model-service-url').fill('http://127.0.0.1:8001/v1');
+      await page.locator('#model-service-key').fill('synthetic-secret');
+      await page.locator('#model-services-save').click();
+      await page.waitForFunction(() => document.getElementById('model-services-save').disabled === false);
+      assert.equal(await page.locator('#model-service-key').inputValue(), '');
+      await page.locator('#model-service-select').selectOption('second');
+      await page.locator('#model-task-assistant-connection').selectOption('second');
+      await page.locator('#model-task-assistant').fill('group/assistant');
+      await page.locator('.model-overrides > summary').click();
+      await page.locator('#model-override-add').click();
+      await page.locator('.model-override-id').fill('synthetic-report');
+      await page.locator('.model-override-connection').selectOption('local');
+      await page.locator('.model-override-model').fill('group/report');
+      await page.locator('#model-services-save').click();
+      await page.waitForFunction(() => document.getElementById('model-services-save').disabled === false);
+      assert.deepEqual(serviceRequests.at(-1).defaults.assistant, { connection: 'second', model: 'group/assistant' });
+      assert.deepEqual(serviceRequests.at(-1).overrides.report['synthetic-report'], { connection: 'local', model: 'group/report' });
+      assert.equal('api_key' in serviceRequests.at(-1).connections.second, false);
+      await page.locator('#model-services-test').click();
+      await page.waitForFunction(() => document.getElementById('model-services-test').disabled === false);
+      assert.match(await page.locator('#model-services-test-result').textContent(), language === 'zh' ? /未测试推理/ : /not tested/);
+      if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-model-settings-${language}.png`, fullPage: true });
       // The main-agent runtime is configurable from Settings; saving a key
       // switches the assistant from unavailable to available without a restart.
+      await page.locator('#advanced-settings > summary').click();
       await visible(page, '#agent-settings');
       assert.equal(await page.locator('#agent-badge').getAttribute('data-state'), 'disabled');
       await page.locator('#agent-kind').selectOption('openai');
@@ -212,6 +281,7 @@ async function main() {
       await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'enabled');
       await page.locator('#setup-finish').click();
       await visible(page, '#dashboard-view');
+      await page.locator('#work-usage-details > summary').click();
       await visible(page, '#quotas-cards .quota-card');
       assert.equal(await page.locator('.quota-card-provider').textContent(), 'Synthetic Provider');
       assert.equal(await page.locator('.quota-window .quota-bar').count(), 1);
@@ -229,6 +299,85 @@ async function main() {
       // A restored configured session starts on the daily dashboard.
       await page.goto(origin);
       await visible(page, '#dashboard-view');
+      // Assistant readiness is independent of repository authorization and Codex.
+      const savedConnected = connected, savedAuthorized = authorized;
+      connected = false; authorized = false; runnerInstalled = false;
+      capabilities = { assistant: { available: true, reason: 'configured', verification: 'unknown' }, report: { available: true, reason: 'configured' }, maintenance: { available: false, reason: 'repository_unavailable' }, context: { available: false, reason: 'repository_unavailable' } };
+      await page.goto(origin);
+      await visible(page, '#dashboard-view');
+      assert.equal(await page.locator('#daily-ask').isDisabled(), false);
+      assert.equal(await page.locator('#daily-organize').isDisabled(), true);
+      await page.locator('#daily-ask').click();
+      await visible(page, '#chat-view');
+      await page.waitForFunction(() => document.activeElement.id === 'chat-input');
+      assert.match(await page.locator('#chat-input').inputValue(), language === 'zh' ? /来源/ : /source paths/);
+      assert.match(await page.locator('#chat-source-hint').textContent(), language === 'zh' ? /尚未连接/ : /No context/);
+      await page.locator('#chat-input').fill('Create a synthetic report task');
+      await page.locator('#chat-send').click();
+      await visible(page, '#chat-log .chat-task-card');
+      assert.equal(await page.locator('#chat-log img').count(), 0);
+      await page.locator('[data-view="dashboard"]').click();
+      await page.locator('[data-view="chat"]').click();
+      await visible(page, '#chat-log .chat-task-card');
+      assert.equal(await page.locator('#chat-log img').count(), 0, 'restored task history stays safe');
+      await page.locator('#chat-log [data-chat-task]').click();
+      await visible(page, '#task-detail');
+      await page.keyboard.press('Escape');
+      await page.locator('[data-view="dashboard"]').click();
+      await page.locator('#daily-report').click();
+      await page.locator('#report-submit').click();
+      assert.equal(reportRequests.length, 0, 'report requires an explicit owner request');
+      await page.locator('#report-request').fill('   ');
+      await page.locator('#report-submit').click();
+      assert.equal(reportRequests.length, 0, 'whitespace does not count as a request');
+      assert.equal(await page.locator('#report-message').getAttribute('data-error'), 'true');
+      assert.equal(await page.locator('#report-request').getAttribute('maxlength'), '4000');
+      await page.locator('#report-request').fill('Summarize synthetic context <script>alert(1)</script>');
+      await page.locator('#report-priority').selectOption('P2');
+      await page.locator('#report-submit').click();
+      await visible(page, '#report-created [data-chat-task]');
+      assert.equal(reportRequests[0].payload.request, 'Summarize synthetic context <script>alert(1)</script>');
+      assert.equal(reportRequests[0].priority, 'P2');
+      assert.match(await page.locator('#report-message').textContent(), language === 'zh' ? /尚未完成/ : /not completed/);
+      assert.match(await page.locator('#report-created .hint').textContent(), language === 'zh' ? /低峰|等待/ : /off-peak|waiting/);
+      assert.equal(await page.locator('#report-created script').count(), 0);
+      run = { run_id: reportID, status: 'reported', task_id: 'report-task', runner: 'synthetic', summary: 'Report complete', report_file: 'run-' + reportID + '.md', report_text: 'SHORT PREVIEW ONLY' };
+      tasks.find(task => task.id === 'report-task').status = 'done';
+      tasks.find(task => task.id === 'report-task').run_id = reportID;
+      await page.evaluate(() => window.folio.refreshTasks());
+      resultError = true;
+      await page.locator('#report-created [data-chat-task]').click();
+      await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes(document.documentElement.lang.startsWith('zh') ? '报告正文暂不可用' : 'Report result unavailable'));
+      await page.locator('#task-detail-close').click();
+      resultError = false;
+      await page.locator('#report-created [data-chat-task]').click();
+      await visible(page, '#task-detail-body .run-report');
+      await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes('A readable result'));
+      assert.equal(await page.locator('#task-detail-body img').count(), 0);
+      await page.locator('#task-detail-body [data-report-followup]').click();
+      await visible(page, '#chat-view');
+      assert.match(await page.locator('#chat-input').inputValue(), /synthetic-report-run/);
+      assert.match(await page.locator('#chat-input').inputValue(), /report.get/);
+      historicalResult = true;
+      run.run_id = reportID + '-historical';
+      tasks.find(task => task.id === 'report-task').run_id = run.run_id;
+      await page.locator('[data-view="dashboard"]').click();
+      await page.evaluate(() => window.folio.refreshTasks());
+      await page.locator('#report-created [data-chat-task]').click();
+      await visible(page, '#task-detail-body .report-provenance');
+      assert.match(await page.locator('#task-detail-body .report-provenance').textContent(), language === 'zh' ? /部分历史快照/ : /Partial historical snapshot/);
+      await page.locator('#task-detail-close').click();
+      historicalResult = false;
+      // Older servers omit capability metadata; saved assistant bindings still
+      // lead into the daily dashboard without repository or an installed runner.
+      capabilities = false;
+      await page.goto(origin);
+      await visible(page, '#dashboard-view');
+      assert.equal(await page.locator('#daily-ask').isDisabled(), false);
+      assert.equal(await page.locator('#daily-organize').isDisabled(), true);
+      connected = savedConnected; authorized = savedAuthorized; capabilities = null; tasks = []; runnerInstalled = true; historyTasks = [];
+      await page.goto(origin);
+      await visible(page, '#dashboard-view');
       // The board uses real stages, explains waiting, filters, and opens an attempt drawer.
       reviewRun = { ...maintenance(), needs_review: [] };
       run = { ...maintenance(), needs_review: [], task_id: 't-000000000002', status: 'running', stage: 'organize' };
@@ -242,8 +391,8 @@ async function main() {
       await page.locator('#review-refresh').click();
       await page.locator('[data-view="dashboard"]').click();
       await page.waitForFunction(() => document.querySelectorAll('.task-board .task-item').length === 4);
-      for (const column of ['queued', 'running', 'attention', 'done']) assert.equal(await page.locator(`[data-column="${column}"] .task-item`).count(), 1);
-      assert.match(await page.locator('[data-column="queued"] .task-progress').textContent(), language === 'zh' ? /空闲时段/ : /off-peak/);
+      for (const column of ['current', 'attention', 'recent']) assert.equal(await page.locator(`[data-column="${column}"] .task-item`).count(), column === 'current' ? 2 : 1);
+      assert.match(await page.locator('[data-column="current"] .task-progress').first().textContent(), language === 'zh' ? /空闲时段/ : /off-peak/);
       await page.locator('#task-search').fill('Failed');
       assert.equal(await page.locator('.task-board .task-item').count(), 1);
       await page.locator('#task-search').fill('');
@@ -311,17 +460,15 @@ async function main() {
       assert.equal(await page.locator('#review-list .review-finding').count(), 1);
       jobFailed = false;
       await page.locator('[data-view="dashboard"]').click();
-      await page.locator('#run-options-summary').click();
-      await page.locator('#model-input').fill('synthetic-selected-model');
-      await page.locator('#run-options-summary').click();
       await page.locator('[data-view="review"]').click();
       await page.locator('#review-recheck').click();
       await page.waitForFunction(() => document.getElementById('review-recheck').disabled === false && document.querySelectorAll('#review-list .review-finding').length === 0);
-      assert.deepEqual(runRequests.at(-1), { runner: 'codex', model: 'synthetic-selected-model' });
+      assert.deepEqual(runRequests.at(-1), {});
       assert.equal(jobRequests, 2);
       // Error and recovery states, both translations, and mobile overflow.
       usageError = true;
       await page.locator('[data-view="dashboard"]').click();
+      await page.locator('#work-usage-details').evaluate(node => { node.open = true; });
       await page.locator('#usage-window').selectOption('7');
       await visible(page, '#usage-message[data-error="true"]');
       usageError = false;
@@ -331,14 +478,49 @@ async function main() {
       await page.locator(`[data-lang="${otherLanguage}"]`).click();
       assert.equal(await page.locator('[data-view="settings"]').textContent(), otherLanguage === 'zh' ? '设置' : 'Settings');
       await page.locator(`[data-lang="${language}"]`).click();
+      await page.locator("#work-usage-details").evaluate(node => { node.open = false; });
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-dashboard-${language}.png`, fullPage: true });
       await page.setViewportSize({ width: 390, height: 844 });
-      for (const view of ['dashboard', 'settings', 'review', 'runs']) {
+      for (const view of ['dashboard', 'chat', 'settings', 'review', 'runs']) {
         await page.locator(`[data-view="${view}"]`).click();
         await visible(page, `#${view}-view`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile overflow in ${view}`);
         if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-${view}-mobile-${language}.png`, fullPage: true });
       }
+      // Delayed history and report responses from a logged-out session must not
+      // restore private data after a fresh login (even for the same owner).
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      run = { run_id: reportID, status: 'reported', task_id: 'report-task', report_file: 'run-' + reportID + '.md', report_text: 'SHORT PREVIEW ONLY' };
+      tasks = [{ id: 'report-task', title: 'Delayed synthetic report', kind: 'report', status: 'done', run_id: reportID }];
+      holdHistory = true;
+      await page.locator('[data-view="chat"]').click();
+      await page.locator('[data-view="dashboard"]').click();
+      await page.evaluate(() => window.folio.refreshTasks());
+      holdResult = true;
+      await page.locator('[data-task-inspect="report-task"]').click();
+      await visible(page, '#task-detail-body .run-report');
+      assert.equal(typeof releaseHistory, 'function');
+      assert.equal(typeof releaseResult, 'function');
+      await page.locator('#task-detail-close').click();
+      await page.locator('#logout-button').click();
+      await visible(page, '#login-view');
+      await page.locator('#login-username').fill('owner');
+      await page.locator('#password').fill('synthetic-password');
+      await page.locator('#login-submit').click();
+      await visible(page, '#dashboard-view');
+      const oldHistoryResponse = page.waitForResponse(response => response.url().includes('/api/agent/sessions/console-main'));
+      const oldReportResponse = page.waitForResponse(response => response.url().endsWith('/result'));
+      releaseHistory(); releaseResult();
+      await Promise.all([oldHistoryResponse, oldReportResponse]);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+      await page.locator('[data-view="chat"]').click();
+      await visible(page, '#chat-view');
+      assert.equal(await page.locator('#chat-log').textContent().then(text => text.includes('OLD SESSION')), false);
+      await page.locator('[data-view="dashboard"]').click();
+      await page.locator('[data-task-inspect="report-task"]').click();
+      await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes('A readable result'));
+      assert.equal(await page.locator('#task-detail-body').textContent().then(text => text.includes('OLD SESSION')), false);
+      await page.locator('#task-detail-close').click();
       // Missing authorization preserves the selected repository and guides setup.
       authorized = false;
       await page.goto(origin);
@@ -348,16 +530,21 @@ async function main() {
       // State-load failure still has navigation and a visible retryable error.
       stateError = true;
       await page.goto(origin);
-      await visible(page, '#settings-view');
+      await visible(page, '#app-view');
       await visible(page, '#app-message[data-error="true"]');
       stateError = false;
       // Expiry hides private app data and returns to Folio sign-in.
+      await page.locator("#chat-input").evaluate(input => { input.value = "Synthetic private draft"; });
       expired = true;
       await page.locator('#review-refresh').evaluate(button => button.click());
       await visible(page, '#login-view');
       assert.equal(await page.locator('#app-view').isVisible(), false);
+      assert.equal(await page.locator('#chat-input').inputValue(), '');
+      assert.equal(await page.locator('#chat-log').textContent(), '');
+      assert.equal(await page.locator('#report-request').inputValue(), '');
+      assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, status board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, context prefill, task events/history, required report request/result/retry/follow-up, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

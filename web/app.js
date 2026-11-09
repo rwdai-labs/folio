@@ -35,6 +35,8 @@
   const state = {
     csrf: "",
     authenticated: false,
+    sessionEpoch: 0,
+    chatLoadGeneration: 0,
     loggingIn: false,
     loggingOut: false,
     connecting: false,
@@ -67,6 +69,8 @@
     tasksBusy: "",
     agent: null,
     agentBusy: false,
+    modelServices: null,
+    modelServicesBusy: false,
     modelValues: { codex: "", dsh: "" },
     modelMenuOpen: false,
     modelActive: -1,
@@ -80,6 +84,11 @@
     setupRequired: false,
     chat: [],
     chatBusy: false,
+    chatController: null,
+    reportBusy: false,
+    reportRunId: "",
+    reportResults: new Map(),
+    chatTasks: [],
     actions: [],
     actionVersions: [],
     actionSelected: "",
@@ -98,7 +107,9 @@
     weixin: { element: "weixin-message", data: null },
     tasks: { element: "tasks-message", data: null },
     chat: { element: "chat-message", data: null },
+    report: { element: "report-message", data: null },
     agent: { element: "agent-message", data: null },
+    "model-services": { element: "model-services-message", data: null },
     actions: { element: "actions-message", data: null },
     review: { element: "review-message", data: null },
     app: { element: "app-message", data: null },
@@ -109,6 +120,7 @@
   /* ------------------------------------------------------------- transport */
 
   async function api(path, options = {}) {
+    const epoch = state.sessionEpoch;
     const method = options.method || "GET";
     const headers = { Accept: "application/json" };
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
@@ -139,7 +151,7 @@
       payload = null;
     }
 
-    if (response.status === 401 && path !== "/api/session" && path !== "/api/login") {
+    if (response.status === 401 && epoch === state.sessionEpoch && path !== "/api/session" && path !== "/api/login") {
       expireSession();
     }
     if (!response.ok) {
@@ -190,6 +202,16 @@
         return "hooks.failed";
       case "usage_unavailable":
         return "usage.failed";
+      case "model_services_invalid":
+      case "model_services_unavailable":
+      case "model_service_key_invalid":
+      case "model_service_key_unavailable":
+      case "model_service_rate_limited":
+      case "model_service_unavailable":
+      case "model_service_unauthorized":
+      case "model_service_unreachable":
+      case "model_service_invalid_response":
+        return "model_services.failed";
       case "quota_invalid":
         return "quota.error.quota_invalid";
       case "quota_key_unavailable":
@@ -318,6 +340,7 @@
   function finishAuthentication(result) {
     state.csrf = typeof result.csrf_token === "string" ? result.csrf_token : "";
     state.authenticated = true;
+    state.sessionEpoch += 1;
     state.setupRequired = false;
     showApp();
     return Promise.resolve();
@@ -389,6 +412,8 @@
     state.automationError = false;
     state.modelCatalogSignature = "";
     state.modelValues = { codex: "", dsh: "" };
+    if ($("model-service-key")) $("model-service-key").value = "";
+    state.modelServices = null;
     state.hooks = [];
     showHookSecret("", "");
     if ($("model-input")) $("model-input").value = "";
@@ -513,6 +538,8 @@
       state.automationError = false;
       state.modelCatalogSignature = "";
       state.modelValues = { codex: "", dsh: "" };
+      if ($("model-service-key")) $("model-service-key").value = "";
+      state.modelServices = null;
       state.hooks = [];
       showHookSecret("", "");
       if ($("model-input")) $("model-input").value = "";
@@ -773,10 +800,9 @@
     const button = $("run-now-button");
     setBusy(button, "automation.running");
     setMessage("automation", null);
-    const runner = activeRunner();
-    const body = { runner };
-    const model = $("model-input").value.trim();
-    if (model) body.model = model;
+    // Daily runs inherit the task binding configured in Settings. Legacy runner/model
+    // fields remain available only when Advanced legacy runtime is explicitly opened.
+    const body = {};
     try {
       const accepted = await api("/api/automation/run", { method: "POST", body });
       const job = await pollJob(accepted.job_id, {
@@ -855,15 +881,34 @@
   const views = ["dashboard", "chat", "actions", "runs", "review", "settings"];
   const sectionViews = {
     "repository-section": "settings", "runner-settings": "settings",
-    "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings",
+    "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings", "model-services-settings": "settings",
     "automation-section": "runs", "tasks-section": "dashboard", "usage-section": "dashboard", "run-options": "dashboard",
   };
 
-  function setupReady() {
+  function capability(name) {
     const data = state.lastState || {};
-    return Boolean(data.repository && data.repository.connected && data.storage &&
-      data.storage.auth && data.storage.auth !== "missing" &&
-      (runnerAvailable("codex", data) || runnerAvailable("dsh", data)));
+    const caps = data.capabilities || {};
+    const supplied = caps[name === "chat" ? "assistant" : name] || (name === "maintenance" ? caps.context_maintenance : null);
+    if (supplied && typeof supplied.available === "boolean") return { ...supplied, ready: supplied.available, missing: supplied.reason ? [supplied.reason] : [] };
+    if (supplied && typeof supplied.ready === "boolean") return supplied;
+    const repository = Boolean(data.repository && data.repository.connected && data.storage && data.storage.auth && data.storage.auth !== "missing");
+    const defaults = state.modelServices && state.modelServices.defaults || {};
+    const binding = defaults[name === "chat" ? "assistant" : name];
+    const model = Boolean(binding && binding.connection && binding.model);
+    const runner = runnerAvailable("codex", data) || runnerAvailable("dsh", data);
+    return { ready: name === "chat" ? Boolean(state.agent && state.agent.available) || model : name === "report" ? model || runner : repository && (model || runner), missing: [] };
+  }
+
+  function setupReady() {
+    return ["chat", "report", "maintenance"].some((name) => capability(name).ready);
+  }
+
+  function capabilityText(name) {
+    const cap = capability(name);
+    if (cap.ready) return t("daily.ready");
+    const missing = Array.isArray(cap.missing) ? cap.missing : [];
+    const reasons = missing.map((item) => typeof item === "string" ? item : item && item.code).filter(Boolean);
+    return reasons.length ? reasons.map((code) => translateKnown(`daily.missing.${code}`, t(`daily.missing.${name}`))).join(" · ") : t(`daily.missing.${name}`);
   }
 
   function navigate(focus = false) {
@@ -900,17 +945,21 @@
     $("setup-repository-state").textContent = t(!authorized ? "setup.authorize" : repository.connected ? "setup.selected" : "setup.select");
     $("setup-runner-state").textContent = t(available ? "setup.installed" : "setup.required");
     $("setup-runner-detail").textContent = t(available ? "setup.runner_available" : "setup.runner_missing");
-    $("setup-alert").hidden = setupReady() || state.view === "settings";
+    $("setup-alert").hidden = capability("maintenance").ready || !["dashboard", "review", "runs"].includes(state.view);
     $("dashboard-repository").textContent = repository.connected ? repository.full_name || "" : t("repo.none");
-    const unavailable = !setupReady();
+    ["chat", "report", "maintenance"].forEach((name) => { $("daily-" + name + "-ready").textContent = capabilityText(name); $("settings-" + name + "-ready").textContent = capabilityText(name); });
+    $("daily-organize").disabled = !capability("maintenance").ready || state.automationRunning;
+    $("daily-report").disabled = !capability("report").ready;
+    $("report-submit").disabled = !capability("report").ready || state.reportBusy;
+    $("daily-ask").disabled = !capability("chat").ready;
+    updateChatAgentHint();
+    const unavailable = !capability("maintenance").ready;
     if (!state.automationRunning) $("run-now-button").disabled = unavailable;
     if (!state.rechecking) $("review-recheck").disabled = unavailable;
     $("run-options-summary").textContent = t("board.run_options", {
       runner: activeRunner(), model: $("model-input").value.trim() || t("automation.model_default"),
     });
-    $("review-runner").textContent = t("review.runner", {
-      runner: activeRunner(), model: $("model-input").value.trim() || t("automation.model_default"),
-    });
+    $("review-runner").textContent = t("review.binding");
   }
 
   // Only fixed GitHub URLs; model-provided paths never become arbitrary links.
@@ -1002,7 +1051,7 @@
   }
 
   async function recheckReview() {
-    if (state.rechecking || state.automationRunning || !setupReady()) return;
+    if (state.rechecking || state.automationRunning || !capability("maintenance").ready) return;
     state.rechecking = true;
     const button = $("review-recheck");
     setBusy(button, "automation.running");
@@ -1067,6 +1116,7 @@
   }
 
   async function refreshAll() {
+    const initialNavigation = !state.viewInitialized;
     try {
       await refreshState();
       setMessage("app", null);
@@ -1082,9 +1132,10 @@
     refreshQuotas();
     await Promise.allSettled([
       loadTaskKinds(), refreshAutomation({ silent: true }), refreshChannels(),
-      refreshHooks(), refreshUsage(), refreshTasks(), loadWeixin(), loadAgentConfig(),
+      refreshHooks(), refreshUsage(), refreshTasks(), loadWeixin(), loadAgentConfig(), loadModelServices(),
     ]);
     renderHooks({ hooks: state.hooks });
+    if (initialNavigation && !window.location.hash && state.authenticated) navigate();
   }
 
   /* -------------------------------------------------------------- channels */
@@ -1305,6 +1356,7 @@
       select.appendChild(option);
     });
     if (state.kinds.some((kind) => kind.id === current)) select.value = current;
+    if (state.modelServices) renderModelOverrides(state.modelServices.overrides);
   }
 
   function hookButton(hook, action, labelKey) {
@@ -1656,6 +1708,8 @@
     setUsageText("usage-input", data ? usageNumber(totals.input_tokens) : "—");
     setUsageText("usage-output", data ? usageNumber(totals.output_tokens) : "—");
     setUsageText("usage-runs", data ? usageNumber(totals.runs) : "—");
+    setUsageText("work-status-tokens", data ? usageNumber(totals.total_tokens) : "—");
+    setUsageText("work-status-cost", data && Number(totals.priced_runs) > 0 ? costText({ estimated: true, total_cost: totals.estimated_cost_usd, partial: Number(totals.unpriced_cost_runs) > 0 }) : "—");
     setUsageText("usage-cost", data && Number(totals.priced_runs) > 0
       ? costText({ estimated: true, total_cost: totals.estimated_cost_usd, partial: Number(totals.unpriced_cost_runs) > 0 })
       : "—");
@@ -1947,6 +2001,8 @@
   function renderQuotas(data) {
     if (data !== undefined) state.quotas = data || null;
     const source = state.quotas;
+    const allowance = $("work-status-allowance");
+    if (allowance) allowance.textContent = source && Array.isArray(source.cards) && source.cards.length ? (source.stale || source.cards.some((card) => card.stale || card.error) ? t("quota.stale_badge") : String(source.cards.length)) : "—";
     const note = $("quotas-note");
     const container = $("quotas-cards");
     if (container) {
@@ -2490,14 +2546,14 @@
     const columnScroll = new Map(Array.from(board.querySelectorAll(".board-column")).map((column) => [column.dataset.column, column.querySelector(".board-column-body").scrollTop]));
     board.replaceChildren();
     const groups = [
-      ["queued", filtered.filter((task) => task.status === "queued")],
-      ["running", filtered.filter((task) => task.status === "running")],
+      ["current", filtered.filter((task) => ["queued", "running"].includes(task.status))],
       ["attention", filtered.filter((task) => task.status === "failed").sort((a, b) => String(b.finished_at || b.updated_at || b.created_at || "").localeCompare(String(a.finished_at || a.updated_at || a.created_at || "")))],
-      ["done", filtered.filter((task) => ["done", "canceled"].includes(task.status)).sort((a, b) => String(b.finished_at || b.updated_at || b.created_at || "").localeCompare(String(a.finished_at || a.updated_at || a.created_at || "")))],
+      ["recent", filtered.filter((task) => ["done", "canceled"].includes(task.status)).sort((a, b) => String(b.finished_at || b.updated_at || b.created_at || "").localeCompare(String(a.finished_at || a.updated_at || a.created_at || "")))],
     ];
     const reviewRun = state.automation && state.automation.review_run;
     const findings = Array.isArray(reviewRun && reviewRun.needs_review) ? reviewRun.needs_review : [];
     const showReview = findings.length && !priority && (!query || findings.some((issue) => [issue.source, issue.reason, t("nav.review")].some((value) => typeof value === "string" && value.toLocaleLowerCase().includes(query))));
+    groups.sort((a, b) => ["attention", "current", "recent"].indexOf(a[0]) - ["attention", "current", "recent"].indexOf(b[0]));
     groups.forEach(([key, tasks]) => {
       const column = document.createElement("section");
       column.className = "board-column";
@@ -2925,6 +2981,7 @@
   function renderAgentConfig(data, { fill = false } = {}) {
     state.agent = data || null;
     renderAgentText(state.agent);
+    renderSetup();
     if (!fill || !data) return;
     if ($("agent-kind")) $("agent-kind").value = data.kind === "command" ? "command" : "openai";
     if ($("agent-provider")) $("agent-provider").value = AGENT_PRESETS[data.provider] ? data.provider : "";
@@ -2940,7 +2997,8 @@
   function updateChatAgentHint() {
     const hint = $("chat-config-hint");
     if (!hint) return;
-    hint.hidden = Boolean(state.agent && state.agent.available);
+    hint.hidden = capability("chat").ready;
+    $("chat-source-hint").textContent = t(state.lastState && (state.lastState.capabilities && state.lastState.capabilities.context ? state.lastState.capabilities.context.available : state.lastState.repository && state.lastState.repository.connected) ? "daily.source_connected" : "daily.source_absent");
   }
 
   async function loadAgentConfig(options = {}) {
@@ -2980,6 +3038,7 @@
       const data = await api("/api/agent/config", { method: "POST", body });
       renderAgentConfig(data, { fill: true });
       setMessage("agent", "agent.saved");
+      await refreshState();
       if (state.agent && !state.agent.available && state.agent.error) {
         setMessage("agent", "agent.saved_unavailable", { error: true });
       }
@@ -2993,7 +3052,151 @@
     }
   }
 
+  /* ------------------------------------------------------- model services */
+
+  function modelServiceParts(value) {
+    const text = typeof value === "string" ? value.trim() : "";
+    const slash = text.indexOf("/");
+    return slash > 0 ? { connection: text.slice(0, slash), model: text.slice(slash + 1) } : { connection: text, model: "" };
+  }
+
+  function fillConnectionSelect(select, value = "") {
+    select.replaceChildren(); const blank = document.createElement("option"); blank.value = ""; blank.textContent = t("model_services.empty"); select.appendChild(blank);
+    Object.entries(state.modelServices && state.modelServices.connections || {}).forEach(([id, entry]) => { const option = document.createElement("option"); option.value = id; option.textContent = entry.name || id; select.appendChild(option); }); select.value = value;
+  }
+  function selectModelConnection(id) {
+    const entry = state.modelServices && state.modelServices.connections && state.modelServices.connections[id] || {};
+    $("model-service-id").value = id || "service-" + Math.random().toString(36).slice(2, 12); $("model-service-name").value = entry.name || ""; $("model-service-url").value = entry.base_url || ""; $("model-service-key").value = "";
+    $("model-service-key-hint").textContent = t(entry.key_present ? "model_services.key_saved" : "model_services.key_hint");
+  }
+
+  function renderModelOverrides(overrides = {}) {
+    const list = $("model-overrides-list"); if (!list) return;
+    const datalist = $("model-task-kind-options"); if (datalist) { datalist.replaceChildren(); const kinds = Array.isArray(state.kinds) ? state.kinds : []; kinds.forEach((kind) => { const option = document.createElement("option"); option.value = kind.id || ""; option.label = kind.label || kind.id || ""; datalist.appendChild(option); }); }
+    list.replaceChildren();
+    Object.entries(overrides && overrides.report && typeof overrides.report === "object" ? overrides.report : {}).forEach(([actionId, value]) => {
+      const row = modelOverrideRow(actionId, value || {}); list.appendChild(row);
+    });
+  }
+
+  function modelOverrideRow(actionId = "", value = {}) {
+    const row = document.createElement("div"); row.className = "model-override-row";
+    const id = document.createElement("input"); id.className = "model-override-id"; id.type = "text"; id.maxLength = 200; id.placeholder = t("model_services.override_id"); id.setAttribute("list", "model-task-kind-options"); id.value = actionId;
+    const connection = document.createElement("select"); connection.className = "model-override-connection"; connection.setAttribute("aria-label", t("model_services.connection_name")); fillConnectionSelect(connection, value.connection || "");
+    const model = document.createElement("input"); model.className = "model-override-model"; model.type = "text"; model.maxLength = 200; model.placeholder = "model or group/name"; model.setAttribute("aria-label", t("agent.model")); model.value = value.model || "";
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "btn ghost small model-override-remove"; remove.textContent = t("model_services.override_remove");
+    row.append(id, connection, model, remove); return row;
+  }
+
+  function addModelOverride() { const list = $("model-overrides-list"); if (list) { const row = modelOverrideRow(); list.appendChild(row); row.querySelector(".model-override-id").focus(); } }
+
+  function renderModelServices(data, { fill = false } = {}) {
+    state.modelServices = data || null;
+    renderSetup();
+    const connections = data && data.connections && typeof data.connections === "object" ? data.connections : {};
+    const ids = Object.keys(connections);
+    const badge = $("model-services-badge");
+    if (badge) { badge.textContent = ids.length ? t("model_services.configured") : t("model_services.empty"); badge.dataset.state = ids.length ? "enabled" : "unknown"; }
+    if (!fill) return;
+    fillConnectionSelect($("model-service-select")); renderModelOverrides(data && data.overrides);
+    const first = ids[0] || "";
+    const connection = first ? connections[first] || {} : {};
+    const defaults = data && data.defaults && typeof data.defaults === "object" ? data.defaults : {};
+    const set = (id, value) => { const node = $(id); if (node) node.value = value || ""; };
+    $("model-service-select").value = first; selectModelConnection(first);
+    ["assistant", "report", "maintenance"].forEach((task) => { const assignment = defaults[task] || {}; fillConnectionSelect($("model-task-" + task + "-connection"), assignment.connection || ""); set(`model-task-${task}`, assignment.model || ""); });
+    const hint = $("model-service-key-hint"); if (hint) hint.textContent = connection.key_present ? t("model_services.key_saved") : t("model_services.key_hint");
+  }
+
+  async function loadModelServices(options = {}) {
+    try { renderModelServices(await api("/api/model-services"), { fill: options.fill === true || !state.modelServices }); }
+    catch (error) { if (error.code !== "authentication_required") setMessage("model-services", "model_services.failed", { error: true }); }
+  }
+
+  function modelServiceBody() {
+    const id = $("model-service-id").value.trim();
+    const existing = state.modelServices && state.modelServices.connections && typeof state.modelServices.connections === "object" ? state.modelServices.connections : {};
+    const connection = { name: $("model-service-name").value.trim(), base_url: $("model-service-url").value.trim() };
+    const key = $("model-service-key").value.trim(); if (key) connection.api_key = key;
+    const defaults = {};
+    ["assistant", "report", "maintenance"].forEach((task) => { const connection = $("model-task-" + task + "-connection").value; const model = $("model-task-" + task).value.trim(); defaults[task] = connection && model ? { connection, model } : {}; });
+    const overrides = { report: {} };
+    document.querySelectorAll("#model-overrides-list .model-override-row").forEach((row) => {
+      const actionId = row.querySelector(".model-override-id").value.trim(); const connectionId = row.querySelector(".model-override-connection").value.trim(); const model = row.querySelector(".model-override-model").value.trim();
+      if (actionId && connectionId && model) overrides.report[actionId] = { connection: connectionId, model };
+    });
+    const connections = Object.fromEntries(Object.entries(existing).map(([id, entry]) => [id, { name: entry.name || "", base_url: entry.base_url || "" }])); if (id) connections[id] = connection; return { version: 1, connections, defaults, overrides };
+  }
+
+  async function saveModelServices(event) {
+    if (event) event.preventDefault(); if (state.modelServicesBusy) return;
+    state.modelServicesBusy = true; const button = $("model-services-save"); setBusy(button, "model_services.saving"); setMessage("model-services", null);
+    try { renderModelServices(await api("/api/model-services", { method: "POST", body: modelServiceBody() }), { fill: true }); setMessage("model-services", "model_services.saved"); await loadAgentConfig(); await refreshState(); }
+    catch (error) { setMessage("model-services", errorKey(error, "model_services.failed"), { error: true }); }
+    finally { state.modelServicesBusy = false; clearBusy(button); }
+  }
+
+  function renderServiceModelOptions(data, connection) {
+    const list = $("model-service-model-options"); list.replaceChildren();
+    (Array.isArray(data.models) ? data.models : []).slice(0, 500).forEach((entry) => { if (!entry || typeof entry.id !== "string") return; const option = document.createElement("option"); option.value = entry.id; list.appendChild(option); });
+    ["assistant", "report", "maintenance"].forEach((task) => { const input = $("model-task-" + task); if ($("model-task-" + task + "-connection").value === connection) input.setAttribute("list", "model-service-model-options"); else input.removeAttribute("list"); });
+  }
+
+  async function testModelService() {
+    if (state.modelServicesBusy) return; state.modelServicesBusy = true; const button = $("model-services-test"); setBusy(button, "model_services.testing");
+    const result = $("model-services-test-result"); if (result) result.textContent = t("model_services.testing");
+    try { const body = { connection: $("model-service-id").value.trim(), base_url: $("model-service-url").value.trim() }; const key = $("model-service-key").value.trim(); if (key) body.api_key = key; const data = await api("/api/model-services/test", { method: "POST", body }); renderServiceModelOptions(data, body.connection); if (result) result.textContent = data.reachable ? t(data.inference_tested ? "model_services.test_inference" : "model_services.test_reachable", { count: Array.isArray(data.models) ? data.models.length : 0 }) : t("model_services.test_unreachable"); }
+    catch (error) { if (result) result.textContent = t(errorKey(error, "model_services.test_failed")); }
+    finally { state.modelServicesBusy = false; clearBusy(button); }
+  }
+
   /* ------------------------------------------------------------- assistant */
+
+  function prefillChat(text, runId = "") {
+    state.reportRunId = runId;
+    $("chat-input").value = text;
+    $("chat-followup").hidden = !runId;
+    $("chat-followup").textContent = runId ? t("daily.followup_id", { id: runId }) : "";
+    window.location.hash = "chat";
+    $("chat-input").focus();
+    window.setTimeout(() => { if (state.authenticated && state.view === "chat") $("chat-input").focus(); }, 0);
+  }
+
+  function chatTaskCard(task) {
+    const card = document.createElement("div");
+    card.className = "chat-task-card notice";
+    const title = document.createElement("strong"); title.textContent = task.title || t("daily.report");
+    const status = document.createElement("p"); status.textContent = t(task.status === "done" ? "daily.completed" : task.status === "failed" ? "tasks.status.failed" : "daily.accepted");
+    const waiting = task.status === "queued" && typeof task.enabled === "boolean" ? taskWaitText(task, state.tasks) : "";
+    const detail = document.createElement("p"); detail.className = "hint";
+    detail.textContent = task.status === "failed" ? reasonText(task.reason) : waiting;
+    const button = document.createElement("button"); button.type = "button"; button.className = "btn ghost small";
+    button.dataset.chatTask = task.id || task.task_id || ""; button.textContent = t("daily.inspect");
+    card.append(title, status, detail, button); return card;
+  }
+
+  async function createDailyReport(event) {
+    event.preventDefault();
+    const request = $("report-request").value.trim();
+    if (state.reportBusy || !capability("report").ready) return;
+    if (!request || Array.from(request).length > 4000) {
+      setMessage("report", request ? "daily.request_limit" : "daily.request_required", { error: true });
+      $("report-request").focus(); return;
+    }
+    const epoch = state.sessionEpoch;
+    state.reportBusy = true; setBusy($("report-submit"), "daily.submitting");
+    setMessage("report", null);
+    try {
+      const result = await api("/api/tasks", { method: "POST", body: { kind: "report", title: request.slice(0, 160), priority: $("report-priority").value, payload: { request } } });
+      if (!state.authenticated || epoch !== state.sessionEpoch) return;
+      const task = result.task || result;
+      $("report-created").replaceChildren(chatTaskCard(task));
+      $("report-request").value = "";
+      setMessage("report", "daily.accepted");
+      await refreshTasks();
+    } catch (error) { if (state.authenticated) setMessage("report", errorKey(error, "daily.failed"), { error: true }); }
+    finally { state.reportBusy = false; clearBusy($("report-submit")); renderSetup(); }
+  }
 
   function renderChat() {
     const log = $("chat-log");
@@ -3004,7 +3207,7 @@
       empty.className = "hint";
       empty.textContent = t("chat.empty");
       log.appendChild(empty);
-      return;
+      if (!state.chatTasks.length) return;
     }
     state.chat.forEach((message) => {
       if (!message || (message.role !== "user" && message.role !== "assistant")) return;
@@ -3018,7 +3221,9 @@
       bubble.appendChild(label);
       bubble.appendChild(body);
       log.appendChild(bubble);
+      (Array.isArray(message.tasks) ? message.tasks : []).forEach((task) => log.appendChild(chatTaskCard(task)));
     });
+    state.chatTasks.forEach((task) => log.appendChild(chatTaskCard(task)));
     log.scrollTop = log.scrollHeight;
   }
 
@@ -3039,12 +3244,17 @@
   }
 
   async function loadChat() {
+    const epoch = state.sessionEpoch;
+    const generation = ++state.chatLoadGeneration;
     updateChatAgentHint();
     try {
       const data = await api("/api/agent/sessions/console-main");
+      if (!state.authenticated || epoch !== state.sessionEpoch || generation !== state.chatLoadGeneration) return;
       state.chat = Array.isArray(data.messages) ? data.messages : [];
+      state.chatTasks = Array.isArray(data.tasks) ? data.tasks : [];
       renderChat();
     } catch (error) {
+      if (!state.authenticated || epoch !== state.sessionEpoch || generation !== state.chatLoadGeneration) return;
       if (error.code === "agent_unavailable") {
         setMessage("chat", "chat.unavailable", { error: true });
       } else if (error.code !== "authentication_required") {
@@ -3055,7 +3265,14 @@
 
   function handleChatEvent(event) {
     if (!event || typeof event.type !== "string") return;
-    if (event.type === "turn.started") {
+    if (event.type === "task.created") {
+      const task = event.task || event;
+      let message = state.chat[state.chat.length - 1];
+      if (!message || message.role !== "assistant") { message = { role: "assistant", content: "" }; state.chat.push(message); }
+      if (!Array.isArray(message.tasks)) message.tasks = [];
+      message.tasks.push(task);
+      renderChat(); refreshTasks();
+    } else if (event.type === "turn.started") {
       setMessage("chat", "chat.thinking");
     } else if (event.type === "text.delta") {
       if (typeof event.text === "string") appendChatMessage("assistant", event.text);
@@ -3076,14 +3293,21 @@
     const input = $("chat-input");
     const text = input ? input.value.trim() : "";
     if (!text) return;
+    state.chatLoadGeneration += 1;
     appendChatMessage("user", text);
     if (input) input.value = "";
     state.chatBusy = true;
     const button = $("chat-send");
     setBusy(button, "chat.sending");
     setMessage("chat", "chat.thinking");
+    const epoch = state.sessionEpoch;
+    const controller = new AbortController();
+    state.chatController = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 180000);
     try {
       const response = await fetch("/api/agent/turns", {
+        signal: controller.signal,
+        credentials: "same-origin",
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -3092,6 +3316,8 @@
         },
         body: JSON.stringify({ session: "console-main", text }),
       });
+      if (!state.authenticated || epoch !== state.sessionEpoch) return;
+      if (response.status === 401) { expireSession(); return; }
       if (!response.ok) {
         let code = "chat.failed";
         try {
@@ -3113,7 +3339,9 @@
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (!state.authenticated || epoch !== state.sessionEpoch) { await reader.cancel(); break; }
         buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > 262144) { await reader.cancel(); throw new Error("stream_limit"); }
         let boundary = buffer.indexOf("\n\n");
         while (boundary >= 0) {
           const chunk = buffer.slice(0, boundary);
@@ -3130,8 +3358,10 @@
         }
       }
     } catch (error) {
-      if (error.name !== "AbortError") setMessage("chat", "chat.failed", { error: true });
+      if (state.authenticated && epoch === state.sessionEpoch) setMessage("chat", "chat.failed", { error: true });
     } finally {
+      window.clearTimeout(timeout);
+      state.chatController = null;
       state.chatBusy = false;
       clearBusy(button);
     }
@@ -3271,15 +3501,34 @@
       outcome.textContent = t("run.outcome", { count: Array.isArray(run.edits) ? run.edits.length : 0 });
       container.appendChild(outcome);
     }
-    if (typeof run.report_text === "string" && run.report_text.trim()) {
-      const heading = document.createElement("h3");
-      heading.className = "run-report-heading";
-      heading.textContent = t("automation.report_title");
-      const report = document.createElement("pre");
-      report.className = "run-report";
-      report.textContent = run.report_text;
-      container.appendChild(heading);
-      container.appendChild(report);
+    if (run.status === "reported" || typeof run.report_text === "string" || run.report_file || run.report_path) {
+      const heading = document.createElement("h3"); heading.textContent = t("automation.report_title");
+      const report = document.createElement("pre"); report.className = "run-report"; report.dataset.reportRun = run.run_id;
+      const saved = state.reportResults.get(run.run_id);
+      report.textContent = saved && !saved.loading ? saved.text || t("daily.result_empty") : t("automation.loading");
+      const provenance = document.createElement("p"); provenance.className = "hint report-provenance";
+      provenance.dataset.reportNotice = run.run_id;
+      provenance.hidden = !(saved && (saved.historical_snapshot || saved.truncated));
+      provenance.textContent = t("daily.result_partial");
+      container.append(heading, provenance, report);
+      const follow = document.createElement("button"); follow.type = "button"; follow.className = "btn ghost";
+      follow.textContent = t("daily.followup"); follow.dataset.reportFollowup = run.run_id;
+      container.appendChild(follow);
+      if (!saved) {
+        const epoch = state.sessionEpoch;
+        state.reportResults.set(run.run_id, { loading: true });
+        api(`/api/automation/runs/${encodeURIComponent(run.run_id)}/result`).then((result) => {
+          if (!state.authenticated || epoch !== state.sessionEpoch) return;
+          const text = typeof result.text === "string" ? result.text : "";
+          state.reportResults.set(run.run_id, { text, historical_snapshot: result.historical_snapshot === true, truncated: result.truncated === true });
+          document.querySelectorAll("[data-report-notice]").forEach((node) => { if (node.dataset.reportNotice === run.run_id) node.hidden = !(result.historical_snapshot || result.truncated); });
+          document.querySelectorAll("[data-report-run]").forEach((node) => { if (node.dataset.reportRun === run.run_id) node.textContent = text || t("daily.result_empty"); });
+        }).catch(() => {
+          if (!state.authenticated || epoch !== state.sessionEpoch) return;
+          state.reportResults.delete(run.run_id);
+          document.querySelectorAll("[data-report-run]").forEach((node) => { if (node.dataset.reportRun === run.run_id) node.textContent = t("daily.result_failed") + (typeof run.report_text === "string" && run.report_text ? "\n\n" + t("daily.preview") + "\n" + run.report_text : ""); });
+        });
+      }
     }
     if (Array.isArray(run.needs_review) && run.needs_review.length) {
       const heading = document.createElement("h3");
@@ -3662,6 +3911,12 @@
     if (button) taskAction(button);
   });
 
+  on("model-service-select", "change", (event) => selectModelConnection(event.target.value));
+  on("model-services-form", "submit", saveModelServices);
+  on("model-services-test", "click", testModelService);
+  on("model-override-add", "click", addModelOverride);
+  on("model-overrides-list", "click", (event) => { if (event.target.closest(".model-override-remove")) event.target.closest(".model-override-row").remove(); });
+  on("work-allowance-open", "click", () => { $("work-usage-details").open = true; $("work-usage-details").querySelector("summary").focus(); });
   on("usage-window", "change", (event) => {
     const next = Number.parseInt(event.target.value, 10);
     state.usageWindow = Number.isFinite(next) && next > 0 ? next : 30;
@@ -3671,7 +3926,25 @@
   on("quotas-refresh", "click", () => refreshQuotas({ refresh: true }));
 
   on("hook-form", "submit", createHook);
+  ["latest-run", "task-detail-body"].forEach((id) => on(id, "click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button[data-report-followup]") : null;
+    if (!button) return;
+    if ($("task-detail").open) $("task-detail").close();
+    prefillChat(t("daily.followup_prompt", { id: button.dataset.reportFollowup }), button.dataset.reportFollowup);
+  }));
   on("chat-form", "submit", sendChat);
+  on("daily-ask", "click", () => prefillChat(t("daily.ask_prompt")));
+  on("daily-report", "click", () => { $("report-form").hidden = false; $("report-request").focus(); });
+  on("daily-organize", "click", runAutomationNow);
+  on("report-form", "submit", createDailyReport);
+  const inspectChatTask = async (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button[data-chat-task]") : null;
+    if (!button || !button.dataset.chatTask) return;
+    await refreshTasks();
+    if (state.authenticated) inspectTask(button.dataset.chatTask);
+  };
+  on("chat-log", "click", inspectChatTask);
+  on("report-created", "click", inspectChatTask);
   on("agent-kind", "change", agentKindChanged);
   on("agent-provider", "change", agentProviderChanged);
   on("agent-form", "submit", saveAgentConfig);
@@ -3737,6 +4010,7 @@
       if (inspectedRun) renderLatestRun(inspectedRun, "task-detail-body");
       else inspectTask(inspectedTask);
     }
+    renderChat();
     rerenderBusyLabels();
   });
 
@@ -3748,6 +4022,7 @@
       state.setupRequired = Boolean(session.setup_required);
       if (session.authenticated) {
         state.authenticated = true;
+    state.sessionEpoch += 1;
         state.csrf = typeof session.csrf_token === "string" ? session.csrf_token : "";
         showApp();
         await refreshAll();
@@ -3775,6 +4050,16 @@
   function leaveSession() {
     if ($("task-detail").open) $("task-detail").close();
     state.viewInitialized = false;
+    state.sessionEpoch += 1;
+    state.chatLoadGeneration += 1;
+    if (state.chatController) state.chatController.abort();
+    state.chat = []; state.chatTasks = []; state.chatBusy = false; state.reportRunId = ""; state.reportResults.clear();
+    $("chat-log").replaceChildren(); $("chat-input").value = "";
+    $("report-request").value = ""; $("report-created").replaceChildren();
+    $("report-form").hidden = true; $("chat-followup").hidden = true;
+    $("task-detail-body").replaceChildren();
+    $("runs-list").replaceChildren(); $("tasks-list").replaceChildren();
+    ["chat", "report"].forEach((region) => setMessage(region, null));
     state.lastState = null;
     state.selectedRun = null;
     state.selectedRunId = "";
