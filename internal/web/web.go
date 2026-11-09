@@ -166,6 +166,24 @@ type ActionBackend interface {
 	RestoreActionVersion(name string) error
 }
 
+// ActionCatalogBackend is the decoupled, non-executable action surface.
+type ActionCatalogBackend interface {
+	ActionCatalog() (map[string]any, error)
+}
+
+// ActionRunBackend creates durable task intent from a catalog entry.
+type ActionRunBackend interface {
+	RunAction(id string, fields map[string]any) (map[string]any, error)
+}
+
+// FeedbackBackend owns the private feedback inbox and its sufficiency gate.
+type FeedbackBackend interface {
+	CreateFeedbackRequest(values map[string]any, image []byte) (map[string]any, error)
+	ListFeedback() (map[string]any, error)
+	FeedbackDetail(id string) (map[string]any, error)
+	FeedbackImage(id string) ([]byte, error)
+}
+
 // AgentBackend is the optional main-agent contract. The store owns the turn
 // loop, tools, sessions and audit; Web only streams bounded events.
 type AgentBackend interface {
@@ -1114,7 +1132,47 @@ func (s *Server) agentStream(w http.ResponseWriter, r *http.Request, backend Age
 // actionAdmin handles the session-authenticated action verbs that carry an id.
 func (s *Server) actionAdmin(w http.ResponseWriter, r *http.Request, payload map[string]any) bool {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/actions/"), "/")
-	if len(parts) != 2 || parts[1] != "disable" {
+	if len(parts) != 2 {
+		return false
+	}
+	if parts[1] == "run" {
+		backend, ok := s.store.(ActionRunBackend)
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+			return true
+		}
+		fields := map[string]any{}
+		if raw, exists := payload["fields"]; exists {
+			values, typed := raw.(map[string]any)
+			if !typed {
+				s.writeError(w, http.StatusBadRequest, "action_input_invalid")
+				return true
+			}
+			fields = values
+		}
+		value, err := backend.RunAction(parts[0], fields)
+		if err != nil {
+			status := http.StatusBadRequest
+			code := "action_input_invalid"
+			switch err.Error() {
+			case "action_unknown":
+				status, code = http.StatusNotFound, "action_unknown"
+			case "action_disabled":
+				status, code = http.StatusConflict, "action_disabled"
+			case "actions are invalid", "actions are unavailable":
+				status, code = http.StatusInternalServerError, "action_unavailable"
+			}
+			s.writeError(w, status, code)
+			return true
+		}
+		status := http.StatusOK
+		if created, _ := value["created"].(bool); created {
+			status = http.StatusCreated
+		}
+		s.writeJSON(w, status, safeMap(value), nil)
+		return true
+	}
+	if parts[1] != "disable" {
 		return false
 	}
 	backend, ok := s.actionBackend()
@@ -1687,6 +1745,15 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, item.public(), nil)
 		return
 	}
+	if path == "/api/feedback" || strings.HasPrefix(path, "/api/feedback/") {
+		_, _, ok := s.session(r)
+		if !ok {
+			s.writeError(w, http.StatusUnauthorized, "authentication_required")
+			return
+		}
+		s.feedbackGET(w, r)
+		return
+	}
 	if !strings.HasPrefix(path, "/api/") {
 		s.writeError(w, http.StatusNotFound, "not_found")
 		return
@@ -1791,6 +1858,18 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
+	case "/api/catalog":
+		backend, ok := s.store.(ActionCatalogBackend)
+		if !ok {
+			s.writeError(w, http.StatusServiceUnavailable, "action_unavailable")
+			return
+		}
+		value, err := backend.ActionCatalog()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "action_unavailable")
+			return
+		}
+		s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 	case "/api/actions":
 		backend, ok := s.actionBackend()
 		if !ok {
@@ -1877,6 +1956,15 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		s.hookEvent(w, r)
 		return
 	}
+	// Multipart feedback must pass session/CSRF checks before body parsing, and
+	// must not be mistaken for the JSON request contract used by other routes.
+	if r.URL.Path == "/api/feedback" && isMultipartRequest(r) {
+		if _, _, ok := s.requireSession(w, r); !ok {
+			return
+		}
+		s.createFeedback(w, r)
+		return
+	}
 	payload, err := requestBody(w, r)
 	if err != nil {
 		status := http.StatusBadRequest
@@ -1912,6 +2000,8 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/feedback":
+		s.writeError(w, http.StatusBadRequest, "feedback_invalid")
 	case "/api/tasks":
 		backend, ok := s.taskBackend()
 		if !ok {

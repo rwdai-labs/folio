@@ -17,8 +17,8 @@ Inherit `../AGENTS.md`.
   separate: a saved checkout with missing credentials needs authorization, and
   must not show a green connected badge.
   A configured deployment token does not prove live repository access.
-- Daily navigation is dashboard (tasks and usage), assistant chat, actions,
-  run history, owner review, and settings. `/api/state.capabilities` independently
+- Daily navigation is dashboard (catalog, tasks and usage), assistant chat,
+  feedback, actions, run history, owner review, and settings. `/api/state.capabilities` independently
   describes `assistant`, `report`, `maintenance`, and `context` with `available`,
   fixed `reason`, and `verification`. Availability means configured readiness,
   never live provider acceptance. Any usable daily capability defaults to the
@@ -27,11 +27,35 @@ Inherit `../AGENTS.md`.
   from server data, not a persistent browser completion flag. Keep the GitHub
   plugin mounts, repository picker, notifications and hooks in settings; optional
   integrations never block the dashboard. Runner availability is not provider credential verification.
-- Dashboard shortcuts prefill source-aware context chat, create a report from a
-  required owner request (at most 4,000 characters) via `POST /api/tasks`
-  (`kind: report`, `priority`, `title`, `payload.request`), and reuse existing maintenance. Creation means
-  accepted into the queue, not completed; retain pause/window/attempt semantics.
-  Structured `task.created` SSE events carry `task_id`, `title`, and `status`;
+- The dashboard action card is driven by `GET /api/catalog` and grouped by
+  `presentation.group` (or `group`, default `actions`), preserving catalog order.
+  Render server `label`/`description`/field metadata as safe text; when present,
+  resolve `label_key`, `description_key` and `submit_label_key` with
+  `translateKnown`. Support text, textarea, select and boolean fields, including
+  required, max_length, options and placeholder; omit an optional empty select
+  from the request. Submit `{fields}` to `POST /api/actions/{id}/run`. A returned
+  `task` is accepted into the queue, not completed: reuse `chatTaskCard`, refresh
+  tasks and retain pause/window/attempt semantics. An action is disabled when
+  `enabled` is false or any `requires` capability (assistant, report,
+  maintenance, context, workshop) is unavailable, with a generic capability
+  reason only. If the catalog is missing or returns 404, show one generic hint and
+  never resurrect hardcoded report/maintenance cards. No action-specific IDs or
+  labels belong in the shell.
+- Feedback is a top-level view. POST multipart FormData with `title`, `area`,
+  `current`, `expected`, `acceptance`, `priority` and an optional PNG/JPEG
+  `image`, with the session CSRF header. Show an accepted task card or the
+  rejection reason without clearing drafted fields; translate known
+  `feedback.reason.<code>` values and show an unknown code as text. Capture by
+  file picker, paste and drag/drop; read images as data URLs because CSP permits
+  only `self` and `data:` (never `blob:` or `createObjectURL`). Annotate on a
+  canvas with pen, arrow and rectangle tools, color, line width, undo and clear;
+  map pointer coordinates through devicePixelRatio and capture pointers for
+  touch. Export with `canvas.toBlob("image/png")` at the image's natural
+  dimensions, not the fitted preview, and keep it within 64..4096 pixels per
+  side and 8 MP. Validate required fields and the 8 MiB image limit client-side.
+  Clear images, canvas and fields on logout or session expiry and never persist
+  screenshots in browser storage. No external libraries or build step.
+- Structured `task.created` SSE events carry `task_id`, `title`, and `status`;
   session history's top-level `tasks` restores durable task cards. Cards open
   the existing task dialog. Results use authenticated
   `/api/automation/runs/{runID}/result` (`run_id`, `format`, `text`) and follow-up
@@ -141,7 +165,9 @@ search/priority filters, attempt drawer and keyboard return, pause/resume,
 review snapshots and safe links, recheck success/failure, subscription-quota
 cards and refresh, usage errors/recovery, both languages, mobile overflow,
 state-load failure, capability-specific readiness without repository/Codex,
-source-aware chat prefill, structured task cards, required report requests,
-run-ID report results and follow-up, and session expiry. Set
+catalog submit/field validation/disabled requirements/404 fallback, structured
+task cards and chat, run-ID report results and follow-up, feedback image/canvas
+export, accepted and rejected submissions with preserved drafts, and session
+expiry cleanup. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed
 provider authorization and external manual review still need runtime acceptance.

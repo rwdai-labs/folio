@@ -30,20 +30,33 @@ volume. This repository contains only generic service code and Web assets.
    API-backed reports can work before a context repository or CLI runner is
    configured. A connection test lists models; complete an actual conversation
    or small report to check inference support.
-2. Use the dashboard shortcuts to ask about your context, submit a background
-   report, or organize your context. A report needs a concrete request; its task
-   card shows queue state, waiting rules, attempts and results. Creating a task
-   means it has been accepted, not that the work has finished.
-3. For personal-context answers and organization, authorize GitHub and connect
+2. The dashboard is an **action catalog**, not a fixed set of daily buttons.
+   It reads `GET /api/catalog`; the built-in report and maintenance actions and
+   any owner-defined `actions.json` entries appear there. Submitting a card
+   creates durable task intent. Its task card shows queue state, waiting rules,
+   attempts and results; creation is not completion.
+3. Use **Assistant** for conversation and **Feedback** to submit an improvement
+   request about Folio itself. Feedback can include a pasted, dropped or selected
+   PNG/JPEG screenshot annotated with pen, arrow or rectangle tools. Fill in the
+   current behavior, expected behavior and acceptance criteria. Vague or
+   incomplete requests are rejected with a fixed reason; an accepted request
+   currently creates a bounded planning task, not a source edit or deployment.
+4. For personal-context answers and organization, authorize GitHub and connect
    the private Markdown repository. Organization also needs the Codex worker
    and its configured model route. Missing optional channels do not block chat
    or the task board.
-4. Open a completed report from its task or run, then use the follow-up entry
+5. Open a completed report from its task or run, then use the follow-up entry
    to ask the assistant about that run. New reports retain a separate artifact
    for each attempt. Older reports may expose only a marked, potentially
    truncated audit snapshot; an overwritten task file is never presented as an
    exact historical result. Context answers should cite the source paths
    returned by search; unavailable context must stay explicit.
+
+Action presentation is owner data. An `actions.json` entry may add a
+`description`, `requires` capability names, and a `presentation` object with
+`group`, `order`, `submit_label` and validated form fields; see
+[docs/self-bootstrap.md](docs/self-bootstrap.md) for the shape and the
+not-yet-shipped source workshop boundary.
 
 The settings and dashboard show separate readiness for assistant, reports and
 maintenance. Readiness describes local configuration, not verified credentials

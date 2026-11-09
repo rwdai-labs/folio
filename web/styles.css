@@ -2468,13 +2468,45 @@ textarea {
   border-radius: var(--radius-md);
 }
 
-/* Daily entry points share the existing work console and task dialog. */
-.daily-shortcuts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin: 16px 0; }
-.daily-shortcuts > div { min-width: 0; }
-.daily-shortcuts .btn { width: 100%; white-space: normal; }
-#report-form { margin-top: 20px; gap: 12px; }
-#report-request { width: 100%; min-height: 100px; }
+/* Server-driven catalog actions share the work console and task dialog. */
+.catalog-list { display: grid; gap: 20px; margin-top: 16px; min-width: 0; }
+.catalog-group { display: grid; gap: 12px; min-width: 0; }
+.catalog-group > h3 { color: var(--muted); font-size: .74rem; font-weight: 720; letter-spacing: .09em; text-transform: uppercase; }
+.catalog-action { display: grid; gap: 10px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-2); }
+.catalog-action h4 { margin: 0; font-size: .95rem; font-weight: 660; letter-spacing: -.005em; overflow-wrap: anywhere; }
+.catalog-action-form { gap: 12px; }
+.catalog-fields { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.catalog-fields:disabled { opacity: .78; }
+.catalog-action textarea { min-height: 84px; font-family: var(--font); font-size: .88rem; line-height: 1.55; }
+.catalog-action .actions { margin-top: 0; }
+.catalog-requirement { color: var(--amber); }
+.catalog-action .chat-task-card { margin: 0; }
+.catalog-action [data-catalog-result]:empty { display: none; }
 .chat-task-card { margin: 12px 0; overflow-wrap: anywhere; }
 .chat-task-card .hint:empty { display: none; }
 .run-report { white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; line-height: 1.65; max-height: 65vh; overflow-y: auto; padding: 18px; background: var(--surface-2); color: var(--ink); }
-@media (max-width: 720px) { .daily-shortcuts { grid-template-columns: 1fr; } }
+
+/* Screenshot feedback stays in the page; its canvas never enters storage. */
+.feedback-form textarea { min-height: 96px; font-family: var(--font); font-size: .88rem; line-height: 1.55; }
+.feedback-image-field { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 14px; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); }
+.feedback-image-field legend { padding: 0 6px; color: var(--ink-soft); font-size: .79rem; font-weight: 640; }
+.feedback-dropzone { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; min-width: 0; padding: 14px; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-2); cursor: pointer; transition: border-color var(--ease), background-color var(--ease); }
+.feedback-dropzone:hover, .feedback-dropzone[data-active="true"] { border-color: var(--accent-border); background: var(--accent-soft); }
+.feedback-dropzone .hint { margin: 0; overflow-wrap: anywhere; }
+.feedback-editor { display: grid; gap: 10px; min-width: 0; }
+.feedback-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.feedback-tools [data-feedback-tool][aria-pressed="true"] { border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-ink); }
+.feedback-tool-field { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .76rem; font-weight: 620; }
+.feedback-tool-field input[type="color"] { width: 38px; min-width: 38px; height: 32px; min-height: 32px; padding: 2px; cursor: pointer; }
+.feedback-tool-field input[type="range"] { width: 96px; min-width: 70px; min-height: 32px; padding: 0; accent-color: var(--accent); }
+#feedback-width-value { min-width: 1.4em; color: var(--ink-soft); font: 600 .78rem var(--mono); font-variant-numeric: tabular-nums; }
+.feedback-canvas-wrap { display: flex; justify-content: center; max-width: 100%; overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }
+#feedback-canvas { display: block; max-width: 100%; height: auto !important; border-radius: 5px; background: #ffffff; box-shadow: var(--shadow-sm); cursor: crosshair; touch-action: none; }
+@media (max-width: 720px) {
+  .catalog-action { padding: 14px; }
+  .feedback-image-field { padding: 12px; }
+  .feedback-dropzone { align-items: stretch; }
+  .feedback-tools .btn { flex: 1 1 auto; }
+  .feedback-tool-field { flex: 1 1 100%; }
+  .feedback-tool-field input[type="range"] { flex: 1 1 auto; width: auto; }
+}

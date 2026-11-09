@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -43,6 +44,17 @@ type testBackend struct {
 	quotaValue   quota.Snapshot
 	reportResult map[string]any
 	reportErr    error
+
+	catalogCalls    int
+	runActionID     string
+	runActionFields map[string]any
+	runActionErr    error
+
+	feedbackItems    []map[string]any
+	feedbackImages   map[string][]byte
+	feedbackErr      error
+	feedbackRejected bool
+	feedbackReason   string
 }
 
 func (b *testBackend) ReportResult(runID string) (map[string]any, error) {
@@ -304,6 +316,94 @@ func (b *testBackend) ActionVersions() (map[string]any, error) {
 
 func (b *testBackend) RestoreActionVersion(name string) error {
 	return nil
+}
+
+func (b *testBackend) ActionCatalog() (map[string]any, error) {
+	b.catalogCalls++
+	return map[string]any{"actions": []any{map[string]any{
+		"id": "report", "label": "Report", "priority": "P1", "enabled": true,
+		"group": "daily", "order": 20, "submit_label": "Run report",
+		"label_key": "catalog.report.label", "description_key": "catalog.report.description",
+		"submit_label_key": "catalog.report.submit", "requires": []any{"report"}, "legacy": true,
+		"fields": []any{map[string]any{"name": "request", "label": "Request", "type": "textarea", "required": true, "max_length": 4000}},
+	}, map[string]any{
+		"id": "brief", "label": "Brief", "priority": "P2", "enabled": false,
+		"group": "tools", "order": 10, "submit_label": "Run brief",
+		"requires": []any{"assistant"}, "legacy": false, "fields": []any{},
+	}}}, nil
+}
+
+func (b *testBackend) RunAction(id string, fields map[string]any) (map[string]any, error) {
+	b.runActionID = id
+	b.runActionFields = fields
+	if b.runActionErr != nil {
+		return nil, b.runActionErr
+	}
+	return map[string]any{
+		"task": map[string]any{
+			"id": "t-000000000001", "kind": id, "title": "Synthetic action",
+			"priority": "P1", "source": "manual", "status": "queued", "enabled": true,
+		},
+		"created": true,
+	}, nil
+}
+
+func (b *testBackend) CreateFeedbackRequest(values map[string]any, image []byte) (map[string]any, error) {
+	if b.feedbackErr != nil {
+		return nil, b.feedbackErr
+	}
+	title, _ := values["title"].(string)
+	if title == "" {
+		return nil, errors.New("title_short")
+	}
+	id := fmt.Sprintf("f-%012x", len(b.feedbackItems)+1)
+	record := map[string]any{
+		"id": id, "title": title, "area": values["area"], "priority": "P1",
+		"status": "accepted", "has_image": len(image) > 0, "image_bytes": len(image),
+		"created_at": "2026-11-09T00:00:00Z",
+	}
+	if b.feedbackRejected {
+		record["status"] = "rejected"
+		record["reason"] = b.feedbackReason
+		b.feedbackItems = append(b.feedbackItems, record)
+		return map[string]any{"accepted": false, "feedback": record}, nil
+	}
+	record["task_id"] = "t-000000000001"
+	b.feedbackItems = append(b.feedbackItems, record)
+	if len(image) > 0 {
+		if b.feedbackImages == nil {
+			b.feedbackImages = map[string][]byte{}
+		}
+		b.feedbackImages[id] = append([]byte(nil), image...)
+	}
+	return map[string]any{"accepted": true, "feedback": record, "task": map[string]any{"id": "t-000000000001", "kind": "report"}}, nil
+}
+
+func (b *testBackend) ListFeedback() (map[string]any, error) {
+	if b.feedbackErr != nil {
+		return nil, b.feedbackErr
+	}
+	items := make([]any, 0, len(b.feedbackItems))
+	for _, record := range b.feedbackItems {
+		items = append(items, record)
+	}
+	return map[string]any{"feedback": items}, nil
+}
+
+func (b *testBackend) FeedbackDetail(id string) (map[string]any, error) {
+	for _, record := range b.feedbackItems {
+		if record["id"] == id {
+			return map[string]any{"feedback": record}, nil
+		}
+	}
+	return nil, errors.New("feedback_unknown")
+}
+
+func (b *testBackend) FeedbackImage(id string) ([]byte, error) {
+	if raw, ok := b.feedbackImages[id]; ok {
+		return raw, nil
+	}
+	return nil, errors.New("feedback_image_unavailable")
 }
 
 func (b *testBackend) TaskKinds() (map[string]any, error) {

@@ -1,0 +1,164 @@
+# Feedback and self-bootstrap
+
+Status: Phase 1–2 implemented; Phase 3 is a design and is not shipped. Snapshot
+date: 2026-11-09. This document describes Folio's own improvement loop without
+placing source code editing or deployment in the main agent.
+
+## Purpose
+
+Folio should be able to receive an owner's improvement request, reject it when
+it is not actionable, and turn an accepted request into durable, auditable work.
+The long-term loop is:
+
+```text
+annotated screenshot + structured feedback
+              ↓
+       sufficiency gate
+       accepted / rejected
+              ↓
+        durable plan task
+              ↓
+ isolated source workshop (planned)
+              ↓
+ tests, commit, push, optional CI merge
+```
+
+The base platform owns capture, storage, authentication, task durability,
+action execution, audit, and delivery. A specific task such as a report or a
+Folio improvement is an action definition, not page code. Chat remains a core
+assistant surface rather than an action card.
+
+## Phase 1: action catalog
+
+`actions.json` entries may carry optional presentation metadata. The execution
+steps remain the authoritative behavior; the metadata only describes how an
+owner starts the action.
+
+```json
+{
+  "id": "example",
+  "label": "Example action",
+  "description": "What this action does.",
+  "requires": ["report"],
+  "presentation": {
+    "group": "daily",
+    "order": 20,
+    "submit_label": "Queue action",
+    "fields": [
+      {"name": "note", "label": "What should it do?", "type": "textarea", "required": true, "max_length": 4000}
+    ]
+  },
+  "steps": [{"id": "run", "type": "agent", "prompt": "{{payload.note}}"}]
+}
+```
+
+Declared text/textarea fields are owner input and use an explicit bounded
+owner-task payload path (up to 32 KiB total), so 4000-rune values reach the
+durable task and dispatch snapshot. The generic hook/plugin payload projection
+keeps its smaller 512-rune bound; the two paths are separate. Oversized or
+credential-shaped configured payloads are rejected rather than silently trimmed.
+
+`GET /api/catalog` returns the configured actions plus the built-in legacy
+report and maintenance kinds, with their fields and capability requirements.
+The dashboard renders this catalog and posts to
+`POST /api/actions/{id}/run`. The page does not name report, maintenance, or any
+other concrete task. Custom action labels and descriptions are owner data and
+are rendered as text.
+
+`requires` values are capability names: `assistant`, `report`, `maintenance`,
+`context`, or `workshop`. Readiness is local configuration, never proof that an
+upstream account or inference call works.
+
+## Phase 2: feedback inbox and gate
+
+Feedback is private owner data stored under `data/feedback/`; the public image
+never contains context, credentials, or runtime files. A submission contains:
+
+- title and a fixed page/area;
+- current behavior, expected behavior, and acceptance criteria;
+- optional screenshot;
+- priority.
+
+The screenshot is decoded and re-encoded as PNG to strip metadata, bounded by
+dimensions and byte size, and served only through an authenticated route. No
+caller-supplied path is accepted.
+
+The gate has two layers:
+
+1. Deterministic required-field, length, area, priority, and image checks.
+2. When a report model binding exists, a strict model readiness check returning
+   `ready` plus a fixed reason (`too_broad`, `ambiguous`, `not_actionable`,
+   `unsafe_scope`, or `ok`). Invalid gate output fails closed.
+
+A gate rejection (`too_broad`, `ambiguous`, `not_actionable`, `unsafe_scope`,
+`gate_unavailable`) is retained with its reason and creates no work.
+Deterministic malformed input (missing/oversized fields or an invalid image) is
+refused with a 400 response before a feedback record is written. An accepted
+request currently creates a durable **planning** report task: it may describe
+likely files, implementation steps, tests, assumptions, and scope risks, but it
+must not edit files, run commands, deploy, or ask the owner a clarifying
+question. This is deliberately not the source-edit loop.
+
+The deterministic checks and the plan task are implemented in Phase 2. The
+source workshop below remains planned.
+
+## Phase 3: isolated source workshop
+
+The main agent must not gain source-edit or deployment tools. A workshop is a
+separate trust boundary with:
+
+- its own checkout of the Folio source repository and its own fine-grained
+  credential;
+- no mount of the private context repository, channel credentials, or model
+  keys from the main runtime;
+- a bounded input document (feedback JSON plus a copied screenshot) passed as
+  data, never as shell arguments;
+- a model runner restricted to that checkout;
+- mandatory formatting, tests, vet/build, and diff limits;
+- a branch and pull request by default; direct main push only as an explicit
+  owner setting;
+- audit evidence for the plan, changed files, tests, commit, pull request, and
+  failure class.
+
+The workshop is not implemented. Until it exists, Folio can capture, reject,
+and plan, but it cannot automatically modify its own source or deploy.
+
+## GitHub issues
+
+A local private inbox is the source of truth. GitHub issue creation is an
+optional mirror, not a prerequisite: issue image upload is awkward through the
+API, and a separate login should not block feedback capture. The existing
+GitHub bridge can turn labelled issues into signed events, but its current
+payload carries title, labels, state, and URL rather than issue body or image
+content, so issue-first feedback would require an additional bounded body fetch
+and attachment policy.
+
+## Threat model
+
+- Feedback text, screenshots, issue bodies, and model output are untrusted data.
+- Feedback never selects a command, path, credential, or deployment target.
+- Model output is a proposal; the workshop must validate it with tests and diff
+  limits before publishing.
+- Sensitive paths (CI workflows, deploy configuration, dependency manifests,
+  authentication/security code) require an explicit owner policy and should
+  never be changed silently by a bootstrap run.
+- A rejected or failed run leaves the source checkout and the private context
+  repository untouched.
+
+## Acceptance for the shipped phases
+
+- The dashboard renders actions from `/api/catalog`; no concrete daily task is
+  hard-coded in `index.html` or `app.js`.
+- Built-in report and maintenance actions remain usable and keep their existing
+  task semantics.
+- A screenshot can be pasted, dropped, or selected, annotated, and submitted;
+  the stored image is private and authenticated.
+- Missing or vague feedback is rejected with a fixed reason and no task.
+- Accepted feedback creates a durable plan task and preserves the feedback and
+  task association.
+- Both languages, keyboard operation, mobile layout, logout cleanup, and the
+  synthetic browser acceptance check pass.
+
+Phase 3 acceptance additionally requires a separate workshop deployment,
+credential isolation, a passing validation suite, and an explicit publish
+policy. None of those are claimed here.

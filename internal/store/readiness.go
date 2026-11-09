@@ -46,5 +46,9 @@ func (s *Store) capabilityReadiness(connected bool) map[string]any {
 	if connected {
 		context = card(true, "configured")
 	}
-	return map[string]any{"assistant": assistant, "report": report, "maintenance": maintenance, "context": context}
+	// Workshop/source-editing is a separate later phase. Advertising the
+	// capability as unavailable lets catalog requirements stay explicit without
+	// changing which daily route a deployment starts on.
+	workshop := card(false, "workshop_unavailable")
+	return map[string]any{"assistant": assistant, "report": report, "maintenance": maintenance, "context": context, "workshop": workshop}
 }

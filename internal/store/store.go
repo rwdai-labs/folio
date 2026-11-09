@@ -62,6 +62,7 @@ type Store struct {
 	reviewsDir              string
 	pendingDir              string
 	reportsDir              string
+	feedbackDir             string
 	codexDir                string
 	dshDir                  string
 	secretsDir              string
@@ -179,6 +180,7 @@ func New(dataDir, toolRoot string, remote storage.Remote) (*Store, error) {
 		reviewsDir:              filepath.Join(data, "runtime", "reviews"),
 		pendingDir:              filepath.Join(data, "runtime", "pending-reviews"),
 		reportsDir:              filepath.Join(data, "runtime", "reports"),
+		feedbackDir:             filepath.Join(data, "feedback"),
 		codexDir:                filepath.Join(data, "codex"),
 		dshDir:                  filepath.Join(data, "dsh"),
 		secretsDir:              filepath.Join(data, "secrets"),
@@ -339,7 +341,7 @@ func isWithin(candidate, root string) bool {
 func (s *Store) ensureDirs() error {
 	paths := []string{
 		s.dataDir, s.runtimeDir, s.runsDir, s.reviewsDir, s.pendingDir, s.reportsDir,
-		s.codexDir, s.dshDir, s.secretsDir, s.ghConfigDir, s.homeDir, s.hooksDir,
+		s.feedbackDir, s.codexDir, s.dshDir, s.secretsDir, s.ghConfigDir, s.homeDir, s.hooksDir,
 	}
 	for _, dir := range paths {
 		if err := ensurePrivateDir(dir); err != nil {

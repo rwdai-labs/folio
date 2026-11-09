@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const root = path.resolve(__dirname, '..');
 const sha = 'a'.repeat(40);
 const files = {
@@ -47,6 +48,106 @@ const quotaSnapshot = () => {
 };
 // A 1x1 PNG: the console only accepts a server-rendered data URL here.
 const syntheticQR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const crcTable = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let value = n;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    table[n] = value >>> 0;
+  }
+  return table;
+})();
+function pngChunk(type, data) {
+  const out = Buffer.alloc(12 + data.length);
+  out.writeUInt32BE(data.length, 0);
+  out.write(type, 4, 'ascii');
+  data.copy(out, 8);
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+  return out;
+}
+function crc32(buffer) {
+  let value = 0xffffffff;
+  for (const byte of buffer) value = crcTable[(value ^ byte) & 0xff] ^ (value >>> 8);
+  return (value ^ 0xffffffff) >>> 0;
+}
+function syntheticPNG(width = 64, height = 64) {
+  const raw = Buffer.alloc((width * 4 + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (width * 4 + 1);
+    raw[row] = 0;
+    for (let x = 0; x < width; x += 1) {
+      const at = row + 1 + x * 4;
+      raw[at] = 28 + Math.round((x / Math.max(1, width - 1)) * 80);
+      raw[at + 1] = 80 + Math.round((y / Math.max(1, height - 1)) * 80);
+      raw[at + 2] = 120;
+      raw[at + 3] = 255;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr), pngChunk('IDAT', zlib.deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+function parseMultipart(buffer, contentType) {
+  const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || '');
+  if (!match) return { fields: {}, image: null };
+  const boundary = Buffer.from('--' + (match[1] || match[2]));
+  const fields = {};
+  let image = null;
+  let index = buffer.indexOf(boundary);
+  while (index >= 0) {
+    const start = index + boundary.length;
+    const next = buffer.indexOf(boundary, start);
+    if (next < 0) break;
+    let part = buffer.subarray(start, next);
+    if (part.subarray(0, 2).toString() === '--') break;
+    if (part.subarray(0, 2).toString() === '\r\n') part = part.subarray(2);
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd < 0) { index = next; continue; }
+    const headers = part.subarray(0, headerEnd).toString('utf8');
+    const data = part.subarray(headerEnd + 4, Math.max(headerEnd + 4, part.length - 2));
+    const name = /name="([^"]+)"/.exec(headers);
+    if (name) {
+      if (/filename="/.test(headers)) image = data;
+      else fields[name[1]] = data.toString('utf8');
+    }
+    index = next;
+  }
+  return { fields, image };
+}
+const syntheticCatalog = () => [
+  {
+    id: 'report', label: 'Create background report', label_key: 'catalog.report.label',
+    description: 'Ask the report model to answer a specific owner request.', description_key: 'catalog.report.description',
+    priority: 'P1', enabled: true, group: 'daily', order: 1,
+    submit_label: 'Queue report', submit_label_key: 'catalog.report.submit',
+    fields: [{
+      name: 'request', label: 'What should the report answer?', type: 'textarea',
+      required: true, max_length: 4000, placeholder: 'Describe the report request',
+    }],
+    requires: ['report'], legacy: false,
+  },
+  {
+    id: 'maintenance', label: 'Organize context', label_key: 'catalog.maintenance.label',
+    description: 'Run context maintenance using the configured maintenance binding.', description_key: 'catalog.maintenance.description',
+    priority: 'P2', enabled: true, group: 'daily', order: 2,
+    submit_label: 'Start maintenance', submit_label_key: 'catalog.maintenance.submit',
+    fields: [
+      { name: 'note', label: 'Note', type: 'text', required: false, max_length: 120, placeholder: 'Optional note' },
+      { name: 'scope', label: 'Scope', type: 'select', required: false, placeholder: 'Choose scope', options: [{ value: 'all', label: 'All documents' }, { value: 'inbox', label: 'Inbox only' }] },
+      { name: 'dry_run', label: 'Dry run', type: 'boolean', required: false },
+    ],
+    requires: ['maintenance'], legacy: false,
+  },
+  {
+    id: 'workshop', label: 'Workshop action', priority: 'P2', enabled: true, group: 'workshop', order: 3,
+    submit_label: 'Run workshop', fields: [], requires: ['workshop'], legacy: false,
+  },
+];
 const weixinStatus = (overrides = {}) => ({
   deployment: { mode: 'auto', owner_pinned: false },
   configured: false, enabled: false, running: false, owner_id: '',
@@ -93,7 +194,8 @@ async function main() {
       let authenticated = false, authorized = false, connected = false, paused = false;
       let usageError = false, stateError = false, expired = false, jobFailed = false;
       let run = maintenance(), reviewRun = null, runRequests = [], jobRequests = 0, quotaRefreshes = 0;
-      let tasks = [], capabilities = null, chatRequests = [], reportRequests = [], resultError = false, runnerInstalled = true, historyTasks = [], historicalResult = false;
+      let tasks = [], capabilities = null, chatRequests = [], catalogRequests = [], feedbackRequests = [], resultError = false, runnerInstalled = true, historyTasks = [], historicalResult = false;
+      let catalogUnavailable = false, feedbackAccepted = true, feedbackReason = 'ambiguous', feedbackValidationError = false;
       let holdHistory = false, holdResult = false, releaseHistory, releaseResult;
       const reportID = "synthetic-report-run";
       let serviceConfig = { version: 1, connections: { local: { name: "Synthetic local", base_url: "http://127.0.0.1:8000/v1", key_present: true } }, defaults: {}, overrides: {} };
@@ -117,6 +219,10 @@ async function main() {
           else body = { capabilities: capabilities === false ? undefined : capabilities || { assistant: { available: false, reason: "agent_unavailable" }, report: { available: connected && authorized, reason: "model_unavailable" }, maintenance: { available: connected && authorized, reason: "repository_unavailable" } }, storage: { plugin: 'github', auth: authorized ? 'gh' : 'missing' },
             repository: { connected, full_name: 'example/context', branch: 'main', head: sha },
             model: { available: true }, runners: { codex: { available: runnerInstalled }, dsh: { available: false } }, service: {} };
+        }
+        else if (endpoint === '/api/catalog') {
+          if (catalogUnavailable) { status = 404; body = { error: 'not_found' }; }
+          else body = { actions: syntheticCatalog() };
         }
         else if (endpoint === '/api/plugins') body = { plugins: [{ id: 'github' }] };
         else if (endpoint.endsWith('/auth/start')) body = { status: 'pending', user_code: 'SYNTHETIC', interval: 30 };
@@ -157,10 +263,34 @@ async function main() {
         }
         else if (endpoint === '/api/tasks') {
           if (req.method() === 'POST') {
-            const payload = req.postDataJSON(); reportRequests.push(payload);
+            const payload = req.postDataJSON();
             const task = { id: 'report-task', ...payload, status: 'queued', enabled: true, source: 'manual' };
             tasks.push(task); body = task;
           } else body = taskListing();
+        }
+        else if (/^\/api\/actions\/[^/]+\/run$/.test(endpoint)) {
+          const id = endpoint.split('/')[3];
+          const payload = req.postDataJSON();
+          catalogRequests.push({ id, fields: payload.fields });
+          const task = {
+            id: id === 'report' ? 'report-task' : id + '-task',
+            title: id === 'report' ? 'Synthetic catalog report' : 'Synthetic catalog maintenance',
+            kind: id, status: 'queued', enabled: true, priority: 'P2', source: 'manual',
+          };
+          tasks.push(task);
+          body = { task, created: true };
+        }
+        else if (endpoint === '/api/feedback' && req.method() === 'POST') {
+          const parsed = parseMultipart(req.postDataBuffer(), req.headers()['content-type']);
+          feedbackRequests.push(parsed);
+          if (feedbackValidationError) { status = 400; body = { error: 'feedback_invalid', reason: 'title_short' }; }
+          else if (feedbackAccepted) {
+            const task = { id: 'feedback-task', title: parsed.fields.title, kind: 'feedback', status: 'queued', enabled: true, priority: parsed.fields.priority, source: 'manual' };
+            tasks.push(task);
+            body = { accepted: true, feedback: { id: 'feedback-1', status: 'accepted' }, task };
+          } else {
+            body = { accepted: false, feedback: { id: 'feedback-1', status: 'rejected', reason: feedbackReason } };
+          }
         }
         else if (endpoint.startsWith('/api/agent/sessions/')) {
           if (holdHistory) { holdHistory = false; await new Promise(resolve => { releaseHistory = resolve; }); body = { messages: [{ role: 'assistant', content: 'OLD SESSION CHAT CONTENT' }], tasks: [] }; }
@@ -323,61 +453,53 @@ async function main() {
       assert.equal(paused, true);
       await page.locator('#tasks-pause').click();
       assert.equal(paused, false);
-      // A restored configured session starts on the daily dashboard.
+      // A restored configured session starts on the generic, server-driven catalog.
       await page.goto(origin);
       await visible(page, '#dashboard-view');
-      // Assistant readiness is independent of repository authorization and Codex.
-      const savedConnected = connected, savedAuthorized = authorized;
-      connected = false; authorized = false; runnerInstalled = false;
-      capabilities = { assistant: { available: true, reason: 'configured', verification: 'unknown' }, report: { available: true, reason: 'configured' }, maintenance: { available: false, reason: 'repository_unavailable' }, context: { available: false, reason: 'repository_unavailable' } };
-      await page.goto(origin);
-      await visible(page, '#dashboard-view');
-      assert.equal(await page.locator('#daily-ask').isDisabled(), false);
-      assert.equal(await page.locator('#daily-organize').isDisabled(), true);
-      await page.locator('#daily-ask').click();
-      await visible(page, '#chat-view');
-      await page.waitForFunction(() => document.activeElement.id === 'chat-input');
-      assert.match(await page.locator('#chat-input').inputValue(), language === 'zh' ? /来源/ : /source paths/);
-      assert.match(await page.locator('#chat-source-hint').textContent(), language === 'zh' ? /尚未连接/ : /No context/);
-      await page.locator('#chat-input').fill('Create a synthetic report task');
-      await page.locator('#chat-send').click();
-      await visible(page, '#chat-log .chat-task-card');
-      assert.equal(await page.locator('#chat-log img').count(), 0);
-      await page.locator('[data-view="dashboard"]').click();
-      await page.locator('[data-view="chat"]').click();
-      await visible(page, '#chat-log .chat-task-card');
-      assert.equal(await page.locator('#chat-log img').count(), 0, 'restored task history stays safe');
-      await page.locator('#chat-log [data-chat-task]').click();
-      await visible(page, '#task-detail');
-      await page.keyboard.press('Escape');
-      await page.locator('[data-view="dashboard"]').click();
-      await page.locator('#daily-report').click();
-      await page.locator('#report-submit').click();
-      assert.equal(reportRequests.length, 0, 'report requires an explicit owner request');
-      await page.locator('#report-request').fill('   ');
-      await page.locator('#report-submit').click();
-      assert.equal(reportRequests.length, 0, 'whitespace does not count as a request');
-      assert.equal(await page.locator('#report-message').getAttribute('data-error'), 'true');
-      assert.equal(await page.locator('#report-request').getAttribute('maxlength'), '4000');
-      await page.locator('#report-request').fill('Summarize synthetic context <script>alert(1)</script>');
-      await page.locator('#report-priority').selectOption('P2');
-      await page.locator('#report-submit').click();
-      await visible(page, '#report-created [data-chat-task]');
-      assert.equal(reportRequests[0].payload.request, 'Summarize synthetic context <script>alert(1)</script>');
-      assert.equal(reportRequests[0].priority, 'P2');
-      assert.match(await page.locator('#report-message').textContent(), language === 'zh' ? /尚未完成/ : /not completed/);
-      assert.match(await page.locator('#report-created .hint').textContent(), language === 'zh' ? /低峰|等待/ : /off-peak|waiting/);
-      assert.equal(await page.locator('#report-created script').count(), 0);
+      await visible(page, '#catalog-list .catalog-action >> nth=0');
+      assert.equal(await page.locator('#catalog-heading').textContent(), language === 'zh' ? '可用操作' : 'Actions');
+      assert.equal(await page.locator('#catalog-list .catalog-group h3').first().textContent(), language === 'zh' ? '日常' : 'Daily');
+      assert.equal(await page.locator('#daily-ask').count(), 0, 'hardcoded daily controls are gone');
+      const reportAction = page.locator('[data-catalog-action="report"]');
+      assert.equal(await reportAction.locator('h4').textContent(), language === 'zh' ? '创建后台报告' : 'Create background report');
+      const reportInput = reportAction.locator('textarea');
+      assert.equal(await reportInput.getAttribute('maxlength'), '4000');
+      await reportAction.locator('button[type="submit"]').click();
+      assert.equal(catalogRequests.length, 0, 'catalog report requires an explicit owner request');
+      assert.equal(await reportAction.locator('[data-catalog-message]').getAttribute('data-error'), 'true');
+      await reportInput.fill('   ');
+      await reportAction.locator('button[type="submit"]').click();
+      assert.equal(catalogRequests.length, 0, 'whitespace does not count as a required field');
+      await reportInput.fill('Summarize synthetic context <script>alert(1)</script>');
+      await reportAction.locator('button[type="submit"]').click();
+      await visible(page, '[data-catalog-action="report"] [data-chat-task]');
+      assert.equal(catalogRequests[0].id, 'report');
+      assert.equal(catalogRequests[0].fields.request, 'Summarize synthetic context <script>alert(1)</script>');
+      assert.match(await reportAction.locator('[data-catalog-message]').textContent(), language === 'zh' ? /尚未完成/ : /not completed/);
+      assert.equal(await page.locator('[data-catalog-action="report"] script').count(), 0, 'catalog copy is text, not HTML');
+      // Optional select fields stay out of the request; booleans are explicit.
+      const maintenanceAction = page.locator('[data-catalog-action="maintenance"]');
+      assert.equal(await maintenanceAction.locator('input[data-catalog-field="note"]').getAttribute('maxlength'), '120');
+      await maintenanceAction.locator('input[data-catalog-field="note"]').fill('Synthetic maintenance note');
+      await maintenanceAction.locator('button[type="submit"]').click();
+      await visible(page, '[data-catalog-action="maintenance"] [data-chat-task]');
+      assert.equal(catalogRequests[1].id, 'maintenance');
+      assert.equal(catalogRequests[1].fields.note, 'Synthetic maintenance note');
+      assert.equal(Object.prototype.hasOwnProperty.call(catalogRequests[1].fields, 'scope'), false);
+      assert.equal(catalogRequests[1].fields.dry_run, false);
+      tasks = tasks.filter(task => task.id !== 'maintenance-task');
+      await page.evaluate(() => window.folio.refreshTasks());
+      // Report result, fallback and follow-up still use the one task dialog.
       run = { run_id: reportID, status: 'reported', task_id: 'report-task', runner: 'synthetic', summary: 'Report complete', report_file: 'run-' + reportID + '.md', report_text: 'SHORT PREVIEW ONLY' };
       tasks.find(task => task.id === 'report-task').status = 'done';
       tasks.find(task => task.id === 'report-task').run_id = reportID;
       await page.evaluate(() => window.folio.refreshTasks());
       resultError = true;
-      await page.locator('#report-created [data-chat-task]').click();
+      await page.locator('[data-catalog-action="report"] [data-chat-task]').click();
       await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes(document.documentElement.lang.startsWith('zh') ? '报告正文暂不可用' : 'Report result unavailable'));
       await page.locator('#task-detail-close').click();
       resultError = false;
-      await page.locator('#report-created [data-chat-task]').click();
+      await page.locator('[data-catalog-action="report"] [data-chat-task]').click();
       await visible(page, '#task-detail-body .run-report');
       await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes('A readable result'));
       for (const scheme of ['light', 'dark']) {
@@ -396,21 +518,138 @@ async function main() {
       tasks.find(task => task.id === 'report-task').run_id = run.run_id;
       await page.locator('[data-view="dashboard"]').click();
       await page.evaluate(() => window.folio.refreshTasks());
-      await page.locator('#report-created [data-chat-task]').click();
+      await page.locator('[data-catalog-action="report"] [data-chat-task]').click();
       await visible(page, '#task-detail-body .report-provenance');
       assert.match(await page.locator('#task-detail-body .report-provenance').textContent(), language === 'zh' ? /部分历史快照/ : /Partial historical snapshot/);
       await page.locator('#task-detail-close').click();
       historicalResult = false;
-      // Older servers omit capability metadata; saved assistant bindings still
-      // lead into the daily dashboard without repository or an installed runner.
-      capabilities = false;
+      // Assistant readiness is independent of repository authorization and Codex;
+      // an unavailable maintenance capability disables only that catalog action.
+      const savedConnected = connected, savedAuthorized = authorized;
+      connected = false; authorized = false; runnerInstalled = false;
+      capabilities = { assistant: { available: true, reason: 'configured', verification: 'unknown' }, report: { available: true, reason: 'configured' }, maintenance: { available: false, reason: 'repository_unavailable' }, context: { available: false, reason: 'repository_unavailable' } };
       await page.goto(origin);
       await visible(page, '#dashboard-view');
-      assert.equal(await page.locator('#daily-ask').isDisabled(), false);
-      assert.equal(await page.locator('#daily-organize').isDisabled(), true);
-      connected = savedConnected; authorized = savedAuthorized; capabilities = null; tasks = []; runnerInstalled = true; historyTasks = [];
+      await visible(page, '#catalog-list .catalog-action >> nth=0');
+      assert.equal(await page.locator('[data-catalog-action="maintenance"] button[type="submit"]').isDisabled(), true);
+      assert.equal(await page.locator('[data-catalog-action="report"] button[type="submit"]').isDisabled(), false);
+      assert.match(await page.locator('[data-catalog-action="maintenance"] [data-catalog-requirement]').textContent(), language === 'zh' ? /连接并授权/ : /Connect and authorize/);
+      assert.equal(await page.locator('[data-catalog-action="workshop"] button[type="submit"]').isDisabled(), true, 'workshop is unavailable in this phase');
+      assert.match(await page.locator('[data-catalog-action="workshop"] [data-catalog-requirement]').textContent(), language === 'zh' ? /workshop/ : /workshop/);
+      await page.locator('[data-view="chat"]').click();
+      await visible(page, '#chat-view');
+      assert.equal(await page.locator('#chat-input').inputValue(), '', 'chat starts without a hardcoded task prompt');
+      assert.match(await page.locator('#chat-source-hint').textContent(), language === 'zh' ? /尚未连接/ : /No context/);
+      await page.locator('#chat-input').fill('Create a synthetic report task');
+      await page.locator('#chat-send').click();
+      await visible(page, '#chat-log .chat-task-card');
+      assert.equal(await page.locator('#chat-log img').count(), 0);
+      await page.locator('[data-view="dashboard"]').click();
+      await page.locator('[data-view="chat"]').click();
+      await visible(page, '#chat-log .chat-task-card');
+      assert.equal(await page.locator('#chat-log img').count(), 0, 'restored task history stays safe');
+      await page.locator('#chat-log [data-chat-task]').click();
+      await visible(page, '#task-detail');
+      await page.keyboard.press('Escape');
+      // Older servers omit capability metadata; saved bindings still enable the catalog.
+      connected = savedConnected; authorized = savedAuthorized; capabilities = false; runnerInstalled = true;
       await page.goto(origin);
       await visible(page, '#dashboard-view');
+      await visible(page, '#catalog-list .catalog-action >> nth=0');
+      assert.equal(await page.locator('[data-catalog-action="report"] button[type="submit"]').isDisabled(), false);
+      assert.equal(await page.locator('[data-catalog-action="maintenance"] button[type="submit"]').isDisabled(), false);
+      // A missing or 404 catalog shows a generic hint and never resurrects daily cards.
+      catalogUnavailable = true;
+      await page.goto(origin);
+      await visible(page, '#dashboard-view');
+      await page.waitForFunction(() => document.querySelectorAll('#catalog-list .catalog-action').length === 0);
+      assert.match(await page.locator('#catalog-hint').textContent(), language === 'zh' ? /操作目录暂不可用/ : /action catalog is unavailable/i);
+      assert.equal(await page.locator('#daily-ask').count(), 0);
+      catalogUnavailable = false;
+      capabilities = null; tasks = []; historyTasks = []; runnerInstalled = true; connected = savedConnected; authorized = savedAuthorized;
+      await page.goto(origin);
+      await visible(page, '#dashboard-view');
+      // Feedback captures a synthetic PNG, annotates it on canvas, exports PNG and
+      // keeps the draft when the server rejects it.
+      await page.locator('[data-view="feedback"]').click();
+      await visible(page, '#feedback-view');
+      await page.locator('#feedback-image').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: syntheticPNG() });
+      await visible(page, '#feedback-editor');
+      await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
+      assert.match(await page.locator('#feedback-image-state').textContent(), /synthetic\.png/);
+      await page.locator('#feedback-remove-image').click();
+      await page.waitForFunction(() => document.getElementById('feedback-editor').hidden === true);
+      assert.equal(await page.locator('#feedback-image-state').textContent(), language === 'zh' ? '尚未选择图片' : 'No image selected');
+      await page.locator('#feedback-image').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: syntheticPNG() });
+      await visible(page, '#feedback-editor');
+      await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
+      const canvasBox = await page.locator('#feedback-canvas').boundingBox();
+      assert.ok(canvasBox && canvasBox.width > 8 && canvasBox.height > 8);
+      await page.mouse.move(canvasBox.x + 4, canvasBox.y + 4);
+      await page.mouse.down();
+      await page.mouse.move(canvasBox.x + Math.min(44, canvasBox.width - 4), canvasBox.y + Math.min(28, canvasBox.height - 4), { steps: 4 });
+      await page.mouse.up();
+      await page.locator('#feedback-tool-arrow').click();
+      await page.mouse.move(canvasBox.x + 6, canvasBox.y + canvasBox.height - 8);
+      await page.mouse.down();
+      await page.mouse.move(canvasBox.x + Math.min(52, canvasBox.width - 6), canvasBox.y + 8, { steps: 3 });
+      await page.mouse.up();
+      await page.locator('#feedback-undo').click();
+      const exported = await page.locator('#feedback-canvas').evaluate(canvas => new Promise(resolve => {
+        if (typeof canvas.toBlob !== 'function') { resolve(null); return; }
+        canvas.toBlob(async blob => {
+          const bytes = new Uint8Array(await blob.arrayBuffer());
+          resolve({ type: blob.type, size: blob.size, signature: Array.from(bytes.slice(0, 8)) });
+        }, 'image/png');
+      }));
+      assert.ok(exported, 'canvas supports PNG export');
+      assert.equal(exported.type, 'image/png');
+      assert.ok(exported.size > 0);
+      assert.equal(exported.signature.join(','), '137,80,78,71,13,10,26,10');
+      await page.locator('#feedback-title').fill('Synthetic feedback title');
+      await page.locator('#feedback-current').fill('The synthetic current behavior is confusing.');
+      await page.locator('#feedback-expected').fill('The synthetic expected behavior is clear.');
+      await page.locator('#feedback-acceptance').fill('The synthetic acceptance check passes.');
+      await page.locator('#feedback-area').selectOption('assistant');
+      await page.locator('#feedback-priority').selectOption('P1');
+      await page.locator('#feedback-submit').click();
+      await visible(page, '#feedback-created [data-chat-task]');
+      assert.equal(feedbackRequests.length, 1);
+      assert.equal(feedbackRequests[0].fields.title, 'Synthetic feedback title');
+      assert.equal(feedbackRequests[0].fields.area, 'assistant');
+      assert.equal(feedbackRequests[0].fields.priority, 'P1');
+      assert.ok(feedbackRequests[0].image && feedbackRequests[0].image.length > 0, 'annotated PNG is attached');
+      assert.equal(feedbackRequests[0].image.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+      assert.match(await page.locator('#feedback-message').textContent(), language === 'zh' ? /已接受/ : /accepted/i);
+      feedbackAccepted = false; feedbackReason = 'ambiguous';
+      await page.locator('#feedback-title').fill('Preserved rejected draft');
+      await page.locator('#feedback-current').fill('Preserved current details.');
+      await page.locator('#feedback-expected').fill('Preserved expected details.');
+      await page.locator('#feedback-acceptance').fill('Preserved acceptance details.');
+      await page.locator('#feedback-submit').click();
+      await page.waitForFunction(() => {
+        const text = document.getElementById('feedback-message')?.textContent || '';
+        return text.includes(document.documentElement.lang.startsWith('zh') ? '含义不明确' : 'ambiguous');
+      });
+      assert.equal(await page.locator('#feedback-title').inputValue(), 'Preserved rejected draft');
+      assert.equal(await page.locator('#feedback-current').inputValue(), 'Preserved current details.');
+      assert.equal(await page.locator('#feedback-created [data-chat-task]').count(), 0);
+      feedbackReason = 'synthetic_unknown_reason';
+      await page.locator('#feedback-submit').click();
+      await page.waitForFunction(() => (document.getElementById('feedback-message')?.textContent || '').includes('synthetic_unknown_reason'));
+      assert.equal(await page.locator('#feedback-title').inputValue(), 'Preserved rejected draft');
+      feedbackValidationError = true;
+      await page.locator('#feedback-submit').click();
+      await page.waitForFunction(() => {
+        const text = document.getElementById('feedback-message')?.textContent || '';
+        return text.includes(document.documentElement.lang.startsWith('zh') ? '标题太短' : 'title is too short');
+      });
+      assert.equal(await page.locator('#feedback-title').inputValue(), 'Preserved rejected draft');
+      feedbackValidationError = false;
+      await page.locator('#feedback-image').setInputFiles({ name: 'not-image.txt', mimeType: 'text/plain', buffer: Buffer.from('not an image') });
+      await page.waitForFunction(() => document.getElementById('feedback-image-error').dataset.error === 'true');
+      assert.match(await page.locator('#feedback-image-error').textContent(), language === 'zh' ? /PNG|JPEG/ : /PNG|JPEG/);
+      feedbackAccepted = true;
       // The board uses real stages, explains waiting, filters, and opens an attempt drawer.
       reviewRun = { ...maintenance(), needs_review: [] };
       run = { ...maintenance(), needs_review: [], task_id: 't-000000000002', status: 'running', stage: 'organize' };
@@ -514,7 +753,7 @@ async function main() {
       await page.locator("#work-usage-details").evaluate(node => { node.open = false; });
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-dashboard-${language}.png`, fullPage: true });
       await page.setViewportSize({ width: 390, height: 844 });
-      for (const view of ['dashboard', 'chat', 'settings', 'review', 'runs']) {
+      for (const view of ['dashboard', 'chat', 'feedback', 'settings', 'review', 'runs']) {
         await page.locator(`[data-view="${view}"]`).click();
         await visible(page, `#${view}-view`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile overflow in ${view}`);
@@ -568,16 +807,26 @@ async function main() {
       stateError = false;
       // Expiry hides private app data and returns to Folio sign-in.
       await page.locator("#chat-input").evaluate(input => { input.value = "Synthetic private draft"; });
+      await page.locator('[data-view="feedback"]').click();
+      await visible(page, '#feedback-view');
+      await page.locator('#feedback-image').setInputFiles({ name: 'private.png', mimeType: 'image/png', buffer: syntheticPNG() });
+      await visible(page, '#feedback-editor');
+      await page.locator('#feedback-title').fill('Synthetic private feedback');
+      await page.locator('#feedback-current').fill('Synthetic private current details.');
       expired = true;
       await page.locator('#review-refresh').evaluate(button => button.click());
       await visible(page, '#login-view');
       assert.equal(await page.locator('#app-view').isVisible(), false);
       assert.equal(await page.locator('#chat-input').inputValue(), '');
       assert.equal(await page.locator('#chat-log').textContent(), '');
-      assert.equal(await page.locator('#report-request').inputValue(), '');
+      assert.equal(await page.locator('#feedback-title').inputValue(), '');
+      assert.equal(await page.locator('#feedback-current').inputValue(), '');
+      assert.equal(await page.locator('#feedback-image').inputValue(), '');
+      assert.equal(await page.locator('#feedback-canvas').isVisible(), false);
+      assert.equal(await page.locator('#feedback-created').textContent(), '');
       assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, capability readiness, context prefill, task events/history, required report request/result/retry/follow-up, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, catalog submit/validation/disabled/fallback, chat task events/history, report result/retry/follow-up, feedback image/canvas/accept/reject, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

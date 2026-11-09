@@ -85,6 +85,7 @@
         <nav class="section-nav" aria-label="Sections" data-i18n-aria-label="nav.aria">
           <a href="#dashboard" data-view="dashboard" data-i18n="nav.dashboard">Dashboard</a>
           <a href="#chat" data-view="chat" data-i18n="nav.chat">Assistant</a>
+          <a href="#feedback" data-view="feedback" data-i18n="nav.feedback">Feedback</a>
           <a href="#actions" data-view="actions" data-i18n="nav.actions">Actions</a>
           <a href="#runs" data-view="runs" data-i18n="nav.runs">Run history</a>
           <a href="#review" data-view="review" data-i18n="nav.review">Owner review</a>
@@ -106,22 +107,11 @@
             <p id="dashboard-repository" class="hint"></p></div>
             <a class="btn ghost" href="#runs" data-i18n="dashboard.results">View results</a>
           </header>
-          <section class="card" aria-labelledby="daily-heading">
-            <h2 id="daily-heading" data-i18n="daily.title">Your daily assistant</h2>
-            <div class="daily-shortcuts">
-              <div><button id="daily-ask" class="btn primary" type="button" data-i18n="daily.ask">Ask my context</button><p id="daily-chat-ready" class="hint"></p><a href="#model-services-settings" data-i18n="daily.setup_chat">Set up assistant</a></div>
-              <div><button id="daily-report" class="btn primary" type="button" data-i18n="daily.report">Create background report</button><p id="daily-report-ready" class="hint"></p><a href="#model-services-settings" data-i18n="daily.setup_report">Set up reports</a></div>
-              <div><button id="daily-organize" class="btn primary" type="button" data-i18n="daily.organize">Organize context</button><p id="daily-maintenance-ready" class="hint"></p><a href="#repository-section" data-i18n="daily.setup_context">Set up context</a></div>
-            </div>
-            <form id="report-form" class="form" hidden>
-              <label for="report-request" data-i18n="daily.request">What should the report answer?</label>
-              <textarea id="report-request" rows="3" maxlength="4000" required></textarea>
-              <label for="report-priority" data-i18n="board.priority">Priority</label>
-              <select id="report-priority"><option value="P1" data-i18n="daily.immediate">P1 · Next available slot</option><option value="P2" data-i18n="daily.window">P2 · Off-peak window</option></select>
-              <button id="report-submit" class="btn primary" type="submit"><span class="btn-label" data-i18n="daily.submit">Queue report</span></button>
-            </form>
-            <p id="report-message" class="form-message" role="status" aria-live="polite"></p>
-            <div id="report-created"></div>
+          <section class="card" aria-labelledby="catalog-heading">
+            <h2 id="catalog-heading" data-i18n="catalog.title">Actions</h2>
+            <p class="lede" data-i18n="catalog.lead">Owner-defined actions from the server catalog. Submitting accepts work into the queue; it does not mean the work is complete.</p>
+            <p id="catalog-hint" class="hint" hidden></p>
+            <div id="catalog-list" class="catalog-list" aria-live="polite"></div>
           </section>
           <a id="dashboard-review" class="notice review-notice" href="#review" hidden></a>
         <section id="dashboard-work-card" class="card work-card" aria-labelledby="work-console-heading">
@@ -363,6 +353,83 @@
               <textarea id="chat-input" rows="3" maxlength="16000" required></textarea>
               <button id="chat-send" class="btn primary" type="submit" data-i18n="chat.send">Send</button>
             </form>
+          </section>
+        </section>
+        <section id="feedback-view" class="page-view" aria-labelledby="feedback-heading" hidden>
+          <header class="page-heading"><div><p class="eyebrow" data-i18n="feedback.kicker">Improve Folio</p>
+            <h1 id="feedback-heading" tabindex="-1" data-i18n="feedback.title">Send feedback</h1>
+            <p class="lede" data-i18n="feedback.lead">Report a concrete problem or improvement. Screenshots stay in this page until you submit and are never saved in browser storage.</p></div></header>
+          <section class="card">
+            <form id="feedback-form" class="form feedback-form" novalidate>
+              <div class="field">
+                <label for="feedback-title" data-i18n="feedback.title_label">Title</label>
+                <input id="feedback-title" type="text" maxlength="120" autocomplete="off" required>
+              </div>
+              <div class="field">
+                <label for="feedback-area" data-i18n="feedback.area">Area</label>
+                <select id="feedback-area">
+                  <option value="dashboard" data-i18n="feedback.area.dashboard">Dashboard</option>
+                  <option value="assistant" data-i18n="feedback.area.assistant">Assistant</option>
+                  <option value="actions" data-i18n="feedback.area.actions">Actions</option>
+                  <option value="runs" data-i18n="feedback.area.runs">Run history</option>
+                  <option value="review" data-i18n="feedback.area.review">Owner review</option>
+                  <option value="settings" data-i18n="feedback.area.settings">Settings</option>
+                  <option value="feedback" data-i18n="feedback.area.feedback">Feedback</option>
+                  <option value="other" data-i18n="feedback.area.other">Other</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="feedback-current" data-i18n="feedback.current">What happens now?</label>
+                <textarea id="feedback-current" rows="3" maxlength="1000" required></textarea>
+              </div>
+              <div class="field">
+                <label for="feedback-expected" data-i18n="feedback.expected">What should happen instead?</label>
+                <textarea id="feedback-expected" rows="3" maxlength="1000" required></textarea>
+              </div>
+              <div class="field">
+                <label for="feedback-acceptance" data-i18n="feedback.acceptance">How will we know it is fixed?</label>
+                <textarea id="feedback-acceptance" rows="2" maxlength="1000" required></textarea>
+              </div>
+              <div class="field">
+                <label for="feedback-priority" data-i18n="feedback.priority">Priority</label>
+                <select id="feedback-priority">
+                  <option value="P1" data-i18n="feedback.priority.p1">P1 · Blocks a core flow</option>
+                  <option value="P2" selected data-i18n="feedback.priority.p2">P2 · Important but workable</option>
+                </select>
+              </div>
+              <fieldset class="feedback-image-field">
+                <legend data-i18n="feedback.image">Screenshot (optional)</legend>
+                <p class="hint" data-i18n="feedback.image_hint">PNG or JPEG, up to 8 MB. Paste with Ctrl+V, drop a file here, or choose one.</p>
+                <div id="feedback-dropzone" class="feedback-dropzone" tabindex="0" role="button" aria-label="Add a screenshot" data-i18n-aria-label="feedback.image_add">
+                  <input id="feedback-image" type="file" accept="image/png,image/jpeg" hidden>
+                  <p id="feedback-image-state" class="hint" data-i18n="feedback.image_none">No image selected</p>
+                  <button id="feedback-choose-image" class="btn ghost small" type="button" data-i18n="feedback.choose_image">Choose image</button>
+                </div>
+                <p id="feedback-image-error" class="form-message" role="status" aria-live="polite"></p>
+                <div id="feedback-editor" class="feedback-editor" hidden>
+                  <div id="feedback-tools" class="feedback-tools" role="toolbar" aria-label="Screenshot tools" data-i18n-aria-label="feedback.tools">
+                    <button id="feedback-tool-pen" class="btn ghost small" type="button" aria-pressed="true" data-feedback-tool="pen" data-i18n="feedback.tool.pen">Pen</button>
+                    <button id="feedback-tool-arrow" class="btn ghost small" type="button" aria-pressed="false" data-feedback-tool="arrow" data-i18n="feedback.tool.arrow">Arrow</button>
+                    <button id="feedback-tool-rect" class="btn ghost small" type="button" aria-pressed="false" data-feedback-tool="rect" data-i18n="feedback.tool.rect">Rectangle</button>
+                    <label class="feedback-tool-field" for="feedback-color"><span data-i18n="feedback.color">Color</span><input id="feedback-color" type="color" value="#d64545"></label>
+                    <label class="feedback-tool-field" for="feedback-width"><span data-i18n="feedback.width">Width</span><input id="feedback-width" type="range" min="1" max="12" step="1" value="3"><output id="feedback-width-value" for="feedback-width">3</output></label>
+                    <button id="feedback-undo" class="btn ghost small" type="button" data-i18n="feedback.undo">Undo</button>
+                    <button id="feedback-clear" class="btn ghost small" type="button" data-i18n="feedback.clear">Clear drawing</button>
+                    <button id="feedback-remove-image" class="btn ghost small danger" type="button" data-i18n="feedback.remove_image">Remove image</button>
+                  </div>
+                  <div id="feedback-canvas-wrap" class="feedback-canvas-wrap">
+                    <canvas id="feedback-canvas" tabindex="0" aria-label="Screenshot annotation canvas" data-i18n-aria-label="feedback.canvas"></canvas>
+                  </div>
+                </div>
+              </fieldset>
+              <div class="actions">
+                <button id="feedback-submit" class="btn primary" type="submit">
+                  <span class="btn-label" data-i18n="feedback.submit">Send feedback</span>
+                </button>
+              </div>
+            </form>
+            <p id="feedback-message" class="form-message" role="status" aria-live="polite"></p>
+            <div id="feedback-created"></div>
           </section>
         </section>
         <section id="actions-view" class="page-view" aria-labelledby="actions-heading" hidden>

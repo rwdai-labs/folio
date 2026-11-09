@@ -85,7 +85,6 @@
     chat: [],
     chatBusy: false,
     chatController: null,
-    reportBusy: false,
     reportRunId: "",
     reportResults: new Map(),
     chatTasks: [],
@@ -93,6 +92,21 @@
     actionVersions: [],
     actionSelected: "",
     actionsBusy: false,
+    catalog: [],
+    catalogLoaded: false,
+    catalogError: false,
+    catalogBusy: {},
+    catalogResults: new Map(),
+    catalogNotices: new Map(),
+    feedbackBusy: false,
+    feedbackNotice: null,
+    feedback: {
+      image: null, imageName: "", dataURL: "", loadGeneration: 0,
+      cssWidth: 0, cssHeight: 0, dpr: 1,
+      strokes: [], current: null, drawing: false, pointerId: null,
+      tool: "pen", color: "#d64545", width: 3,
+      imageError: "",
+    },
   };
 
   const messageRegions = {
@@ -107,7 +121,6 @@
     weixin: { element: "weixin-message", data: null },
     tasks: { element: "tasks-message", data: null },
     chat: { element: "chat-message", data: null },
-    report: { element: "report-message", data: null },
     agent: { element: "agent-message", data: null },
     "model-services": { element: "model-services-message", data: null },
     actions: { element: "actions-message", data: null },
@@ -123,7 +136,7 @@
     const epoch = state.sessionEpoch;
     const method = options.method || "GET";
     const headers = { Accept: "application/json" };
-    if (options.body !== undefined) headers["Content-Type"] = "application/json";
+    if (options.body !== undefined && !options.formData) headers["Content-Type"] = "application/json";
     if (state.csrf && method !== "GET") headers["X-CSRF-Token"] = state.csrf;
 
     const controller = new AbortController();
@@ -136,7 +149,7 @@
         credentials: "same-origin",
         cache: "no-store",
         signal: controller.signal,
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        body: options.formData || (options.body === undefined ? undefined : JSON.stringify(options.body)),
       });
     } catch (_) {
       throw new ApiError("network", 0, null);
@@ -257,6 +270,18 @@
         return "tasks.busy";
       case "task_canceled":
         return "tasks.canceled_error";
+      case "action_unknown":
+        return "catalog.action_unknown";
+      case "action_disabled":
+        return "catalog.action_disabled";
+      case "action_input_invalid":
+        return "catalog.action_input_invalid";
+      case "feedback_invalid":
+        return "feedback.failed";
+      case "feedback_too_large":
+        return "feedback.image_too_large";
+      case "feedback_unavailable":
+        return "feedback.failed";
       case "job_unavailable":
         return "error.job_busy";
       case "session_unavailable":
@@ -878,7 +903,7 @@
 
   /* --------------------------------------------------------------- state */
 
-  const views = ["dashboard", "chat", "actions", "runs", "review", "settings"];
+  const views = ["dashboard", "chat", "feedback", "actions", "runs", "review", "settings"];
   const sectionViews = {
     "repository-section": "settings", "runner-settings": "settings",
     "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings", "model-services-settings": "settings",
@@ -896,7 +921,11 @@
     const binding = defaults[name === "chat" ? "assistant" : name];
     const model = Boolean(binding && binding.connection && binding.model);
     const runner = runnerAvailable("codex", data) || runnerAvailable("dsh", data);
-    return { ready: name === "chat" ? Boolean(state.agent && state.agent.available) || model : name === "report" ? model || runner : repository && (model || runner), missing: [] };
+    if (name === "chat") return { ready: Boolean(state.agent && state.agent.available) || model, missing: [] };
+    if (name === "report") return { ready: model || runner, missing: [] };
+    if (name === "maintenance") return { ready: repository && (model || runner), missing: [] };
+    if (name === "context") return { ready: repository, missing: [] };
+    return { ready: false, missing: [] };
   }
 
   function setupReady() {
@@ -947,12 +976,9 @@
     $("setup-runner-detail").textContent = t(available ? "setup.runner_available" : "setup.runner_missing");
     $("setup-alert").hidden = capability("maintenance").ready || !["dashboard", "review", "runs"].includes(state.view);
     $("dashboard-repository").textContent = repository.connected ? repository.full_name || "" : t("repo.none");
-    ["chat", "report", "maintenance"].forEach((name) => { $("daily-" + name + "-ready").textContent = capabilityText(name); $("settings-" + name + "-ready").textContent = capabilityText(name); });
-    $("daily-organize").disabled = !capability("maintenance").ready || state.automationRunning;
-    $("daily-report").disabled = !capability("report").ready;
-    $("report-submit").disabled = !capability("report").ready || state.reportBusy;
-    $("daily-ask").disabled = !capability("chat").ready;
+    ["chat", "report", "maintenance"].forEach((name) => { $("settings-" + name + "-ready").textContent = capabilityText(name); });
     updateChatAgentHint();
+    if (state.catalogLoaded) updateCatalogAvailability();
     const unavailable = !capability("maintenance").ready;
     if (!state.automationRunning) $("run-now-button").disabled = unavailable;
     if (!state.rechecking) $("review-recheck").disabled = unavailable;
@@ -1131,7 +1157,7 @@
     // the rest of the dashboard refresh behind a slow external gateway.
     refreshQuotas();
     await Promise.allSettled([
-      loadTaskKinds(), refreshAutomation({ silent: true }), refreshChannels(),
+      loadCatalog(), loadTaskKinds(), refreshAutomation({ silent: true }), refreshChannels(),
       refreshHooks(), refreshUsage(), refreshTasks(), loadWeixin(), loadAgentConfig(), loadModelServices(),
     ]);
     renderHooks({ hooks: state.hooks });
@@ -2725,6 +2751,398 @@
 
 
 
+  /* --------------------------------------------------------------- catalog */
+
+  let catalogFieldSerial = 0;
+
+  function catalogLabel(action) {
+    return translateKnown(action.label_key, action.label || action.id);
+  }
+
+  function catalogDescription(action) {
+    return translateKnown(action.description_key, action.description || "");
+  }
+
+  function catalogSubmitLabel(action) {
+    return translateKnown(action.submit_label_key, action.submit_label || t("catalog.submit"));
+  }
+
+  function catalogGroupName(action) {
+    const presentation = action.presentation && typeof action.presentation === "object" ? action.presentation : null;
+    if (presentation && typeof presentation.group === "string" && presentation.group.trim()) return presentation.group.trim();
+    if (typeof action.group === "string" && action.group.trim()) return action.group.trim();
+    return "actions";
+  }
+
+  function catalogRequirementReason(name) {
+    if (name === "workshop") return t("catalog.requires.workshop");
+    const known = { assistant: "chat", report: "report", maintenance: "maintenance", context: "context" };
+    if (!Object.prototype.hasOwnProperty.call(known, name)) {
+      return t("catalog.requires_unavailable", { name });
+    }
+    const cap = capability(known[name]);
+    if (cap.ready) return "";
+    const missing = Array.isArray(cap.missing) ? cap.missing : [];
+    const reasons = missing.map((item) => (typeof item === "string" ? item : item && item.code)).filter(Boolean);
+    const translated = reasons.map((code) => translateKnown(`daily.missing.${code}`, "")).filter(Boolean);
+    if (translated.length) return translated.join(" · ");
+    return t(`daily.missing.${known[name]}`);
+  }
+
+  function catalogBlockedReasons(action) {
+    const reasons = [];
+    if (action.enabled === false) reasons.push(t("catalog.disabled"));
+    const requires = Array.isArray(action.requires) ? action.requires : typeof action.requires === "string" ? [action.requires] : [];
+    requires.forEach((name) => {
+      if (typeof name !== "string" || !name) return;
+      const reason = catalogRequirementReason(name);
+      if (reason && !reasons.includes(reason)) reasons.push(reason);
+    });
+    return reasons;
+  }
+
+  function catalogFieldLabel(field) {
+    return field && typeof field.label === "string" && field.label.trim() ? field.label.trim() : field && field.name ? field.name : "";
+  }
+
+  function catalogFieldNode(field) {
+    if (!field || typeof field.name !== "string" || !field.name) return null;
+    const type = field.type;
+    if (!["text", "textarea", "select", "boolean"].includes(type)) return null;
+    catalogFieldSerial += 1;
+    const id = `catalog-field-${catalogFieldSerial}`;
+    const wrapper = document.createElement("div");
+    wrapper.className = "field";
+    const label = document.createElement("label");
+    label.htmlFor = id;
+    label.textContent = catalogFieldLabel(field);
+    let control;
+    if (type === "textarea") {
+      control = document.createElement("textarea");
+      control.rows = 3;
+    } else if (type === "select") {
+      control = document.createElement("select");
+      const options = Array.isArray(field.options) ? field.options : [];
+      const placeholder = typeof field.placeholder === "string" ? field.placeholder : "";
+      if (field.required || placeholder) {
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = placeholder || t("catalog.select_placeholder");
+        if (placeholder) blank.disabled = true;
+        blank.selected = true;
+        control.appendChild(blank);
+      }
+      options.forEach((option) => {
+        if (!option || typeof option.value !== "string") return;
+        const item = document.createElement("option");
+        item.value = option.value;
+        item.textContent = typeof option.label === "string" && option.label ? option.label : option.value;
+        control.appendChild(item);
+      });
+    } else if (type === "boolean") {
+      control = document.createElement("input");
+      control.type = "checkbox";
+    } else {
+      control = document.createElement("input");
+      control.type = "text";
+    }
+    control.id = id;
+    control.name = field.name;
+    control.dataset.catalogField = field.name;
+    control.dataset.catalogType = type;
+    if (field.required === true) control.required = true;
+    if (typeof field.placeholder === "string" && field.placeholder && type !== "select") control.placeholder = field.placeholder;
+    if (Number.isInteger(field.max_length) && field.max_length > 0 && (type === "text" || type === "textarea")) {
+      control.maxLength = field.max_length;
+    }
+    if (type === "boolean") {
+      label.className = "checkbox";
+      label.append(control, document.createTextNode(" " + catalogFieldLabel(field)));
+      wrapper.appendChild(label);
+      return wrapper;
+    }
+    wrapper.append(label, control);
+    return wrapper;
+  }
+
+  function catalogActionCard(action) {
+    const article = document.createElement("article");
+    article.className = "catalog-action";
+    article.dataset.catalogAction = action.id;
+
+    const heading = document.createElement("h4");
+    heading.textContent = catalogLabel(action);
+    article.appendChild(heading);
+    const description = catalogDescription(action);
+    if (description) {
+      const text = document.createElement("p");
+      text.className = "hint";
+      text.textContent = description;
+      article.appendChild(text);
+    }
+    const blocked = catalogBlockedReasons(action);
+
+    const form = document.createElement("form");
+    form.className = "form catalog-action-form";
+    form.noValidate = true;
+    form.dataset.catalogForm = action.id;
+    const fieldset = document.createElement("fieldset");
+    fieldset.className = "catalog-fields";
+    if (blocked.length) fieldset.disabled = true;
+    const fields = Array.isArray(action.fields) ? action.fields : [];
+    fields.forEach((field) => {
+      const node = catalogFieldNode(field);
+      if (node) fieldset.appendChild(node);
+    });
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.className = "btn primary";
+    submit.disabled = blocked.length > 0 || Boolean(state.catalogBusy[action.id]);
+    const submitLabel = document.createElement("span");
+    submitLabel.className = "btn-label";
+    submitLabel.textContent = catalogSubmitLabel(action);
+    submit.appendChild(submitLabel);
+    actions.appendChild(submit);
+    fieldset.appendChild(actions);
+    form.appendChild(fieldset);
+    article.appendChild(form);
+
+    if (blocked.length) {
+      const reason = document.createElement("p");
+      reason.className = "hint catalog-requirement";
+      reason.dataset.catalogRequirement = "true";
+      reason.textContent = blocked.join(" · ");
+      article.appendChild(reason);
+    }
+
+    const message = document.createElement("p");
+    message.className = "form-message";
+    message.dataset.catalogMessage = "true";
+    message.setAttribute("role", "status");
+    message.setAttribute("aria-live", "polite");
+    const notice = state.catalogNotices.get(action.id);
+    if (notice) {
+      message.textContent = t(notice.key, notice.vars);
+      if (notice.error) message.dataset.error = "true";
+    }
+    article.appendChild(message);
+
+    const result = document.createElement("div");
+    result.dataset.catalogResult = "true";
+    const task = state.catalogResults.get(action.id);
+    if (task) result.appendChild(chatTaskCard(task));
+    article.appendChild(result);
+    return article;
+  }
+
+  function renderCatalog() {
+    const list = $("catalog-list");
+    const hint = $("catalog-hint");
+    if (!list || !hint) return;
+    const drafts = new Map();
+    let focused = null;
+    document.querySelectorAll("[data-catalog-action]").forEach((article) => {
+      const values = {};
+      article.querySelectorAll("[data-catalog-field]").forEach((control) => {
+        values[control.dataset.catalogField] = control.type === "checkbox" ? control.checked : control.value;
+        if (document.activeElement === control) focused = { action: article.dataset.catalogAction, field: control.dataset.catalogField };
+      });
+      drafts.set(article.dataset.catalogAction, values);
+    });
+    list.replaceChildren();
+    if (state.catalogError) {
+      hint.hidden = false;
+      hint.textContent = t("catalog.unavailable");
+      return;
+    }
+    if (!state.catalogLoaded) {
+      hint.hidden = false;
+      hint.textContent = t("catalog.loading");
+      return;
+    }
+    const actions = Array.isArray(state.catalog) ? state.catalog : [];
+    if (!actions.length) {
+      hint.hidden = false;
+      hint.textContent = t("catalog.empty");
+      return;
+    }
+    hint.hidden = true;
+    const groups = new Map();
+    actions.forEach((action, index) => {
+      if (!action || typeof action.id !== "string" || !action.id || action.id.length > 128) return;
+      const name = catalogGroupName(action);
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push({ action, index });
+    });
+    groups.forEach((entries, name) => {
+      entries.sort((a, b) => {
+        const left = Number.isFinite(Number(a.action.order)) ? Number(a.action.order) : a.index;
+        const right = Number.isFinite(Number(b.action.order)) ? Number(b.action.order) : b.index;
+        return left - right || a.index - b.index;
+      });
+      const group = document.createElement("section");
+      group.className = "catalog-group";
+      const heading = document.createElement("h3");
+      heading.textContent = translateKnown(`catalog.group.${name}`, name);
+      group.appendChild(heading);
+      entries.forEach(({ action }) => {
+        const card = catalogActionCard(action);
+        const draft = drafts.get(action.id);
+        if (draft) {
+          card.querySelectorAll("[data-catalog-field]").forEach((control) => {
+            const name = control.dataset.catalogField;
+            if (!Object.prototype.hasOwnProperty.call(draft, name)) return;
+            if (control.type === "checkbox") control.checked = Boolean(draft[name]);
+            else control.value = String(draft[name]);
+          });
+        }
+        group.appendChild(card);
+      });
+      list.appendChild(group);
+    });
+    if (focused) {
+      const control = Array.from(list.querySelectorAll("[data-catalog-field]")).find((item) =>
+        item.closest("[data-catalog-action]")?.dataset.catalogAction === focused.action && item.dataset.catalogField === focused.field);
+      if (control) control.focus({ preventScroll: true });
+    }
+  }
+
+  function updateCatalogAvailability() {
+    const actions = Array.isArray(state.catalog) ? state.catalog : [];
+    document.querySelectorAll("[data-catalog-action]").forEach((article) => {
+      const action = actions.find((item) => item && item.id === article.dataset.catalogAction);
+      if (!action) return;
+      const blocked = catalogBlockedReasons(action);
+      const fieldset = article.querySelector("fieldset.catalog-fields");
+      if (fieldset) fieldset.disabled = blocked.length > 0;
+      const submit = article.querySelector("button[type=submit]");
+      if (submit) submit.disabled = blocked.length > 0 || Boolean(state.catalogBusy[action.id]);
+      let reason = article.querySelector("[data-catalog-requirement]");
+      if (blocked.length) {
+        if (!reason) {
+          reason = document.createElement("p");
+          reason.className = "hint catalog-requirement";
+          reason.dataset.catalogRequirement = "true";
+          const form = article.querySelector("form");
+          if (form) article.insertBefore(reason, form.nextSibling);
+          else article.appendChild(reason);
+        }
+        reason.textContent = blocked.join(" · ");
+      } else if (reason) {
+        reason.remove();
+      }
+    });
+  }
+
+  async function loadCatalog() {
+    const epoch = state.sessionEpoch;
+    try {
+      const data = await api("/api/catalog");
+      if (!state.authenticated || epoch !== state.sessionEpoch) return;
+      state.catalog = Array.isArray(data.actions) ? data.actions : [];
+      state.catalogLoaded = true;
+      state.catalogError = false;
+      renderCatalog();
+    } catch (error) {
+      if (error.code === "authentication_required") return;
+      if (!state.authenticated || epoch !== state.sessionEpoch) return;
+      state.catalog = [];
+      state.catalogLoaded = true;
+      state.catalogError = true;
+      renderCatalog();
+    }
+  }
+
+  function setCatalogNotice(id, key, options = {}) {
+    state.catalogNotices.set(id, { key, vars: options.vars || null, error: Boolean(options.error) });
+    document.querySelectorAll("[data-catalog-action]").forEach((article) => {
+      if (article.dataset.catalogAction !== id) return;
+      const message = article.querySelector("[data-catalog-message]");
+      if (!message) return;
+      message.textContent = t(key, options.vars);
+      message.dataset.error = options.error ? "true" : "false";
+    });
+  }
+
+  function catalogFieldValues(form, action) {
+    const fields = {};
+    let focus = null;
+    const controls = form.querySelectorAll("[data-catalog-field]");
+    for (const control of controls) {
+      const name = control.dataset.catalogField;
+      const definition = (Array.isArray(action.fields) ? action.fields : []).find((field) => field && field.name === name);
+      if (!definition) continue;
+      const type = control.dataset.catalogType;
+      if (type === "boolean") {
+        fields[name] = control.checked;
+        if (definition.required === true && !control.checked) {
+          focus = control;
+          return { fields, focus };
+        }
+        continue;
+      }
+      const value = control.value;
+      if (definition.required === true && !value.trim()) {
+        focus = control;
+        return { fields, focus };
+      }
+      if (Number.isInteger(definition.max_length) && definition.max_length > 0 && Array.from(value).length > definition.max_length) {
+        focus = control;
+        return { fields, focus };
+      }
+      if (type === "select" && !value && definition.required !== true) continue;
+      fields[name] = type === "select" ? value : value.trim();
+    }
+    return { fields, focus };
+  }
+
+  async function runCatalogAction(event) {
+    event.preventDefault();
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    const id = form.dataset.catalogForm;
+    const action = (Array.isArray(state.catalog) ? state.catalog : []).find((item) => item && item.id === id);
+    if (!action || state.catalogBusy[id]) return;
+    if (catalogBlockedReasons(action).length) {
+      setCatalogNotice(id, "catalog.action_disabled", { error: true });
+      return;
+    }
+    const { fields, focus } = catalogFieldValues(form, action);
+    if (focus) {
+      const definition = (action.fields || []).find((field) => field && field.name === focus.dataset.catalogField) || {};
+      setCatalogNotice(id, "catalog.invalid_field", { error: true, vars: { field: catalogFieldLabel(definition) } });
+      focus.focus();
+      return;
+    }
+    const epoch = state.sessionEpoch;
+    state.catalogBusy[id] = true;
+    const button = form.querySelector("button[type=submit]");
+    setBusy(button, "catalog.submitting");
+    try {
+      const result = await api(`/api/actions/${encodeURIComponent(id)}/run`, { method: "POST", body: { fields } });
+      if (!state.authenticated || epoch !== state.sessionEpoch) return;
+      const task = result.task || result;
+      if (task && typeof task === "object") {
+        state.catalogResults.set(id, task);
+        const article = form.closest("article[data-catalog-action]");
+        const container = article ? article.querySelector("[data-catalog-result]") : null;
+        if (container) container.replaceChildren(chatTaskCard(task));
+      }
+      setCatalogNotice(id, "catalog.accepted");
+      form.reset();
+      await refreshTasks();
+    } catch (error) {
+      if (state.authenticated && epoch === state.sessionEpoch) {
+        setCatalogNotice(id, errorKey(error, "catalog.failed"), { error: true });
+      }
+    } finally {
+      delete state.catalogBusy[id];
+      clearBusy(button);
+    }
+  }
+
   /* --------------------------------------------------------------- actions */
 
   function renderActions() {
@@ -3165,7 +3583,7 @@
   function chatTaskCard(task) {
     const card = document.createElement("div");
     card.className = "chat-task-card notice";
-    const title = document.createElement("strong"); title.textContent = task.title || t("daily.report");
+    const title = document.createElement("strong"); title.textContent = task.title || t("catalog.task_fallback");
     const status = document.createElement("p"); status.textContent = t(task.status === "done" ? "daily.completed" : task.status === "failed" ? "tasks.status.failed" : "daily.accepted");
     const waiting = task.status === "queued" && typeof task.enabled === "boolean" ? taskWaitText(task, state.tasks) : "";
     const detail = document.createElement("p"); detail.className = "hint";
@@ -3173,29 +3591,6 @@
     const button = document.createElement("button"); button.type = "button"; button.className = "btn ghost small";
     button.dataset.chatTask = task.id || task.task_id || ""; button.textContent = t("daily.inspect");
     card.append(title, status, detail, button); return card;
-  }
-
-  async function createDailyReport(event) {
-    event.preventDefault();
-    const request = $("report-request").value.trim();
-    if (state.reportBusy || !capability("report").ready) return;
-    if (!request || Array.from(request).length > 4000) {
-      setMessage("report", request ? "daily.request_limit" : "daily.request_required", { error: true });
-      $("report-request").focus(); return;
-    }
-    const epoch = state.sessionEpoch;
-    state.reportBusy = true; setBusy($("report-submit"), "daily.submitting");
-    setMessage("report", null);
-    try {
-      const result = await api("/api/tasks", { method: "POST", body: { kind: "report", title: request.slice(0, 160), priority: $("report-priority").value, payload: { request } } });
-      if (!state.authenticated || epoch !== state.sessionEpoch) return;
-      const task = result.task || result;
-      $("report-created").replaceChildren(chatTaskCard(task));
-      $("report-request").value = "";
-      setMessage("report", "daily.accepted");
-      await refreshTasks();
-    } catch (error) { if (state.authenticated) setMessage("report", errorKey(error, "daily.failed"), { error: true }); }
-    finally { state.reportBusy = false; clearBusy($("report-submit")); renderSetup(); }
   }
 
   function renderChat() {
@@ -3365,6 +3760,544 @@
       state.chatBusy = false;
       clearBusy(button);
     }
+  }
+
+  /* --------------------------------------------------------------- feedback */
+
+  const FEEDBACK_IMAGE_MAX = 8 * 1024 * 1024;
+  const FEEDBACK_AREAS = ["dashboard", "assistant", "actions", "runs", "review", "settings", "feedback", "other"];
+  const FEEDBACK_REASONS = {
+    title_short: "feedback.reason.title_short",
+    area_invalid: "feedback.reason.area_invalid",
+    current_short: "feedback.reason.current_short",
+    expected_short: "feedback.reason.expected_short",
+    acceptance_short: "feedback.reason.acceptance_short",
+    image_invalid: "feedback.reason.image_invalid",
+    too_large: "feedback.reason.too_large",
+    too_long: "feedback.reason.too_long",
+    too_broad: "feedback.reason.too_broad",
+    ambiguous: "feedback.reason.ambiguous",
+    not_actionable: "feedback.reason.not_actionable",
+    unsafe_scope: "feedback.reason.unsafe_scope",
+    gate_unavailable: "feedback.reason.gate_unavailable",
+    priority_invalid: "feedback.reason.priority_invalid",
+    invalid: "feedback.reason.invalid",
+    title_long: "feedback.reason.title_long",
+  };
+  const FEEDBACK_TOOL_IDS = { pen: "feedback-tool-pen", arrow: "feedback-tool-arrow", rect: "feedback-tool-rect" };
+
+  function feedbackReasonText(code) {
+    if (typeof code !== "string" || !code) return t("feedback.reason.unknown");
+    const key = FEEDBACK_REASONS[code];
+    return key ? translateKnown(key, code) : code;
+  }
+
+  function renderFeedbackNotice() {
+    const element = $("feedback-message");
+    if (!element) return;
+    const notice = state.feedbackNotice;
+    if (!notice) {
+      element.textContent = "";
+      element.dataset.error = "false";
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(notice, "reason")) {
+      element.textContent = t("feedback.rejected", { reason: feedbackReasonText(notice.reason) });
+    } else {
+      element.textContent = t(notice.key, notice.vars);
+    }
+    element.dataset.error = notice.error ? "true" : "false";
+  }
+
+  function setFeedbackNotice(notice) {
+    state.feedbackNotice = notice || null;
+    renderFeedbackNotice();
+  }
+
+  function renderFeedbackImageState() {
+    const element = $("feedback-image-state");
+    if (!element) return;
+    const name = state.feedback.imageName;
+    element.textContent = name ? t("feedback.image_selected", { name }) : t("feedback.image_none");
+  }
+
+  function renderFeedbackImageError() {
+    const element = $("feedback-image-error");
+    if (!element) return;
+    const key = state.feedback.imageError;
+    element.textContent = key ? t(key) : "";
+    element.dataset.error = key ? "true" : "false";
+  }
+
+  function setFeedbackImageError(key) {
+    state.feedback.imageError = key || "";
+    renderFeedbackImageError();
+  }
+
+  function clearFeedbackCanvas() {
+    const canvas = $("feedback-canvas");
+    if (!canvas) return;
+    try {
+      const context = canvas.getContext("2d");
+      if (context) {
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    } catch (_) {
+      // A canvas can be unavailable in an old engine; the rest of the form still works.
+    }
+    canvas.width = 1;
+    canvas.height = 1;
+    canvas.style.removeProperty("width");
+    canvas.style.removeProperty("height");
+    const editor = $("feedback-editor");
+    if (editor) editor.hidden = true;
+  }
+
+  function clearFeedbackImage() {
+    const feedback = state.feedback;
+    feedback.loadGeneration += 1;
+    feedback.image = null;
+    feedback.imageName = "";
+    feedback.dataURL = "";
+    feedback.cssWidth = 0;
+    feedback.cssHeight = 0;
+    feedback.dpr = 1;
+    feedback.strokes = [];
+    feedback.current = null;
+    feedback.drawing = false;
+    feedback.pointerId = null;
+    feedback.imageError = "";
+    clearFeedbackCanvas();
+    const input = $("feedback-image");
+    if (input) input.value = "";
+    renderFeedbackImageState();
+    renderFeedbackImageError();
+  }
+
+  function resetFeedbackFields() {
+    ["feedback-title", "feedback-current", "feedback-expected", "feedback-acceptance"].forEach((id) => {
+      const node = $(id);
+      if (node) node.value = "";
+    });
+    if ($("feedback-area")) $("feedback-area").value = "dashboard";
+    if ($("feedback-priority")) $("feedback-priority").value = "P2";
+    setFeedbackImageError("");
+  }
+
+  function resetFeedbackDraft() {
+    resetFeedbackFields();
+    clearFeedbackImage();
+  }
+
+  function resetFeedbackSession() {
+    state.feedbackBusy = false;
+    state.feedbackNotice = null;
+    resetFeedbackDraft();
+    const created = $("feedback-created");
+    if (created) created.replaceChildren();
+    if ($("feedback-color")) $("feedback-color").value = "#d64545";
+    if ($("feedback-width")) $("feedback-width").value = "3";
+    if ($("feedback-width-value")) $("feedback-width-value").textContent = "3";
+    state.feedback.tool = "pen";
+    state.feedback.color = "#d64545";
+    state.feedback.width = 3;
+    feedbackSetTool("pen");
+    renderFeedbackNotice();
+  }
+
+  function feedbackSetTool(tool) {
+    if (!Object.prototype.hasOwnProperty.call(FEEDBACK_TOOL_IDS, tool)) return;
+    state.feedback.tool = tool;
+    Object.entries(FEEDBACK_TOOL_IDS).forEach(([name, id]) => {
+      const button = $(id);
+      if (button) button.setAttribute("aria-pressed", name === tool ? "true" : "false");
+    });
+  }
+
+  function feedbackDrawStroke(context, stroke) {
+    const points = Array.isArray(stroke.points) ? stroke.points : [];
+    if (!points.length) return;
+    const color = /^#[0-9a-f]{6}$/i.test(stroke.color) ? stroke.color : "#d64545";
+    const width = Math.max(1, Math.min(12, Number(stroke.width) || 3));
+    context.save();
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.lineWidth = width;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    if (stroke.tool === "rect" && points.length > 1) {
+      const start = points[0];
+      const end = points[points.length - 1];
+      context.strokeRect(start.x, start.y, end.x - start.x, end.y - start.y);
+    } else if (stroke.tool === "arrow" && points.length > 1) {
+      const start = points[0];
+      const end = points[points.length - 1];
+      context.beginPath();
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
+      context.stroke();
+      const angle = Math.atan2(end.y - start.y, end.x - start.x);
+      const head = Math.max(8, width * 3.5);
+      context.beginPath();
+      context.moveTo(end.x, end.y);
+      context.lineTo(end.x - head * Math.cos(angle - Math.PI / 6), end.y - head * Math.sin(angle - Math.PI / 6));
+      context.moveTo(end.x, end.y);
+      context.lineTo(end.x - head * Math.cos(angle + Math.PI / 6), end.y - head * Math.sin(angle + Math.PI / 6));
+      context.stroke();
+    } else {
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      for (let index = 1; index < points.length; index += 1) context.lineTo(points[index].x, points[index].y);
+      if (points.length === 1) context.lineTo(points[0].x + 0.01, points[0].y + 0.01);
+      context.stroke();
+    }
+    context.restore();
+  }
+
+  function redrawFeedback() {
+    const canvas = $("feedback-canvas");
+    const feedback = state.feedback;
+    if (!canvas || !feedback.image || !feedback.cssWidth || !feedback.cssHeight) return;
+    let context;
+    try {
+      context = canvas.getContext("2d");
+    } catch (_) {
+      context = null;
+    }
+    if (!context) return;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.setTransform(feedback.dpr, 0, 0, feedback.dpr, 0, 0);
+    context.drawImage(feedback.image, 0, 0, feedback.cssWidth, feedback.cssHeight);
+    feedback.strokes.forEach((stroke) => feedbackDrawStroke(context, stroke));
+    if (feedback.current) feedbackDrawStroke(context, feedback.current);
+  }
+
+  function fitFeedbackCanvas(image) {
+    const editor = $("feedback-editor");
+    if (editor) editor.hidden = false;
+    const wrap = $("feedback-canvas-wrap");
+    const naturalWidth = image.naturalWidth || image.width || 1;
+    const naturalHeight = image.naturalHeight || image.height || 1;
+    const available = Math.max(1, Math.min(760, (wrap && wrap.clientWidth) || 760));
+    const scale = Math.min(available / naturalWidth, 560 / naturalHeight, 1);
+    const cssWidth = Math.max(1, Math.round(naturalWidth * scale));
+    const cssHeight = Math.max(1, Math.round(naturalHeight * scale));
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const canvas = $("feedback-canvas");
+    if (!canvas) return;
+    canvas.width = Math.max(1, Math.round(cssWidth * dpr));
+    canvas.height = Math.max(1, Math.round(cssHeight * dpr));
+    canvas.style.width = `${cssWidth}px`;
+    canvas.style.height = `${cssHeight}px`;
+    state.feedback.cssWidth = cssWidth;
+    state.feedback.cssHeight = cssHeight;
+    state.feedback.dpr = dpr;
+    state.feedback.strokes = [];
+    state.feedback.current = null;
+    redrawFeedback();
+  }
+
+  function feedbackSelectFile(file) {
+    if (!file) return;
+    const type = typeof file.type === "string" ? file.type : "";
+    if (type !== "image/png" && type !== "image/jpeg") {
+      clearFeedbackImage();
+      setFeedbackImageError("feedback.image_invalid");
+      return;
+    }
+    if (Number(file.size) > FEEDBACK_IMAGE_MAX) {
+      clearFeedbackImage();
+      setFeedbackImageError("feedback.image_too_large");
+      return;
+    }
+    clearFeedbackImage();
+    setFeedbackImageError("");
+    const feedback = state.feedback;
+    const generation = ++feedback.loadGeneration;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (generation !== feedback.loadGeneration || !state.authenticated) return;
+      const dataURL = typeof reader.result === "string" ? reader.result : "";
+      if (!/^data:image\/(png|jpeg);base64,/.test(dataURL)) {
+        setFeedbackImageError("feedback.image_invalid");
+        return;
+      }
+      feedback.dataURL = dataURL;
+      feedback.imageName = typeof file.name === "string" && file.name ? file.name : "feedback.png";
+      const image = new Image();
+      image.onload = () => {
+        if (generation !== feedback.loadGeneration || !state.authenticated) return;
+        const width = image.naturalWidth || 0;
+        const height = image.naturalHeight || 0;
+        if (width < 64 || height < 64 || width > 4096 || height > 4096 || width * height > 8_000_000) {
+          clearFeedbackImage();
+          setFeedbackImageError("feedback.image_dimensions");
+          return;
+        }
+        feedback.image = image;
+        fitFeedbackCanvas(image);
+        renderFeedbackImageState();
+      };
+      image.onerror = () => {
+        if (generation !== feedback.loadGeneration) return;
+        feedback.image = null;
+        feedback.imageName = "";
+        setFeedbackImageError("feedback.image_invalid");
+        renderFeedbackImageState();
+      };
+      image.src = dataURL;
+    };
+    reader.onerror = () => {
+      if (generation !== feedback.loadGeneration) return;
+      setFeedbackImageError("feedback.image_invalid");
+    };
+    try {
+      reader.readAsDataURL(file);
+    } catch (_) {
+      setFeedbackImageError("feedback.image_invalid");
+    }
+  }
+
+  function feedbackPoint(event) {
+    const canvas = $("feedback-canvas");
+    const feedback = state.feedback;
+    if (!canvas || !feedback.cssWidth || !feedback.cssHeight) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const x = (event.clientX - rect.left) * (feedback.cssWidth / rect.width);
+    const y = (event.clientY - rect.top) * (feedback.cssHeight / rect.height);
+    return {
+      x: Math.max(0, Math.min(feedback.cssWidth, x)),
+      y: Math.max(0, Math.min(feedback.cssHeight, y)),
+    };
+  }
+
+  function startFeedbackStroke(event) {
+    const feedback = state.feedback;
+    if (!feedback.image || feedback.drawing || event.isPrimary === false) return;
+    if (typeof event.button === "number" && event.button !== 0) return;
+    const point = feedbackPoint(event);
+    if (!point) return;
+    event.preventDefault();
+    feedback.drawing = true;
+    feedback.pointerId = event.pointerId;
+    feedback.current = {
+      tool: feedback.tool,
+      color: feedback.color,
+      width: feedback.width,
+      points: [point],
+    };
+    const canvas = $("feedback-canvas");
+    if (canvas && typeof canvas.setPointerCapture === "function") {
+      try {
+        canvas.setPointerCapture(event.pointerId);
+      } catch (_) {
+        // Pointer capture is an enhancement; pointer move still works in most engines.
+      }
+    }
+    redrawFeedback();
+  }
+
+  function moveFeedbackStroke(event) {
+    const feedback = state.feedback;
+    if (!feedback.drawing || !feedback.current) return;
+    if (feedback.pointerId !== null && event.pointerId !== feedback.pointerId) return;
+    const point = feedbackPoint(event);
+    if (!point) return;
+    event.preventDefault();
+    if (feedback.current.tool === "pen") feedback.current.points.push(point);
+    else feedback.current.points[1] = point;
+    redrawFeedback();
+  }
+
+  function endFeedbackStroke(event) {
+    const feedback = state.feedback;
+    if (!feedback.drawing) return;
+    if (feedback.pointerId !== null && event.pointerId !== undefined && event.pointerId !== feedback.pointerId) return;
+    if (feedback.current) feedback.strokes.push(feedback.current);
+    feedback.current = null;
+    feedback.drawing = false;
+    const canvas = $("feedback-canvas");
+    if (canvas && feedback.pointerId !== null && typeof canvas.releasePointerCapture === "function") {
+      try {
+        canvas.releasePointerCapture(feedback.pointerId);
+      } catch (_) {
+        // The pointer may already have been released by the browser.
+      }
+    }
+    feedback.pointerId = null;
+    redrawFeedback();
+  }
+
+  function feedbackExportBlob() {
+    return new Promise((resolve, reject) => {
+      const feedback = state.feedback;
+      const image = feedback.image;
+      if (!image) {
+        resolve(null);
+        return;
+      }
+      const width = image.naturalWidth || image.width || 0;
+      const height = image.naturalHeight || image.height || 0;
+      if (!width || !height || !feedback.cssWidth || !feedback.cssHeight) {
+        reject(new Error("unavailable"));
+        return;
+      }
+      // Export the original image dimensions, not the fitted preview, so text
+      // and annotations keep their detail. Strokes are stored in preview
+      // coordinates and scale uniformly with the same aspect ratio.
+      const output = document.createElement("canvas");
+      output.width = width;
+      output.height = height;
+      const context = output.getContext("2d");
+      if (!context || typeof output.toBlob !== "function") {
+        reject(new Error("unsupported"));
+        return;
+      }
+      const scaleX = width / feedback.cssWidth;
+      const scaleY = height / feedback.cssHeight;
+      try {
+        context.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+        context.drawImage(image, 0, 0, feedback.cssWidth, feedback.cssHeight);
+        feedback.strokes.forEach((stroke) => feedbackDrawStroke(context, stroke));
+        output.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("empty"));
+        }, "image/png");
+      } catch (_) {
+        reject(new Error("failed"));
+      }
+    });
+  }
+
+  async function submitFeedback(event) {
+    event.preventDefault();
+    if (state.feedbackBusy) return;
+    const created = $("feedback-created");
+    if (created) created.replaceChildren();
+    const titleNode = $("feedback-title");
+    const areaNode = $("feedback-area");
+    const currentNode = $("feedback-current");
+    const expectedNode = $("feedback-expected");
+    const acceptanceNode = $("feedback-acceptance");
+    const priorityNode = $("feedback-priority");
+    const title = titleNode ? titleNode.value.trim() : "";
+    const current = currentNode ? currentNode.value.trim() : "";
+    const expected = expectedNode ? expectedNode.value.trim() : "";
+    const acceptance = acceptanceNode ? acceptanceNode.value.trim() : "";
+    const area = areaNode ? areaNode.value : "";
+    const priority = priorityNode ? priorityNode.value : "";
+    const required = [
+      [titleNode, title, 120],
+      [currentNode, current, 1000],
+      [expectedNode, expected, 1000],
+      [acceptanceNode, acceptance, 1000],
+    ];
+    for (const [node, value, limit] of required) {
+      if (!value) {
+        setFeedbackNotice({ key: "feedback.required", error: true });
+        if (node) node.focus();
+        return;
+      }
+      if (Array.from(value).length > limit) {
+        setFeedbackNotice({ key: "feedback.too_long", error: true });
+        if (node) node.focus();
+        return;
+      }
+    }
+    if (!FEEDBACK_AREAS.includes(area) || (priority !== "P1" && priority !== "P2")) {
+      setFeedbackNotice({ key: "feedback.invalid", error: true });
+      return;
+    }
+    let imageBlob = null;
+    if (state.feedback.image) {
+      try {
+        imageBlob = await feedbackExportBlob();
+      } catch (_) {
+        setFeedbackImageError("feedback.export_failed");
+        return;
+      }
+      if (!imageBlob || imageBlob.type !== "image/png") {
+        setFeedbackImageError("feedback.export_failed");
+        return;
+      }
+      if (imageBlob.size > FEEDBACK_IMAGE_MAX) {
+        setFeedbackImageError("feedback.image_too_large");
+        return;
+      }
+    }
+    if (!state.authenticated) return;
+    const epoch = state.sessionEpoch;
+    state.feedbackBusy = true;
+    setFeedbackImageError("");
+    const button = $("feedback-submit");
+    setBusy(button, "feedback.submitting");
+    setFeedbackNotice(null);
+    const data = new FormData();
+    data.append("title", title);
+    data.append("area", area);
+    data.append("current", current);
+    data.append("expected", expected);
+    data.append("acceptance", acceptance);
+    data.append("priority", priority);
+    if (imageBlob) data.append("image", imageBlob, "feedback.png");
+    try {
+      const result = await api("/api/feedback", { method: "POST", formData: data });
+      if (!state.authenticated || epoch !== state.sessionEpoch) return;
+      if (result && result.accepted === false) {
+        const reason = result.feedback && typeof result.feedback.reason === "string" ? result.feedback.reason : "";
+        setFeedbackNotice({ reason, error: true });
+        return;
+      }
+      setFeedbackNotice({ key: "feedback.accepted" });
+      const task = result && (result.task || (result.feedback && result.feedback.task));
+      const resultBox = $("feedback-created");
+      if (resultBox && task && typeof task === "object") resultBox.replaceChildren(chatTaskCard(task));
+      resetFeedbackDraft();
+      await refreshTasks();
+    } catch (error) {
+      if (state.authenticated && epoch === state.sessionEpoch) {
+        const detail = error && (error.payload || error.data) && typeof (error.payload || error.data) === "object" ? (error.payload || error.data) : {};
+        const reason = typeof detail.reason === "string" ? detail.reason : "";
+        const code = reason || (error && typeof error.code === "string" ? error.code : "");
+        if (FEEDBACK_REASONS[code]) setFeedbackNotice({ reason: code, error: true });
+        else setFeedbackNotice({ key: errorKey(error, "feedback.failed"), error: true });
+      }
+    } finally {
+      state.feedbackBusy = false;
+      clearBusy(button);
+    }
+  }
+
+  function feedbackChooseImage() {
+    const input = $("feedback-image");
+    if (input) input.click();
+  }
+
+  function feedbackFileInputChanged(event) {
+    const file = event.target && event.target.files ? event.target.files[0] : null;
+    feedbackSelectFile(file);
+  }
+
+  function feedbackDrop(event) {
+    event.preventDefault();
+    const zone = $("feedback-dropzone");
+    if (zone) zone.dataset.active = "false";
+    const files = event.dataTransfer && event.dataTransfer.files;
+    if (files && files.length) feedbackSelectFile(files[0]);
+  }
+
+  function feedbackPaste(event) {
+    if (!state.authenticated || state.view !== "feedback") return;
+    const items = event.clipboardData && event.clipboardData.items ? Array.from(event.clipboardData.items) : [];
+    const image = items.find((item) => item && (item.type === "image/png" || item.type === "image/jpeg"));
+    if (!image) return;
+    const file = image.getAsFile();
+    if (!file) return;
+    event.preventDefault();
+    feedbackSelectFile(file);
   }
 
   /* ----------------------------------------------------------- run display */
@@ -3933,10 +4866,7 @@
     prefillChat(t("daily.followup_prompt", { id: button.dataset.reportFollowup }), button.dataset.reportFollowup);
   }));
   on("chat-form", "submit", sendChat);
-  on("daily-ask", "click", () => prefillChat(t("daily.ask_prompt")));
-  on("daily-report", "click", () => { $("report-form").hidden = false; $("report-request").focus(); });
-  on("daily-organize", "click", runAutomationNow);
-  on("report-form", "submit", createDailyReport);
+  on("catalog-list", "submit", runCatalogAction);
   const inspectChatTask = async (event) => {
     const button = event.target instanceof Element ? event.target.closest("button[data-chat-task]") : null;
     if (!button || !button.dataset.chatTask) return;
@@ -3944,7 +4874,65 @@
     if (state.authenticated) inspectTask(button.dataset.chatTask);
   };
   on("chat-log", "click", inspectChatTask);
-  on("report-created", "click", inspectChatTask);
+  on("catalog-list", "click", inspectChatTask);
+  on("feedback-created", "click", inspectChatTask);
+  on("feedback-form", "submit", submitFeedback);
+  on("feedback-image", "change", feedbackFileInputChanged);
+  on("feedback-choose-image", "click", feedbackChooseImage);
+  on("feedback-dropzone", "click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button, input") : null;
+    if (!target) feedbackChooseImage();
+  });
+  on("feedback-dropzone", "keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    feedbackChooseImage();
+  });
+  on("feedback-dropzone", "dragover", (event) => {
+    event.preventDefault();
+    $("feedback-dropzone").dataset.active = "true";
+  });
+  on("feedback-dropzone", "dragenter", (event) => {
+    event.preventDefault();
+    $("feedback-dropzone").dataset.active = "true";
+  });
+  on("feedback-dropzone", "dragleave", (event) => {
+    if (event.target === event.currentTarget) $("feedback-dropzone").dataset.active = "false";
+  });
+  on("feedback-dropzone", "drop", feedbackDrop);
+  on("feedback-tool-pen", "click", () => feedbackSetTool("pen"));
+  on("feedback-tool-arrow", "click", () => feedbackSetTool("arrow"));
+  on("feedback-tool-rect", "click", () => feedbackSetTool("rect"));
+  on("feedback-color", "input", (event) => {
+    state.feedback.color = /^#[0-9a-f]{6}$/i.test(event.target.value) ? event.target.value : "#d64545";
+  });
+  on("feedback-width", "input", (event) => {
+    const value = Math.max(1, Math.min(12, Number.parseInt(event.target.value, 10) || 3));
+    state.feedback.width = value;
+    const output = $("feedback-width-value");
+    if (output) output.textContent = String(value);
+  });
+  on("feedback-undo", "click", () => {
+    state.feedback.strokes.pop();
+    redrawFeedback();
+  });
+  on("feedback-clear", "click", () => {
+    state.feedback.strokes = [];
+    state.feedback.current = null;
+    state.feedback.drawing = false;
+    state.feedback.pointerId = null;
+    redrawFeedback();
+  });
+  on("feedback-remove-image", "click", () => {
+    clearFeedbackImage();
+    const choose = $("feedback-choose-image");
+    if (choose) choose.focus();
+  });
+  on("feedback-canvas", "pointerdown", startFeedbackStroke);
+  on("feedback-canvas", "pointermove", moveFeedbackStroke);
+  on("feedback-canvas", "pointerup", endFeedbackStroke);
+  on("feedback-canvas", "pointercancel", endFeedbackStroke);
+  document.addEventListener("paste", feedbackPaste);
   on("agent-kind", "change", agentKindChanged);
   on("agent-provider", "change", agentProviderChanged);
   on("agent-form", "submit", saveAgentConfig);
@@ -4011,6 +4999,10 @@
       else inspectTask(inspectedTask);
     }
     renderChat();
+    renderCatalog();
+    renderFeedbackImageState();
+    renderFeedbackImageError();
+    renderFeedbackNotice();
     rerenderBusyLabels();
   });
 
@@ -4055,11 +5047,19 @@
     if (state.chatController) state.chatController.abort();
     state.chat = []; state.chatTasks = []; state.chatBusy = false; state.reportRunId = ""; state.reportResults.clear();
     $("chat-log").replaceChildren(); $("chat-input").value = "";
-    $("report-request").value = ""; $("report-created").replaceChildren();
-    $("report-form").hidden = true; $("chat-followup").hidden = true;
+    $("chat-followup").hidden = true;
     $("task-detail-body").replaceChildren();
     $("runs-list").replaceChildren(); $("tasks-list").replaceChildren();
-    ["chat", "report"].forEach((region) => setMessage(region, null));
+    setMessage("chat", null);
+    state.catalog = [];
+    state.catalogLoaded = false;
+    state.catalogError = false;
+    state.catalogBusy = {};
+    state.catalogResults.clear();
+    state.catalogNotices.clear();
+    $("catalog-list").replaceChildren();
+    $("catalog-hint").hidden = true;
+    resetFeedbackSession();
     state.lastState = null;
     state.selectedRun = null;
     state.selectedRunId = "";

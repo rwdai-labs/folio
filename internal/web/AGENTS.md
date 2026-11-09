@@ -54,6 +54,26 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   validate the whole definition, snapshot before writing, and map failures to
   fixed `action_*` codes. Responses may carry action definitions, never action
   secrets or arbitrary runtime files.
+- The optional `ActionCatalogBackend` serves session-protected
+  `GET /api/catalog` (`{"actions":[...]}` sorted by group/order/label) and the
+  separate optional `ActionRunBackend` serves CSRF-protected
+  `POST /api/actions/{id}/run` with `{"fields":{...}}`. Catalog entries carry
+  only ID, label/optional i18n keys, description, priority, enabled, group,
+  order, submit label, validated field descriptors, requires and legacy flag —
+  never steps, prompts, hosts or secrets. Run creates durable task intent and
+  returns `{task,created}` with 201/200; unknown/disabled/invalid map to 404
+  `action_unknown`, 409 `action_disabled`, 400 `action_input_invalid`. Route the
+  run verb through `actionAdmin` before the generic `/api/actions` POST switch.
+- The optional `FeedbackBackend` serves session-protected `GET /api/feedback`,
+  `GET /api/feedback/{id}` and `GET /api/feedback/{id}/image`, plus CSRF-protected
+  multipart `POST /api/feedback`. The multipart branch must run after
+  `requireSession`/CSRF but before `requestBody` JSON parsing; bound the total
+  body with `MaxBytesReader` at 8 MiB. Create returns 201
+  `{accepted:true,feedback,task}` or 200 `{accepted:false,feedback}` for a
+  recorded gate rejection. Malformed input returns 400 `feedback_invalid`, with a
+  fixed `reason` such as `title_short`/`image_invalid` when available. Image
+  responses are ID-only PNG bytes with `no-store`, `nosniff` and inline
+  disposition; only `has_image` records serve them. Never accept caller paths.
 - The optional `QuotaBackend` contract exposes session-protected
   `GET /api/quotas` and CSRF-protected `POST /api/quotas/refresh`. Responses are
   bounded maps, never raw magpie bodies, key paths, or credentials. A
@@ -83,9 +103,11 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   new intent or 200 for deduplication. A report's owner `payload.request` permits
   at most 4000 runes; excess/type errors return 400 `report_request_invalid`.
 - `/api/state.capabilities` separates assistant/report/maintenance/context
-  configuration readiness (`available`, `reason`, `verification: unknown`).
-  Readiness is never an upstream authentication or inference verification.
-  Standalone assistant/report do not require repository connection.
+  configuration readiness (`available`, `reason`, `verification: unknown`) and
+  advertises `workshop` as unavailable (`workshop_unavailable`) until a later
+  phase. Readiness is never an upstream authentication or inference verification.
+  Standalone assistant/report do not require repository connection, and the
+  workshop card must not change setup/default-route decisions.
 - Optional `ReportResultBackend` serves session-protected
   `GET /api/automation/runs/{run_id}/result`: `run_id`, optional `task_id`,
   `format: markdown`, and bounded `text`. The store owns filename association,

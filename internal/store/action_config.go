@@ -18,17 +18,28 @@ import (
 // ordered list of steps over the primitive set below. The file is private,
 // validated as a whole, and never read from an event body.
 const (
-	maxPipelineFileBytes   = 256 * 1024
-	maxPipelines           = 64
-	maxPipelineSteps       = 16
-	maxPipelineLabelRunes  = 64
-	maxPipelinePromptRunes = 8000
-	maxPipelineHTTPHosts   = 32
-	maxPipelineOutputBytes = 1024 * 1024
-	maxPipelineStdinBytes  = 64 * 1024
-	maxPipelineEnv         = 16
-	maxPipelineHeaders     = 16
-	maxPipelineVersions    = 40
+	maxPipelineFileBytes        = 256 * 1024
+	maxPipelines                = 64
+	maxPipelineSteps            = 16
+	maxPipelineLabelRunes       = 64
+	maxPipelinePromptRunes      = 8000
+	maxPipelineDescriptionRunes = 1000
+	maxActionCatalogGroupRunes  = 32
+	maxActionCatalogSubmitRunes = 64
+	maxActionCatalogFields      = 8
+	maxActionCatalogFieldLabel  = 120
+	// Declared catalog fields are owner input. They use the explicit bounded
+	// owner-action payload path rather than the 512-rune hook projection.
+	maxActionCatalogTextLength  = maxReportRequestRunes
+	maxActionCatalogOptions     = 20
+	maxActionCatalogOptionRunes = 64
+	maxActionCatalogPlaceholder = 120
+	maxPipelineHTTPHosts        = 32
+	maxPipelineOutputBytes      = 1024 * 1024
+	maxPipelineStdinBytes       = 64 * 1024
+	maxPipelineEnv              = 16
+	maxPipelineHeaders          = 16
+	maxPipelineVersions         = 40
 
 	defaultPipelineStepTimeout  = 300
 	defaultPipelineAgentTimeout = 900
@@ -41,6 +52,7 @@ var (
 	pipelineEnvRE    = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 	pipelineHeaderRE = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 	pipelineHostRE   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
+	actionFieldRE    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 )
 
 // pipelineFile is /data/actions.json, version 2. A missing file is an empty
@@ -52,13 +64,41 @@ type pipelineFile struct {
 }
 
 type pipelineDefinition struct {
-	ID         string         `json:"id"`
-	Label      string         `json:"label"`
-	Priority   string         `json:"priority,omitempty"`
-	Lane       string         `json:"lane,omitempty"`
-	Enabled    *bool          `json:"enabled,omitempty"`
-	ReportFrom string         `json:"report_from,omitempty"`
-	Steps      []pipelineStep `json:"steps"`
+	ID           string                `json:"id"`
+	Label        string                `json:"label"`
+	Description  string                `json:"description,omitempty"`
+	Priority     string                `json:"priority,omitempty"`
+	Lane         string                `json:"lane,omitempty"`
+	Enabled      *bool                 `json:"enabled,omitempty"`
+	Requires     []string              `json:"requires,omitempty"`
+	Presentation *pipelinePresentation `json:"presentation,omitempty"`
+	ReportFrom   string                `json:"report_from,omitempty"`
+	Steps        []pipelineStep        `json:"steps"`
+}
+
+// pipelinePresentation is optional owner-facing metadata for the action
+// catalog. It never changes execution: fields describe the run form, while the
+// pipeline steps remain private to the owner action editor.
+type pipelinePresentation struct {
+	Group       string          `json:"group,omitempty"`
+	Order       *int            `json:"order,omitempty"`
+	SubmitLabel string          `json:"submit_label,omitempty"`
+	Fields      []pipelineField `json:"fields,omitempty"`
+}
+
+type pipelineField struct {
+	Name        string           `json:"name"`
+	Label       string           `json:"label"`
+	Type        string           `json:"type"`
+	Required    bool             `json:"required,omitempty"`
+	MaxLength   int              `json:"max_length,omitempty"`
+	Options     []pipelineOption `json:"options,omitempty"`
+	Placeholder string           `json:"placeholder,omitempty"`
+}
+
+type pipelineOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 type pipelineStep struct {
@@ -170,6 +210,7 @@ func validatePipelines(file *pipelineFile, dataDir string) error {
 		definition := &file.Actions[index]
 		definition.ID = strings.TrimSpace(definition.ID)
 		definition.Label = strings.TrimSpace(definition.Label)
+		definition.Description = strings.TrimSpace(definition.Description)
 		definition.Priority = strings.TrimSpace(definition.Priority)
 		definition.ReportFrom = strings.TrimSpace(definition.ReportFrom)
 		if !taskKindRE.MatchString(definition.ID) || seen[definition.ID] {
@@ -178,6 +219,17 @@ func validatePipelines(file *pipelineFile, dataDir string) error {
 		seen[definition.ID] = true
 		if definition.Label == "" || len([]rune(definition.Label)) > maxPipelineLabelRunes {
 			return errStore("actions are invalid")
+		}
+		if len([]rune(definition.Description)) > maxPipelineDescriptionRunes {
+			return errStore("actions are invalid")
+		}
+		requires, err := validateActionRequires(definition.Requires)
+		if err != nil {
+			return err
+		}
+		definition.Requires = requires
+		if err := validatePipelinePresentation(definition.Presentation); err != nil {
+			return err
 		}
 		if definition.Priority != "" && !validPriority(definition.Priority) {
 			return errStore("actions are invalid")
@@ -204,6 +256,117 @@ func validatePipelines(file *pipelineFile, dataDir string) error {
 		}
 	}
 	return nil
+}
+
+var actionRequiresAllowed = map[string]bool{
+	"assistant": true, "report": true, "maintenance": true, "context": true, "workshop": true,
+}
+
+func validateActionRequires(values []string) ([]string, error) {
+	clean := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if !actionRequiresAllowed[value] || seen[value] {
+			return nil, errStore("actions are invalid")
+		}
+		seen[value] = true
+		clean = append(clean, value)
+	}
+	return clean, nil
+}
+
+func validatePipelinePresentation(presentation *pipelinePresentation) error {
+	if presentation == nil {
+		return nil
+	}
+	presentation.Group = strings.TrimSpace(presentation.Group)
+	if len([]rune(presentation.Group)) > maxActionCatalogGroupRunes {
+		return errStore("actions are invalid")
+	}
+	if presentation.Order != nil && (*presentation.Order < 0 || *presentation.Order > 9999) {
+		return errStore("actions are invalid")
+	}
+	presentation.SubmitLabel = strings.TrimSpace(presentation.SubmitLabel)
+	if len([]rune(presentation.SubmitLabel)) > maxActionCatalogSubmitRunes {
+		return errStore("actions are invalid")
+	}
+	if len(presentation.Fields) > maxActionCatalogFields {
+		return errStore("actions are invalid")
+	}
+	names := map[string]bool{}
+	for index := range presentation.Fields {
+		field := &presentation.Fields[index]
+		field.Name = strings.TrimSpace(field.Name)
+		field.Label = strings.TrimSpace(field.Label)
+		field.Type = strings.TrimSpace(field.Type)
+		field.Placeholder = strings.TrimSpace(field.Placeholder)
+		if !actionFieldRE.MatchString(field.Name) || names[field.Name] {
+			return errStore("actions are invalid")
+		}
+		// title/priority are reserved launch controls; a declared field with the
+		// same name would be ambiguous (and could be a non-string type).
+		if field.Name == "title" || field.Name == "priority" {
+			return errStore("actions are invalid")
+		}
+		// The task payload projector drops credential-shaped keys. Reject them
+		// here so a catalog field never disappears between the form and the task.
+		if sensitivePayloadKey(field.Name) {
+			return errStore("actions are invalid")
+		}
+		names[field.Name] = true
+		if field.Label == "" || len([]rune(field.Label)) > maxActionCatalogFieldLabel {
+			return errStore("actions are invalid")
+		}
+		if len([]rune(field.Placeholder)) > maxActionCatalogPlaceholder {
+			return errStore("actions are invalid")
+		}
+		switch field.Type {
+		case "text", "textarea":
+			if field.MaxLength == 0 {
+				field.MaxLength = maxActionCatalogTextLength
+			}
+			if field.MaxLength < 1 || field.MaxLength > maxActionCatalogTextLength || len(field.Options) != 0 {
+				return errStore("actions are invalid")
+			}
+		case "select":
+			if field.MaxLength != 0 || len(field.Options) == 0 || len(field.Options) > maxActionCatalogOptions {
+				return errStore("actions are invalid")
+			}
+			optionValues := map[string]bool{}
+			for optionIndex := range field.Options {
+				option := &field.Options[optionIndex]
+				option.Value = strings.TrimSpace(option.Value)
+				option.Label = strings.TrimSpace(option.Label)
+				if option.Value == "" || option.Label == "" ||
+					len([]rune(option.Value)) > maxActionCatalogOptionRunes ||
+					len([]rune(option.Label)) > maxActionCatalogOptionRunes ||
+					optionValues[option.Value] {
+					return errStore("actions are invalid")
+				}
+				optionValues[option.Value] = true
+			}
+		case "boolean":
+			if field.MaxLength != 0 || len(field.Options) != 0 {
+				return errStore("actions are invalid")
+			}
+		default:
+			return errStore("actions are invalid")
+		}
+	}
+	return nil
+}
+
+func actionPresentationMap(presentation pipelinePresentation) map[string]any {
+	raw, err := json.Marshal(presentation)
+	if err != nil {
+		return map[string]any{}
+	}
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return map[string]any{}
+	}
+	return value
 }
 
 func validatePipelineStep(step *pipelineStep, dataDir string, hosts map[string]bool) error {
@@ -484,15 +647,23 @@ func (s *Store) ListActions() (map[string]any, error) {
 		for _, step := range definition.Steps {
 			steps = append(steps, pipelineStepMap(step))
 		}
-		actions = append(actions, map[string]any{
+		entry := map[string]any{
 			"id":          definition.ID,
 			"label":       definition.Label,
 			"priority":    definition.defaultPriority(),
 			"lane":        definition.Lane,
 			"enabled":     definition.isEnabled(),
+			"requires":    definition.Requires,
 			"report_from": definition.ReportFrom,
 			"steps":       steps,
-		})
+		}
+		if definition.Description != "" {
+			entry["description"] = definition.Description
+		}
+		if definition.Presentation != nil {
+			entry["presentation"] = actionPresentationMap(*definition.Presentation)
+		}
+		actions = append(actions, entry)
 	}
 	return map[string]any{"actions": actions, "http_hosts": file.HTTPHosts}, nil
 }

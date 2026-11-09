@@ -93,11 +93,19 @@ not prerequisites for API-backed chat or reports. The dashboard and settings
 show separate capability readiness; these checks describe local configuration,
 not verified provider credentials.
 
-Use **Background report** on the dashboard, enter a concrete request and submit
-it. Open the accepted task to see its queue state and eventual report. A paused
-queue or an off-peak priority can delay execution; acceptance is not completion.
-Read the result and use its follow-up entry to ask about the same run. This small
-report is also an inference check that **Test connection** cannot provide.
+Use the **Background report** action in the dashboard catalog, enter a concrete
+request and submit it. Open the accepted task to see its queue state and eventual
+report. A paused queue or an off-peak priority can delay execution; acceptance is
+not completion. Read the result and use its follow-up entry to ask about the same
+run. This small report is also an inference check that **Test connection** cannot
+provide.
+
+Use **Feedback** for an improvement request about Folio itself. The screenshot
+and structured text stay in the private data volume under `/data/feedback/`
+unless an owner later adds an explicit mirror. The request is rejected if it is
+incomplete or too vague; an accepted request creates a bounded planning task,
+not a source edit or deployment. Source self-modification requires the separate
+workshop boundary described in [../docs/self-bootstrap.md](../docs/self-bootstrap.md).
 
 To ask about personal context, connect the private repository. To organize it,
 finish the Codex worker setup and maintenance model assignment as well. Optional

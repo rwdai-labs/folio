@@ -41,6 +41,11 @@ const (
 	// The authenticated owner report request has its own bound; hook values
 	// retain the existing small flat projection.
 	maxReportRequestRunes = 4000
+
+	// Declared catalog fields are owner input with their own explicit bound.
+	// Keeping the path separate preserves 4000-rune text without widening the
+	// generic hook/plugin projection.
+	maxActionPayloadBytes = 32 * 1024
 )
 
 var (
@@ -246,6 +251,38 @@ func projectTaskPayload(values map[string]any) map[string]any {
 	return projected
 }
 
+// projectOwnerActionPayload is the explicit bounded path for declared catalog
+// fields. It preserves owner text up to the 4000-rune action bound and rejects
+// an oversized/shape-invalid payload instead of silently dropping a field.
+func projectOwnerActionPayload(values map[string]any) (map[string]any, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	projected := make(map[string]any, maxTaskPayloadKeys)
+	size := 0
+	for key, value := range values {
+		if !taskPayloadKeyRE.MatchString(key) || sensitivePayloadKey(key) || !validOwnerActionValue(value) {
+			return nil, errStore("invalid_task_payload")
+		}
+		if len(projected) >= maxTaskPayloadKeys {
+			return nil, errStore("invalid_task_payload")
+		}
+		size += len(key) + 8 + payloadSize(value)
+		if size > maxActionPayloadBytes {
+			return nil, errStore("invalid_task_payload")
+		}
+		projected[key] = value
+	}
+	return projected, nil
+}
+
+func validOwnerActionValue(value any) bool {
+	if text, ok := value.(string); ok {
+		return len([]rune(text)) <= maxReportRequestRunes
+	}
+	return validPayloadValue(value)
+}
+
 // sensitivePayloadKey keeps credential-shaped fields out of the queue file.
 // A plugin that needs to pass a credential must pass a reference, not a secret.
 func sensitivePayloadKey(key string) bool {
@@ -284,9 +321,19 @@ func ownerTaskSource(source string) bool {
 	return source == "manual" || strings.HasPrefix(source, "agent:")
 }
 
+func projectTaskPayloadForPlan(definition actionPlan, source string, values map[string]any) (map[string]any, error) {
+	if !definition.Legacy && ownerTaskSource(source) {
+		return projectOwnerActionPayload(values)
+	}
+	return projectTaskPayload(values), nil
+}
+
 func snapshotTaskPayload(task taskRecord) map[string]any {
 	payload := projectTaskPayload(task.Payload)
 	if ownerTaskSource(task.Source) {
+		if full, err := projectOwnerActionPayload(task.Payload); err == nil {
+			payload = full
+		}
 		if request, ok := task.Payload["request"].(string); ok && len([]rune(request)) <= maxReportRequestRunes {
 			if payload == nil {
 				payload = map[string]any{}
@@ -353,13 +400,29 @@ func validTaskRecord(task taskRecord) bool {
 	if len(task.Payload) > maxTaskPayloadKeys {
 		return false
 	}
+	owner := ownerTaskSource(task.Source)
+	size := 0
 	for key, value := range task.Payload {
-		if key == "request" && ownerTaskSource(task.Source) {
-			if request, ok := value.(string); ok && len([]rune(request)) <= maxReportRequestRunes {
-				continue
-			}
+		if !taskPayloadKeyRE.MatchString(key) || sensitivePayloadKey(key) {
+			return false
 		}
-		if !taskPayloadKeyRE.MatchString(key) || !validPayloadValue(value) {
+		if owner {
+			if text, ok := value.(string); ok {
+				if len([]rune(text)) > maxReportRequestRunes {
+					return false
+				}
+			} else if !validPayloadValue(value) {
+				return false
+			}
+		} else if !validPayloadValue(value) {
+			return false
+		}
+		size += len(key) + 8 + payloadSize(value)
+		limit := maxTaskPayloadBytes
+		if owner {
+			limit = maxActionPayloadBytes
+		}
+		if size > limit {
 			return false
 		}
 	}
@@ -446,13 +509,16 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 	source = strings.TrimSpace(source)
 	title = strings.TrimSpace(title)
 	rawPayload := payload
-	payload = projectTaskPayload(payload)
 	if !taskKindRE.MatchString(kind) {
 		return nil, errStore("invalid_task_kind")
 	}
 	definition, err := s.resolveTaskAction(kind)
 	if err != nil {
 		return nil, errStore("invalid_task_kind")
+	}
+	payload, err = projectTaskPayloadForPlan(definition, source, rawPayload)
+	if err != nil {
+		return nil, err
 	}
 	if definition.Legacy && len(definition.Steps) == 1 && definition.Steps[0].Type == actionStepReport && ownerTaskSource(source) {
 		if raw, exists := rawPayload["request"]; exists {
@@ -489,7 +555,7 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 		// Coalesce them into one queued task instead of consuming the event
 		// against the already-running snapshot.
 		sameRequest := true
-		if definition.Legacy && len(definition.Steps) == 1 && definition.Steps[0].Type == actionStepReport {
+		if !definition.hasMaintenance() {
 			left, _ := json.Marshal(task.Payload)
 			right, _ := json.Marshal(payload)
 			sameRequest = task.Title == title && string(left) == string(right)
