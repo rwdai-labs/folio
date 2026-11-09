@@ -317,12 +317,28 @@ func validPayloadValue(value any) bool {
 	return false
 }
 
+const taskSourceFeedback = "feedback"
+
 func ownerTaskSource(source string) bool {
 	return source == "manual" || strings.HasPrefix(source, "agent:")
 }
 
+// integrationTaskSource identifies untrusted hook/event bodies. A configured
+// action with declared fields validates them even when the task source is not
+// the owner; an action without presentation fields keeps its trusted payload.
+func integrationTaskSource(source string) bool {
+	return strings.HasPrefix(source, "hook:") || strings.HasPrefix(source, "event:")
+}
+
+// trustedPayloadTaskSource may carry the explicit 4000-rune owner payload
+// without the generic hook/plugin projection. Feedback plans are internal
+// owner-equivalent work but are not an owner launch source.
+func trustedPayloadTaskSource(source string) bool {
+	return ownerTaskSource(source) || source == taskSourceFeedback
+}
+
 func projectTaskPayloadForPlan(definition actionPlan, source string, values map[string]any) (map[string]any, error) {
-	if !definition.Legacy && ownerTaskSource(source) {
+	if !definition.Legacy && trustedPayloadTaskSource(source) {
 		return projectOwnerActionPayload(values)
 	}
 	return projectTaskPayload(values), nil
@@ -330,7 +346,7 @@ func projectTaskPayloadForPlan(definition actionPlan, source string, values map[
 
 func snapshotTaskPayload(task taskRecord) map[string]any {
 	payload := projectTaskPayload(task.Payload)
-	if ownerTaskSource(task.Source) {
+	if trustedPayloadTaskSource(task.Source) {
 		if full, err := projectOwnerActionPayload(task.Payload); err == nil {
 			payload = full
 		}
@@ -400,13 +416,13 @@ func validTaskRecord(task taskRecord) bool {
 	if len(task.Payload) > maxTaskPayloadKeys {
 		return false
 	}
-	owner := ownerTaskSource(task.Source)
+	fullPayload := trustedPayloadTaskSource(task.Source)
 	size := 0
 	for key, value := range task.Payload {
 		if !taskPayloadKeyRE.MatchString(key) || sensitivePayloadKey(key) {
 			return false
 		}
-		if owner {
+		if fullPayload {
 			if text, ok := value.(string); ok {
 				if len([]rune(text)) > maxReportRequestRunes {
 					return false
@@ -419,7 +435,7 @@ func validTaskRecord(task taskRecord) bool {
 		}
 		size += len(key) + 8 + payloadSize(value)
 		limit := maxTaskPayloadBytes
-		if owner {
+		if fullPayload {
 			limit = maxActionPayloadBytes
 		}
 		if size > limit {
@@ -512,6 +528,12 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 	if !taskKindRE.MatchString(kind) {
 		return nil, errStore("invalid_task_kind")
 	}
+	// The feedback planning kind is reserved internal work: only the dedicated
+	// feedback source may create it. Owner, agent, hook and event callers cannot
+	// mint a plan task directly.
+	if kind == taskKindFeedbackPlan && source != taskSourceFeedback {
+		return nil, errStore("invalid_task_kind")
+	}
 	definition, err := s.resolveTaskAction(kind)
 	if err != nil {
 		// A disabled or unavailable-capability action is a fixed, actionable
@@ -522,23 +544,34 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 		}
 		return nil, errStore("invalid_task_kind")
 	}
-	if !definition.Legacy && ownerTaskSource(source) {
-		// title and priority are top-level launch controls, never action fields.
-		for _, control := range []string{"title", "priority"} {
-			if _, exists := rawPayload[control]; exists {
-				return nil, errStore("action_input_invalid")
+	if !definition.Legacy {
+		// Owner launches must provide the declared form. Hook/event bodies are
+		// untrusted too, but an action without presentation fields keeps its
+		// established trusted payload and is not subjected to unknown-field
+		// rejection. Pipeline action steps remain exempt from form validation.
+		owner := ownerTaskSource(source)
+		validateFields := owner || (integrationTaskSource(source) && len(definition.Fields) > 0)
+		if validateFields {
+			if owner {
+				// title and priority are top-level launch controls, never action
+				// fields. Hook bodies carry their own title control separately.
+				for _, control := range []string{"title", "priority"} {
+					if _, exists := rawPayload[control]; exists {
+						return nil, errStore("action_input_invalid")
+					}
+				}
 			}
-		}
-		entry := catalogEntry{Fields: definition.Fields, Requires: definition.Requires}
-		if _, err := validateActionLaunch(entry, rawPayload); err != nil {
-			return nil, err
+			entry := catalogEntry{Fields: definition.Fields, Requires: definition.Requires}
+			if _, err := validateActionLaunch(entry, rawPayload); err != nil {
+				return nil, err
+			}
 		}
 	}
 	payload, err = projectTaskPayloadForPlan(definition, source, rawPayload)
 	if err != nil {
 		return nil, err
 	}
-	if definition.Legacy && len(definition.Steps) == 1 && definition.Steps[0].Type == actionStepReport && ownerTaskSource(source) {
+	if definition.Legacy && len(definition.Steps) == 1 && definition.Steps[0].Type == actionStepReport && trustedPayloadTaskSource(source) {
 		if raw, exists := rawPayload["request"]; exists {
 			request, ok := raw.(string)
 			if !ok || strings.TrimSpace(request) == "" || len([]rune(request)) > maxReportRequestRunes {

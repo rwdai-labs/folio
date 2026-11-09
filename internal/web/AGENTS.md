@@ -66,8 +66,8 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   run verb through `actionAdmin` before the generic `/api/actions` POST switch.
   A configured action requiring the unavailable `workshop` capability is also
   rejected for task creation and hook creation (`invalid_hook_action`); an event
-  target resolving to it fails closed. Field validation remains specific to
-  owner launches.
+  target resolving to it fails closed. Presentation fields are validated for
+  owner launches and for hook/event actions that declare fields.
 - The optional `FeedbackBackend` serves session-protected `GET /api/feedback`,
   `GET /api/feedback/{id}` and `GET /api/feedback/{id}/image`, plus CSRF-protected
   multipart `POST /api/feedback`. The multipart branch must run after
@@ -80,7 +80,9 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   `feedback_invalid`, with a fixed `reason` such as `title_short`/`image_invalid`
   when available. Image responses are ID-only PNG bytes with `no-store`,
   `nosniff` and inline disposition; only `has_image` records serve them. Never
-  accept caller paths.
+  accept caller paths. Acceptance creates the reserved `feedback-plan` task with
+  the dedicated `feedback` store source; manual, agent, hook, event and pipeline
+  callers cannot create that kind directly.
 - The optional `QuotaBackend` contract exposes session-protected
   `GET /api/quotas` and CSRF-protected `POST /api/quotas/refresh`. Responses are
   bounded maps, never raw magpie bodies, key paths, or credentials. A
@@ -108,13 +110,15 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   `priority`, and bounded flat `payload`. The server assigns `source: manual`;
   caller source values never select trust. Configured actions use the same
   validated owner-launch path as catalog run (`requires`, unknown/required
-  fields, types, select options, rune limits, required-boolean true); hook,
-  event and pipeline task creation remain trusted and need no presentation
-  fields. Return `{task, created}` with 201 for new intent or 200 for
+  fields, types, select options, rune limits, required-boolean true). Hook/event
+  task creation also validates declared fields when the action has any, while
+  fieldless actions keep their trusted payload; pipeline `action:*` task steps
+  remain exempt. Return `{task, created}` with 201 for new intent or 200 for
   deduplication. A report's owner `payload.request` permits at most 4000 runes;
   excess/type errors return 400 `report_request_invalid`. A configured action's
   `action_disabled` returns 409, `action_input_invalid` returns 400, and other
-  invalid task input keeps 400 `task_invalid`.
+  invalid task input keeps 400 `task_invalid`. The reserved `feedback-plan`
+  kind is not accepted here; direct creation returns 400 `task_invalid`.
 - `/api/state.capabilities` separates assistant/report/maintenance/context
   configuration readiness (`available`, `reason`, `verification: unknown`) and
   advertises `workshop` as unavailable (`workshop_unavailable`) until a later

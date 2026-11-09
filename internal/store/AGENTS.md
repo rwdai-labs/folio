@@ -57,8 +57,11 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   internal `feedback-plan` report kind (never listed or configurable, so a
   configured `report` action cannot intercept it) to build a bounded
   plan-only report task (`Plan: ` title, payload request, no edits/deploy, no
-  clarifying questions) and stores task_id. Listing returns at most 50 newest
-  summaries; detail/image are ID-only.
+  clarifying questions) and stores task_id. Only the dedicated `feedback` source
+  may create this reserved kind; manual, agent, hook, event and pipeline callers
+  are rejected with `invalid_task_kind`. Feedback plan tasks use the explicit
+  full payload projection so the 4000-rune request survives persistence and
+  reload. Listing returns at most 50 newest summaries; detail/image are ID-only.
 - Reports use immutable `run-<run_id>.md` names. Result reads accept a run ID only,
   validate successful run ownership of its exact report filename, reject paths,
   symlinks and secret-shaped content, and bound regular-file reads to 64 KiB.
@@ -105,14 +108,17 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   limits and title/priority server-side, then creates durable task intent: legacy
   report maps `{request}`, legacy maintenance has no payload or priority override,
   configured actions pass validated fields. Required boolean fields must be
-  explicitly true. `CreateTask` is the same validated owner-launch boundary for
-  configured actions when the source is `manual` or `agent:*`; internal
-  hook/event/pipeline sources stay on their trusted path and are not required to
-  provide presentation fields. The unavailable-`workshop` gate applies to every
-  configured-action creation and resolution, including hooks, event targets and
-  pipeline task steps; other `requires` values are UI gating and execution still
-  fails closed if the capability is missing. Disabled or unknown actions fail
-  closed; no step executes inline.
+  explicitly true. `CreateTask` applies the same owner-launch validation for
+  configured actions when the source is `manual` or `agent:*`. Untrusted
+  `hook:*`/`event:*` sources validate declared presentation fields when the
+  action declares any, so a body cannot smuggle an invalid select, type or
+  length; fieldless hook/event actions keep their trusted payload. Pipeline
+  `action:*` task steps remain exempt from presentation-form validation. The
+  unavailable-`workshop` gate applies to every configured-action creation and
+  resolution, including hooks, event targets and pipeline task steps; other
+  `requires` values are UI gating and execution still fails closed if the
+  capability is missing. Disabled or unknown actions fail closed; no step
+  executes inline.
 - The main agent is a bounded host loop, not an ambient process. The runtime
   receives one request and proposes text/tool calls; the store re-checks every
   tool against the trust class, executes it, and audits names/status without

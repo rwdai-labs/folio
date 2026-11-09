@@ -350,6 +350,12 @@ func TestDailyCatalogFeedbackAndOwnerLaunchHTTPIntegration(t *testing.T) {
 	if payload := created["task"].(map[string]any)["payload"].(map[string]any); payload["mode"] != "safe" {
 		t.Fatalf("validated task payload=%v", payload)
 	}
+	status, _, result = client.request(t, http.MethodPost, "/api/tasks", map[string]any{
+		"kind": "feedback-plan", "title": "Bypass", "payload": map[string]any{"request": "Synthetic"},
+	}, server.URL)
+	if status != http.StatusBadRequest || result["error"] != "task_invalid" {
+		t.Fatalf("reserved task kind status=%d result=%v", status, result)
+	}
 
 	fields := validFeedbackFields()
 	small := dailyFeedbackPNG(t, 0)

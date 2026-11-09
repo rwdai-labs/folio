@@ -149,7 +149,7 @@ func (s *Store) CreateFeedback(input FeedbackInput, image []byte) (map[string]an
 	if len([]rune(title)) > maxTaskTitleRunes {
 		title = string([]rune(title)[:maxTaskTitleRunes])
 	}
-	task, taskErr := s.CreateTask(taskKindFeedbackPlan, "manual", title, input.Priority, map[string]any{"request": planPrompt})
+	task, taskErr := s.CreateTask(taskKindFeedbackPlan, taskSourceFeedback, title, input.Priority, map[string]any{"request": planPrompt})
 	if taskErr != nil {
 		return nil, taskErr
 	}

@@ -96,7 +96,7 @@ func TestCreateFeedbackAcceptsWithoutModelBinding(t *testing.T) {
 			break
 		}
 	}
-	if task == nil || task["kind"] != taskKindFeedbackPlan || task["source"] != "manual" || task["priority"] != "P1" {
+	if task == nil || task["kind"] != taskKindFeedbackPlan || task["source"] != taskSourceFeedback || task["priority"] != "P1" {
 		t.Fatalf("planning task=%v", task)
 	}
 	if !strings.HasPrefix(task["title"].(string), "Plan: ") || len([]rune(task["title"].(string))) > maxTaskTitleRunes {
@@ -357,4 +357,43 @@ func jsonText(t *testing.T, text string) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func TestFeedbackPlanRequiresDedicatedFeedbackSource(t *testing.T) {
+	store := newTestStore(t)
+	for _, source := range []string{"manual", "agent:console-main", "hook:synthetic", "event:synthetic", "action:parent"} {
+		if _, err := store.CreateTask(taskKindFeedbackPlan, source, "Bypass", "P1", map[string]any{"request": "Synthetic"}); err == nil || err.Error() != "invalid_task_kind" {
+			t.Fatalf("reserved kind from %s err=%v", source, err)
+		}
+	}
+	request := strings.Repeat("界", feedbackPlanPromptRunes)
+	result, err := store.CreateTask(taskKindFeedbackPlan, taskSourceFeedback, "Plan: synthetic", "P1", map[string]any{"request": request})
+	if err != nil {
+		t.Fatalf("dedicated feedback plan: %v", err)
+	}
+	task := result["task"].(map[string]any)
+	if task["source"] != taskSourceFeedback || task["payload"].(map[string]any)["request"] != request {
+		t.Fatalf("feedback plan task=%v", task)
+	}
+	id := task["id"].(string)
+	store.taskMu.Lock()
+	store.tasksCache = nil
+	file, err := store.loadTasksLocked()
+	store.taskMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, loaded := range file.Tasks {
+		if loaded.ID != id {
+			continue
+		}
+		if loaded.Payload["request"] != request {
+			t.Fatalf("feedback plan payload did not survive reload: %d runes", len([]rune(loaded.Payload["request"].(string))))
+		}
+		if snapshot := snapshotTaskPayload(loaded); snapshot["request"] != request {
+			t.Fatalf("feedback plan snapshot dropped request: %d runes", len([]rune(snapshot["request"].(string))))
+		}
+		return
+	}
+	t.Fatalf("feedback plan task %s was dropped on reload", id)
 }

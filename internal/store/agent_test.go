@@ -317,3 +317,23 @@ func TestAgentTaskCreateCannotBypassOwnerLaunchValidation(t *testing.T) {
 		t.Fatalf("assistant did not receive the launch validation error: %v", events)
 	}
 }
+
+func TestAgentTaskCreateRejectsReservedFeedbackPlan(t *testing.T) {
+	store := newTestStore(t)
+	result, err := store.runAgentTool(context.Background(), AgentToolCall{Name: "task.create", Arguments: map[string]any{
+		"action": taskKindFeedbackPlan, "title": "Bypass", "payload": map[string]any{"request": "Synthetic"},
+	}}, eventTrustOwner, "console-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["ok"] != false || result["error"] != "invalid_task_kind" {
+		t.Fatalf("reserved assistant task result=%v", result)
+	}
+	tasks, err := store.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list := tasks["tasks"].([]any); len(list) != 0 {
+		t.Fatalf("reserved assistant task was queued: %v", list)
+	}
+}

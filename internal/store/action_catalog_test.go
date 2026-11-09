@@ -709,21 +709,44 @@ func TestCreateTaskRejectsUnavailableOwnerConfiguredActions(t *testing.T) {
 	}
 }
 
-func TestCreateTaskTrustedHookSkipsPresentationValidation(t *testing.T) {
+func TestCreateTaskHookEventValidatesDeclaredFields(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.PutAction(ownerSelectDefinition()); err != nil {
 		t.Fatal(err)
 	}
-	result, err := store.CreateTask("owner-select", "hook:synthetic", "Hook task", "P1", nil)
+	for _, source := range []string{"hook:synthetic", "event:synthetic"} {
+		if _, err := store.CreateTask("owner-select", source, "Hook task", "P1", map[string]any{"mode": "evil"}); err == nil || err.Error() != "action_input_invalid" {
+			t.Fatalf("invalid %s payload err=%v", source, err)
+		}
+		result, err := store.CreateTask("owner-select", source, "Hook task", "P1", map[string]any{"mode": "safe"})
+		if err != nil {
+			t.Fatalf("valid %s payload: %v", source, err)
+		}
+		task := result["task"].(map[string]any)
+		if task["source"] != source || task["payload"].(map[string]any)["mode"] != "safe" {
+			t.Fatalf("valid %s task=%v", source, task)
+		}
+	}
+}
+
+func TestCreateTaskHookActionWithoutFieldsKeepsPayload(t *testing.T) {
+	store := newTestStore(t)
+	definition := validPipelineDefinition()
+	definition.ID = "hook-open"
+	definition.Label = "Hook open"
+	if err := store.PutAction(definition); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.CreateTask("hook-open", "hook:synthetic", "Hook task", "P1", map[string]any{"body": "synthetic event"})
 	if err != nil {
-		t.Fatalf("trusted hook task: %v", err)
+		t.Fatalf("fieldless hook task: %v", err)
 	}
 	task := result["task"].(map[string]any)
-	if task["kind"] != "owner-select" || task["source"] != "hook:synthetic" || task["status"] != "queued" {
-		t.Fatalf("trusted hook task=%v", task)
+	if task["kind"] != "hook-open" || task["source"] != "hook:synthetic" || task["status"] != "queued" {
+		t.Fatalf("fieldless hook task=%v", task)
 	}
-	if payload, ok := task["payload"]; ok {
-		t.Fatalf("trusted hook task gained presentation payload: %v", payload)
+	if payload := task["payload"].(map[string]any); payload["body"] != "synthetic event" {
+		t.Fatalf("fieldless hook payload=%v", payload)
 	}
 }
 
