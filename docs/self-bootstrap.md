@@ -81,7 +81,10 @@ never contains context, credentials, or runtime files. A submission contains:
 
 The screenshot is decoded and re-encoded as PNG to strip metadata, bounded by
 dimensions and byte size, and served only through an authenticated route. No
-caller-supplied path is accepted.
+caller-supplied path is accepted. The image itself is capped at 8 MiB; the
+multipart envelope gets a separate bounded 1 MiB allowance so a maximal image
+plus form fields is still accepted. Required boolean catalog fields must be
+explicitly true, not merely present.
 
 The gate has two layers:
 

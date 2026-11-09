@@ -42,8 +42,9 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   0600, and callers never supply paths. Validate title/area/text/priority with
   fixed reasons before persistence; malformed input writes no record. Accept only
   PNG/JPEG by content, reject dimensions outside 64..4096 or over 8MP, decode
-  fully, strip metadata by re-encoding PNG, and bound input/output to 8 MiB plus
-  total HTTP body to 8 MiB. When a report binding exists, call the trusted
+  fully, strip metadata by re-encoding PNG, and bound image input/output to 8 MiB;
+  the HTTP host gives the multipart envelope a separate bounded 1 MiB allowance
+  above that image cap. When a report binding exists, call the trusted
   tool-free adapter with a strict JSON-only sufficiency prompt (30s, <=512
   output), extract the first balanced object, reject extra/missing/wrong-typed
   fields, accept ready=true only with reason `ok`, map unknown reasons to
@@ -103,10 +104,15 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   Catalog-run validates unknown/required fields, types, select options, rune
   limits and title/priority server-side, then creates durable task intent: legacy
   report maps `{request}`, legacy maintenance has no payload or priority override,
-  configured actions pass validated fields. A `workshop` requirement is rejected
-  server-side while that capability is unavailable; other `requires` values are
-  UI gating and execution still fails closed if the capability is missing. Disabled
-  or unknown actions fail closed; no step executes inline.
+  configured actions pass validated fields. Required boolean fields must be
+  explicitly true. `CreateTask` is the same validated owner-launch boundary for
+  configured actions when the source is `manual` or `agent:*`; internal
+  hook/event/pipeline sources stay on their trusted path and are not required to
+  provide presentation fields. The unavailable-`workshop` gate applies to every
+  configured-action creation and resolution, including hooks, event targets and
+  pipeline task steps; other `requires` values are UI gating and execution still
+  fails closed if the capability is missing. Disabled or unknown actions fail
+  closed; no step executes inline.
 - The main agent is a bounded host loop, not an ambient process. The runtime
   receives one request and proposes text/tool calls; the store re-checks every
   tool against the trust class, executes it, and audits names/status without
@@ -119,7 +125,9 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   `/data/agent/runtime` share the same gateway and bounds. Tool-call ids must
   pair the assistant message with each tool result; a real pi wrapper remains
   unverified, so tests use a synthetic endpoint or executable. Successful
-  `task.create` emits bounded `task.created` task ID/title/status metadata;
+  `task.create` emits bounded `task.created` task ID/title/status metadata and
+  goes through `CreateTask`'s validated owner path, so it cannot bypass a
+  configured action's requires or presentation checks;
   session history restores associations from retained durable task sources.
   Context answers must cite returned source paths and distinguish missing
   context; report follow-ups cite the inspected report run ID.

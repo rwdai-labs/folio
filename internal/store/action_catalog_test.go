@@ -565,6 +565,15 @@ func TestRunActionRejectsUnavailableWorkshopRequirement(t *testing.T) {
 	if _, err := store.RunAction("workshop-run", nil); err == nil || err.Error() != "action_disabled" {
 		t.Fatalf("workshop action err=%v", err)
 	}
+	if _, err := store.CreateHook("Workshop hook", "workshop-run", ""); err == nil || err.Error() != "invalid_hook_action" {
+		t.Fatalf("workshop hook err=%v", err)
+	}
+	if _, err := store.CreateTask("workshop-run", "hook:synthetic", "Workshop hook", "", nil); err == nil || err.Error() != "action_disabled" {
+		t.Fatalf("workshop hook task err=%v", err)
+	}
+	if _, err := store.planForTarget("action:workshop-run"); err == nil || err.Error() != "action_disabled" {
+		t.Fatalf("workshop event target err=%v", err)
+	}
 }
 
 func TestFeedbackPlanKindCannotBeShadowedOrConfigured(t *testing.T) {
@@ -616,5 +625,130 @@ func TestMaintenanceFallsBackWhenKindRemoved(t *testing.T) {
 	}
 	if result["task"].(map[string]any)["kind"] != "maintenance" {
 		t.Fatalf("maintenance task=%v", result)
+	}
+}
+
+func ownerSelectDefinition() pipelineDefinition {
+	definition := validPipelineDefinition()
+	definition.ID = "owner-select"
+	definition.Label = "Owner select"
+	definition.Presentation = &pipelinePresentation{Fields: []pipelineField{
+		{Name: "mode", Label: "Mode", Type: "select", Required: true, Options: []pipelineOption{{Value: "safe", Label: "Safe"}}},
+		{Name: "note", Label: "Note", Type: "text", MaxLength: 5},
+		{Name: "flag", Label: "Flag", Type: "boolean"},
+	}}
+	return definition
+}
+
+func TestCreateTaskValidatesOwnerConfiguredActionFields(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.PutAction(ownerSelectDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	valid := map[string]any{"mode": "safe", "note": "short", "flag": true}
+	for _, source := range []string{"manual", "agent:console-main"} {
+		result, err := store.CreateTask("owner-select", source, "Owner select", "", valid)
+		if err != nil {
+			t.Fatalf("valid owner launch from %s: %v", source, err)
+		}
+		task := result["task"].(map[string]any)
+		payload := task["payload"].(map[string]any)
+		if task["kind"] != "owner-select" || task["source"] != source || payload["mode"] != "safe" || payload["note"] != "short" || payload["flag"] != true {
+			t.Fatalf("valid owner task=%v", task)
+		}
+	}
+	failures := []struct {
+		name   string
+		fields map[string]any
+	}{
+		{"invalid select option", map[string]any{"mode": "evil"}},
+		{"missing required field", map[string]any{"note": "short"}},
+		{"wrong select type", map[string]any{"mode": float64(7)}},
+		{"wrong boolean type", map[string]any{"mode": "safe", "flag": "true"}},
+		{"unknown field", map[string]any{"mode": "safe", "unknown": "x"}},
+		{"text too long", map[string]any{"mode": "safe", "note": strings.Repeat("x", 6)}},
+		{"reserved title control", map[string]any{"mode": "safe", "title": "Nested title"}},
+		{"reserved priority control", map[string]any{"mode": "safe", "priority": "P1"}},
+	}
+	for _, source := range []string{"manual", "agent:console-main"} {
+		for _, failure := range failures {
+			if _, err := store.CreateTask("owner-select", source, "Owner select", "", failure.fields); err == nil || err.Error() != "action_input_invalid" {
+				t.Fatalf("%s from %s err=%v", failure.name, source, err)
+			}
+		}
+	}
+}
+
+func TestCreateTaskRejectsUnavailableOwnerConfiguredActions(t *testing.T) {
+	store := newTestStore(t)
+	workshop := validPipelineDefinition()
+	workshop.ID = "workshop-only"
+	workshop.Label = "Workshop only"
+	workshop.Requires = []string{"workshop"}
+	if err := store.PutAction(workshop); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"manual", "agent:console-main"} {
+		if _, err := store.CreateTask("workshop-only", source, "Bypass", "", nil); err == nil || err.Error() != "action_disabled" {
+			t.Fatalf("workshop launch from %s err=%v", source, err)
+		}
+	}
+	disabled := validPipelineDefinition()
+	disabled.ID = "disabled-action"
+	disabled.Label = "Disabled action"
+	if err := store.PutAction(disabled); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DisableAction("disabled-action"); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"manual", "agent:console-main"} {
+		if _, err := store.CreateTask("disabled-action", source, "Disabled", "", nil); err == nil || err.Error() != "action_disabled" {
+			t.Fatalf("disabled launch from %s err=%v", source, err)
+		}
+	}
+}
+
+func TestCreateTaskTrustedHookSkipsPresentationValidation(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.PutAction(ownerSelectDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.CreateTask("owner-select", "hook:synthetic", "Hook task", "P1", nil)
+	if err != nil {
+		t.Fatalf("trusted hook task: %v", err)
+	}
+	task := result["task"].(map[string]any)
+	if task["kind"] != "owner-select" || task["source"] != "hook:synthetic" || task["status"] != "queued" {
+		t.Fatalf("trusted hook task=%v", task)
+	}
+	if payload, ok := task["payload"]; ok {
+		t.Fatalf("trusted hook task gained presentation payload: %v", payload)
+	}
+}
+
+func TestConfiguredActionRequiredBooleanMustBeTrue(t *testing.T) {
+	store := newTestStore(t)
+	definition := validPipelineDefinition()
+	definition.ID = "acknowledge"
+	definition.Label = "Acknowledge"
+	definition.Presentation = &pipelinePresentation{Fields: []pipelineField{
+		{Name: "ack", Label: "Acknowledge", Type: "boolean", Required: true},
+	}}
+	if err := store.PutAction(definition); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RunAction("acknowledge", map[string]any{"ack": false}); err == nil || err.Error() != "action_input_invalid" {
+		t.Fatalf("required false boolean run err=%v", err)
+	}
+	if _, err := store.CreateTask("acknowledge", "manual", "Acknowledge", "", map[string]any{"ack": false}); err == nil || err.Error() != "action_input_invalid" {
+		t.Fatalf("required false boolean task err=%v", err)
+	}
+	result, err := store.RunAction("acknowledge", map[string]any{"ack": true})
+	if err != nil {
+		t.Fatalf("required true boolean: %v", err)
+	}
+	if result["task"].(map[string]any)["payload"].(map[string]any)["ack"] != true {
+		t.Fatalf("acknowledgment payload=%v", result["task"])
 	}
 }

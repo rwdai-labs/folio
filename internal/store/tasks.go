@@ -514,7 +514,25 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 	}
 	definition, err := s.resolveTaskAction(kind)
 	if err != nil {
+		// A disabled or unavailable-capability action is a fixed, actionable
+		// outcome for every caller, not an unknown kind. Other resolution
+		// failures keep the existing fail-closed invalid-kind response.
+		if err.Error() == "action_disabled" {
+			return nil, err
+		}
 		return nil, errStore("invalid_task_kind")
+	}
+	if !definition.Legacy && ownerTaskSource(source) {
+		// title and priority are top-level launch controls, never action fields.
+		for _, control := range []string{"title", "priority"} {
+			if _, exists := rawPayload[control]; exists {
+				return nil, errStore("action_input_invalid")
+			}
+		}
+		entry := catalogEntry{Fields: definition.Fields, Requires: definition.Requires}
+		if _, err := validateActionLaunch(entry, rawPayload); err != nil {
+			return nil, err
+		}
 	}
 	payload, err = projectTaskPayloadForPlan(definition, source, rawPayload)
 	if err != nil {

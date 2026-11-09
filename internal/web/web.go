@@ -1014,9 +1014,9 @@ func (s *Server) hookEvent(w http.ResponseWriter, r *http.Request) {
 	title, payload := hookPayload(body, name)
 	created, err := tasks.CreateTask(action, "hook:"+id, title, priority, payload)
 	if err != nil {
-		if err.Error() == "invalid_task_kind" {
-			// The hook names a kind that is no longer configured. That is an
-			// owner configuration error, not a caller error.
+		if err.Error() == "invalid_task_kind" || err.Error() == "action_disabled" {
+			// The hook names a kind that is no longer configured or available.
+			// That is an owner configuration error, not a caller error.
 			s.writeError(w, http.StatusServiceUnavailable, "hook_action_unsupported")
 			return
 		}
@@ -2019,7 +2019,16 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 		}
 		value, err := backend.CreateTask(kind, "manual", title, priority, data)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, taskErrorCode(err))
+			// Configured actions reuse the catalog's owner-launch validation.
+			// Keep those client outcomes distinct from opaque task failures.
+			status, code := http.StatusBadRequest, taskErrorCode(err)
+			switch err.Error() {
+			case "action_disabled":
+				status, code = http.StatusConflict, "action_disabled"
+			case "action_input_invalid":
+				status, code = http.StatusBadRequest, "action_input_invalid"
+			}
+			s.writeError(w, status, code)
 			return
 		}
 		status := http.StatusOK

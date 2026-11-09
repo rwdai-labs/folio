@@ -9,7 +9,13 @@ import (
 	"strings"
 )
 
-const maxFeedbackUploadBytes = 8 * 1024 * 1024
+const (
+	maxFeedbackUploadBytes = 8 * 1024 * 1024
+	// The image itself stays capped at maxFeedbackUploadBytes. The multipart
+	// envelope adds field headers and boundaries, so the total request gets a
+	// separate bounded allowance instead of rejecting a legal maximum image.
+	maxFeedbackMultipartBytes = maxFeedbackUploadBytes + 1024*1024
+)
 
 var safeFeedbackID = regexp.MustCompile(`^f-[0-9a-f]{12}$`)
 
@@ -26,11 +32,11 @@ func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusServiceUnavailable, "feedback_unavailable")
 		return
 	}
-	if r.ContentLength > maxFeedbackUploadBytes {
+	if r.ContentLength > maxFeedbackMultipartBytes {
 		s.writeError(w, http.StatusRequestEntityTooLarge, "feedback_too_large")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxFeedbackUploadBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxFeedbackMultipartBytes)
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {

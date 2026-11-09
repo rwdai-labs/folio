@@ -21,6 +21,8 @@ type actionPlan struct {
 	Label      string
 	Priority   string
 	Legacy     bool
+	Requires   []string
+	Fields     []pipelineField
 	HTTPHosts  []string
 	ReportFrom string
 	Steps      []actionStep
@@ -53,8 +55,8 @@ func actionPlanForKind(kind taskKind) (actionPlan, error) {
 }
 
 // actionPlanForPipeline converts one validated actions.json entry to the same
-// execution shape. The step values are copied so a concurrent reload cannot
-// mutate a running plan.
+// execution shape. The step and presentation values are copied so a concurrent
+// reload cannot mutate a running plan.
 func actionPlanForPipeline(definition pipelineDefinition, hosts []string) (actionPlan, error) {
 	if len(definition.Steps) == 0 {
 		return actionPlan{}, errStore("action_plan_invalid")
@@ -64,10 +66,20 @@ func actionPlanForPipeline(definition pipelineDefinition, hosts []string) (actio
 		step := definition.Steps[index]
 		steps = append(steps, actionStep{Type: step.Type, Pipeline: &step})
 	}
+	fields := []pipelineField(nil)
+	if definition.Presentation != nil {
+		fields = make([]pipelineField, len(definition.Presentation.Fields))
+		for index, field := range definition.Presentation.Fields {
+			field.Options = append([]pipelineOption(nil), field.Options...)
+			fields[index] = field
+		}
+	}
 	return actionPlan{
 		ID:         definition.ID,
 		Label:      definition.Label,
 		Priority:   definition.defaultPriority(),
+		Requires:   append([]string(nil), definition.Requires...),
+		Fields:     fields,
 		HTTPHosts:  append([]string(nil), hosts...),
 		ReportFrom: definition.ReportFrom,
 		Steps:      steps,
@@ -103,6 +115,9 @@ func (s *Store) resolveTaskAction(id string) (actionPlan, error) {
 		}
 		if !definition.isEnabled() {
 			return actionPlan{}, errStore("action_disabled")
+		}
+		if err := validateActionRequirements(definition.Requires); err != nil {
+			return actionPlan{}, err
 		}
 		return actionPlanForPipeline(definition, file.HTTPHosts)
 	}

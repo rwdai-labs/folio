@@ -268,3 +268,52 @@ func TestOpenAIAgentRuntimeToolLoop(t *testing.T) {
 		t.Fatalf("tasks=%v err=%v", tasks, err)
 	}
 }
+
+func TestAgentTaskCreateCannotBypassOwnerLaunchValidation(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.PutAction(ownerSelectDefinition()); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeAgentRuntime{available: true, responses: []AgentResponse{
+		{ToolCalls: []AgentToolCall{{Name: "task.create", Arguments: map[string]any{
+			"action": "owner-select",
+			"title":  "Bypass",
+			"payload": map[string]any{
+				"mode": "evil",
+			},
+		}}}},
+		{Text: "Rejected."},
+	}}
+	store.SetAgentRuntime(runtime)
+	var events []AgentEvent
+	result, err := store.AgentTurn(context.Background(), "console-main", "queue an invalid action", eventTrustOwner, func(event AgentEvent) {
+		events = append(events, event)
+	})
+	if err != nil || result.Text != "Rejected." {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	tasks, err := store.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list := tasks["tasks"].([]any); len(list) != 0 {
+		t.Fatalf("invalid assistant task was queued: %v", list)
+	}
+	run, err := store.AutomationRun(result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := run["tool_calls"].([]any)
+	if len(calls) != 1 || calls[0].(map[string]any)["status"] != "failed" {
+		t.Fatalf("invalid assistant task was audited as success: %v", calls)
+	}
+	failed := false
+	for _, event := range events {
+		if event.Type == "tool.result" && event.Status == "failed" && event.Summary == "action_input_invalid" {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatalf("assistant did not receive the launch validation error: %v", events)
+	}
+}

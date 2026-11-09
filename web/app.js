@@ -95,7 +95,7 @@
     catalog: [],
     catalogLoaded: false,
     catalogError: false,
-    catalogBusy: {},
+    catalogBusy: Object.create(null),
     catalogResults: new Map(),
     catalogNotices: new Map(),
     feedbackBusy: false,
@@ -1357,9 +1357,13 @@
 
   // Task kinds are data. The hook form lists whatever data/task-kinds.json
   // defines, so the owner adds a kind without touching this file.
+  const RESERVED_KIND_LABELS = Object.freeze({ "feedback-plan": "tasks.kind.feedback_plan" });
+
   function kindLabel(id) {
     const kind = (state.kinds || []).find((item) => item && item.id === id);
-    return (kind && kind.label) || id || "";
+    if (kind && kind.label) return kind.label;
+    if (typeof id === "string" && Object.prototype.hasOwnProperty.call(RESERVED_KIND_LABELS, id)) return t(RESERVED_KIND_LABELS[id]);
+    return id || "";
   }
 
   async function loadTaskKinds() {
@@ -5063,7 +5067,7 @@
     state.catalog = [];
     state.catalogLoaded = false;
     state.catalogError = false;
-    state.catalogBusy = {};
+    state.catalogBusy = Object.create(null);
     state.catalogResults.clear();
     state.catalogNotices.clear();
     $("catalog-list").replaceChildren();

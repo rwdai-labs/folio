@@ -64,11 +64,16 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   returns `{task,created}` with 201/200; unknown/disabled/invalid map to 404
   `action_unknown`, 409 `action_disabled`, 400 `action_input_invalid`. Route the
   run verb through `actionAdmin` before the generic `/api/actions` POST switch.
+  A configured action requiring the unavailable `workshop` capability is also
+  rejected for task creation and hook creation (`invalid_hook_action`); an event
+  target resolving to it fails closed. Field validation remains specific to
+  owner launches.
 - The optional `FeedbackBackend` serves session-protected `GET /api/feedback`,
   `GET /api/feedback/{id}` and `GET /api/feedback/{id}/image`, plus CSRF-protected
   multipart `POST /api/feedback`. The multipart branch must run after
   `requireSession`/CSRF but before `requestBody` JSON parsing; bound the total
-  body with `MaxBytesReader` at 8 MiB. Create returns 201
+  body with `MaxBytesReader` at 8 MiB plus a bounded 1 MiB multipart-envelope
+  allowance, while the image part itself stays capped at 8 MiB. Create returns 201
   `{accepted:true,feedback,task}` or 200 `{accepted:false,feedback}` for a
   recorded gate rejection. Records may carry bounded normalized `gate_usage`
   counters from the gate call, never raw gate text. Malformed input returns 400
@@ -101,9 +106,15 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   approvals and a successful structural edit does not resolve a factual conflict.
 - Session/CSRF-protected `POST /api/tasks` accepts `kind`, optional `title`,
   `priority`, and bounded flat `payload`. The server assigns `source: manual`;
-  caller source values never select trust. Return `{task, created}` with 201 for
-  new intent or 200 for deduplication. A report's owner `payload.request` permits
-  at most 4000 runes; excess/type errors return 400 `report_request_invalid`.
+  caller source values never select trust. Configured actions use the same
+  validated owner-launch path as catalog run (`requires`, unknown/required
+  fields, types, select options, rune limits, required-boolean true); hook,
+  event and pipeline task creation remain trusted and need no presentation
+  fields. Return `{task, created}` with 201 for new intent or 200 for
+  deduplication. A report's owner `payload.request` permits at most 4000 runes;
+  excess/type errors return 400 `report_request_invalid`. A configured action's
+  `action_disabled` returns 409, `action_input_invalid` returns 400, and other
+  invalid task input keeps 400 `task_invalid`.
 - `/api/state.capabilities` separates assistant/report/maintenance/context
   configuration readiness (`available`, `reason`, `verification: unknown`) and
   advertises `workshop` as unavailable (`workshop_unavailable`) until a later
@@ -122,6 +133,8 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   with `task_id`, `title`, `status`. History responses add a `tasks` array of
   those associations reconstructed from retained durable task records; clients
   must tolerate empty history/associations. Task acceptance is not completion.
+  Assistant `task.create` uses the store's validated owner path, so a rejected
+  configured action emits a failed tool result and no `task.created` event.
 - Queue-created maintenance and report runs include `task_id` from their first
   running audit record. Consumers can correlate a running task with its current
   attempt before the task's final `run_id` is saved; historical runs may omit it.

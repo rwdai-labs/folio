@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -256,5 +258,137 @@ func TestDailyOwnContextHTTPIntegration(t *testing.T) {
 	entries, err := os.ReadDir(repository)
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("context search changed checkout: %v %v", entries, err)
+	}
+}
+
+func dailyFeedbackPNG(t *testing.T, total int) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	if err := png.Encode(&buffer, img); err != nil {
+		t.Fatal(err)
+	}
+	raw := buffer.Bytes()
+	if total == 0 {
+		return append([]byte{}, raw...)
+	}
+	if total < len(raw) {
+		t.Fatalf("requested image size %d is smaller than the encoded PNG %d", total, len(raw))
+	}
+	return append(append([]byte{}, raw...), make([]byte, total-len(raw))...)
+}
+
+// Cover the real store and HTTP boundary for the catalog, owner task launch,
+// feedback multipart/image, and a store failure. Fakes cannot prove that the
+// endpoint and CreateTask share the same validated owner path.
+func TestDailyCatalogFeedbackAndOwnerLaunchHTTPIntegration(t *testing.T) {
+	data, tools := t.TempDir(), t.TempDir()
+	backend, err := store.New(data, tools, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{
+		`{"id":"workshop-only","label":"Workshop only","requires":["workshop"],"steps":[{"id":"ask","type":"agent","prompt":"Synthetic workshop prompt"}]}`,
+		`{"id":"select-action","label":"Select action","presentation":{"fields":[{"name":"mode","label":"Mode","type":"select","required":true,"options":[{"value":"safe","label":"Safe"}]}]},"steps":[{"id":"ask","type":"agent","prompt":"Synthetic select prompt"}]}`,
+	} {
+		if _, err := backend.PutActionJSON([]byte(raw)); err != nil {
+			t.Fatalf("configure action: %v", err)
+		}
+	}
+	passwordFile := filepath.Join(data, "synthetic-password")
+	if err := os.WriteFile(passwordFile, []byte("correct horse"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := New(backend, Options{DataDir: data, PasswordFile: passwordFile, AssetsDir: tools, TrustedHosts: []string{"127.0.0.1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.auth.db.Close()
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := &testClient{server: server}
+	client.login(t, "correct horse")
+
+	status, _, catalog := client.request(t, http.MethodGet, "/api/catalog", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("catalog status=%d value=%v", status, catalog)
+	}
+	ids := map[string]bool{}
+	for _, item := range catalog["actions"].([]any) {
+		ids[item.(map[string]any)["id"].(string)] = true
+	}
+	if !ids["workshop-only"] || !ids["select-action"] {
+		t.Fatalf("configured catalog entries missing: %v", ids)
+	}
+
+	status, _, result := client.request(t, http.MethodPost, "/api/actions/workshop-only/run", map[string]any{"fields": map[string]any{}}, server.URL)
+	if status != http.StatusConflict || result["error"] != "action_disabled" {
+		t.Fatalf("direct workshop launch status=%d result=%v", status, result)
+	}
+	status, _, result = client.request(t, http.MethodPost, "/api/tasks", map[string]any{"kind": "workshop-only", "title": "Bypass"}, server.URL)
+	if status != http.StatusConflict || result["error"] != "action_disabled" {
+		t.Fatalf("workshop task bypass status=%d result=%v", status, result)
+	}
+	status, _, result = client.request(t, http.MethodPost, "/api/tasks", map[string]any{
+		"kind": "select-action", "title": "Bypass", "payload": map[string]any{"mode": "evil"},
+	}, server.URL)
+	if status != http.StatusBadRequest || result["error"] != "action_input_invalid" {
+		t.Fatalf("select task bypass status=%d result=%v", status, result)
+	}
+	status, _, result = client.request(t, http.MethodPost, "/api/tasks", map[string]any{
+		"kind": "select-action", "title": "Missing mode",
+	}, server.URL)
+	if status != http.StatusBadRequest || result["error"] != "action_input_invalid" {
+		t.Fatalf("required task field status=%d result=%v", status, result)
+	}
+	status, _, created := client.request(t, http.MethodPost, "/api/tasks", map[string]any{
+		"kind": "select-action", "title": "Validated", "payload": map[string]any{"mode": "safe"},
+	}, server.URL)
+	if status != http.StatusCreated || created["created"] != true {
+		t.Fatalf("validated task status=%d result=%v", status, created)
+	}
+	if payload := created["task"].(map[string]any)["payload"].(map[string]any); payload["mode"] != "safe" {
+		t.Fatalf("validated task payload=%v", payload)
+	}
+
+	fields := validFeedbackFields()
+	small := dailyFeedbackPNG(t, 0)
+	status, _, _, feedback := client.multipartRequest(t, "/api/feedback", fields, small, true, server.URL)
+	if status != http.StatusCreated || feedback["accepted"] != true {
+		t.Fatalf("feedback status=%d result=%v", status, feedback)
+	}
+	record := feedback["feedback"].(map[string]any)
+	id := record["id"].(string)
+	if record["has_image"] != true {
+		t.Fatalf("feedback record=%v", record)
+	}
+	status, headers, image, _ := client.multipartGet(t, "/api/feedback/"+id+"/image")
+	if status != http.StatusOK || len(image) == 0 || headers.Get("Content-Type") != "image/png" || headers.Get("Cache-Control") != "no-store" {
+		t.Fatalf("feedback image status=%d headers=%v bytes=%d", status, headers, len(image))
+	}
+	if status, _, detail := client.request(t, http.MethodGet, "/api/feedback/"+id, nil, ""); status != http.StatusOK || detail["feedback"].(map[string]any)["title"] != fields["title"] {
+		t.Fatalf("feedback detail status=%d result=%v", status, detail)
+	}
+
+	// A max-size image plus multipart overhead must pass the total-body cap;
+	// the image cap itself still applies.
+	boundary := dailyFeedbackPNG(t, maxFeedbackUploadBytes)
+	status, _, _, feedback = client.multipartRequest(t, "/api/feedback", fields, boundary, true, server.URL)
+	if status != http.StatusCreated || feedback["accepted"] != true {
+		t.Fatalf("max image feedback status=%d result=%v", status, feedback)
+	}
+	oversized := dailyFeedbackPNG(t, maxFeedbackUploadBytes+1)
+	status, _, _, feedback = client.multipartRequest(t, "/api/feedback", fields, oversized, true, server.URL)
+	if status != http.StatusBadRequest || feedback["error"] != "feedback_invalid" || feedback["reason"] != "too_large" {
+		t.Fatalf("oversized image feedback status=%d result=%v", status, feedback)
+	}
+
+	// A broken registry is a store failure, not a fake client contract.
+	if err := os.WriteFile(filepath.Join(data, "actions.json"), []byte("{broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status, _, result = client.request(t, http.MethodGet, "/api/catalog", nil, "")
+	if status != http.StatusInternalServerError || result["error"] != "action_unavailable" {
+		t.Fatalf("catalog store failure status=%d result=%v", status, result)
 	}
 }

@@ -248,12 +248,7 @@ func (s *Store) RunAction(id string, fields map[string]any) (map[string]any, err
 	}
 	// Workshop is not implemented in this phase. Enforce it here as well as in
 	// the catalog UI so a direct API call cannot enqueue work that cannot run.
-	for _, requirement := range entry.Requires {
-		if requirement == "workshop" {
-			return nil, errStore("action_disabled")
-		}
-	}
-	values, err := validateActionRunFields(*entry, fields)
+	values, err := validateActionLaunch(*entry, fields)
 	if err != nil {
 		return nil, err
 	}
@@ -310,6 +305,30 @@ func actionTitleFromRequest(request string) string {
 		runes = runes[:80]
 	}
 	return string(runes)
+}
+
+// validateActionRequirements is the hard capability gate shared by the catalog,
+// CreateTask, hooks and event targets. Workshop is not implemented in this
+// phase; other requires values stay UI gating and execution remains fail-closed.
+func validateActionRequirements(requires []string) error {
+	for _, requirement := range requires {
+		if requirement == "workshop" {
+			return errStore("action_disabled")
+		}
+	}
+	return nil
+}
+
+// validateActionLaunch is the single owner-launch contract for configured
+// actions. The catalog endpoint and CreateTask both call it, so a caller cannot
+// reach a configured action through /api/tasks or task.create without the same
+// capability and presentation validation. Internal hook/event/pipeline callers
+// stay on their trusted path and are not required to supply presentation fields.
+func validateActionLaunch(entry catalogEntry, fields map[string]any) (map[string]any, error) {
+	if err := validateActionRequirements(entry.Requires); err != nil {
+		return nil, err
+	}
+	return validateActionRunFields(entry, fields)
 }
 
 func validateActionRunFields(entry catalogEntry, fields map[string]any) (map[string]any, error) {
@@ -395,7 +414,9 @@ func validateCatalogFieldValue(field pipelineField, raw any) (any, error) {
 		return nil, errStore("action_input_invalid")
 	case "boolean":
 		value, ok := raw.(bool)
-		if !ok {
+		if !ok || field.Required && !value {
+			// A required acknowledgment checkbox must be explicitly checked; a
+			// present-but-false value is not consent.
 			return nil, errStore("action_input_invalid")
 		}
 		return value, nil

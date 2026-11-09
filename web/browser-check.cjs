@@ -150,6 +150,10 @@ const syntheticCatalog = () => [
     id: 'workshop', label: 'Workshop action', priority: 'P2', enabled: true, group: 'workshop', order: 3,
     submit_label: 'Run workshop', fields: [], requires: ['workshop'], legacy: false,
   },
+  {
+    id: 'constructor', label: 'Constructor action', priority: 'P2', enabled: true, group: 'tools', order: 10,
+    submit_label: 'Run constructor', fields: [], requires: ['report'], legacy: false,
+  },
 ];
 const weixinStatus = (overrides = {}) => ({
   deployment: { mode: 'auto', owner_pinned: false },
@@ -505,7 +509,14 @@ async function main() {
       assert.equal(catalogRequests[2].fields.note, 'Synthetic maintenance note');
       assert.equal(Object.prototype.hasOwnProperty.call(catalogRequests[2].fields, 'scope'), false);
       assert.equal(catalogRequests[2].fields.dry_run, false);
-      tasks = tasks.filter(task => task.id !== 'maintenance-task');
+      // Object.prototype names are valid action ids and must not look busy.
+      const constructorAction = page.locator('[data-catalog-action="constructor"]');
+      assert.equal(await constructorAction.locator('button[type="submit"]').isDisabled(), false, 'prototype property names do not look busy');
+      const constructorResponse = page.waitForResponse((response) => response.url().endsWith('/api/actions/constructor/run') && response.request().method() === 'POST');
+      await constructorAction.locator('button[type="submit"]').click();
+      await constructorResponse;
+      assert.equal(catalogRequests[3].id, 'constructor');
+      tasks = tasks.filter(task => task.id !== 'maintenance-task' && task.id !== 'constructor-task');
       await page.evaluate(() => window.folio.refreshTasks());
       // Report result, fallback and follow-up still use the one task dialog.
       run = { run_id: reportID, status: 'reported', task_id: 'report-task', runner: 'synthetic', summary: 'Report complete', report_file: 'run-' + reportID + '.md', report_text: 'SHORT PREVIEW ONLY' };
@@ -676,12 +687,16 @@ async function main() {
         { id: 't-000000000002', kind: 'maintenance', title: 'Running example', status: 'running', enabled: true, priority: 'P1', source: 'manual' },
         { id: 't-000000000003', kind: 'maintenance', title: 'Failed example', status: 'failed', priority: 'P0', reason: 'runner_network', source: 'manual' },
         { id: 't-000000000004', kind: 'maintenance', title: 'Done example', status: 'done', priority: 'P2', source: 'manual' },
+        { id: 't-000000000005', kind: 'feedback-plan', title: 'Feedback plan example', status: 'queued', enabled: true, priority: 'P2', source: 'manual' },
       ];
       await page.locator('[data-view="review"]').click();
       await page.locator('#review-refresh').click();
       await page.locator('[data-view="dashboard"]').click();
-      await page.waitForFunction(() => document.querySelectorAll('.task-board .task-item').length === 4);
-      for (const column of ['current', 'attention', 'recent']) assert.equal(await page.locator(`[data-column="${column}"] .task-item`).count(), column === 'current' ? 2 : 1);
+      await page.waitForFunction(() => document.querySelectorAll('.task-board .task-item').length === 5);
+      for (const column of ['current', 'attention', 'recent']) assert.equal(await page.locator(`[data-column="${column}"] .task-item`).count(), column === 'current' ? 3 : 1);
+      const planMeta = page.locator('.task-item:has([data-task-inspect="t-000000000005"]) .task-meta');
+      assert.match(await planMeta.textContent(), language === 'zh' ? /反馈计划/ : /Feedback plan/);
+      assert.equal((await planMeta.textContent()).includes('feedback-plan'), false, 'reserved kind label is translated');
       assert.match(await page.locator('[data-column="current"] .task-progress').first().textContent(), language === 'zh' ? /空闲时段/ : /off-peak/);
       await page.locator('#task-search').fill('Failed');
       assert.equal(await page.locator('.task-board .task-item').count(), 1);
