@@ -53,6 +53,33 @@ const weixinStatus = (overrides = {}) => ({
   state: 'idle', login: null, ...overrides,
 });
 const visible = async (page, selector) => page.locator(selector).waitFor({ state: 'visible' });
+// Report text must stay readable in both themes. The drawer inherits the theme
+// ink while the report panel owns its own surface.
+const reportContrast = (page) => page.locator('#task-detail-body .run-report').evaluate((el) => {
+  const rgb = (value) => {
+    const parts = value.match(/[\d.]+/g);
+    return parts && parts.length >= 3 ? parts.slice(0, 3).map(Number) : null;
+  };
+  const luminance = (color) => {
+    const [r, g, b] = color.map((part) => {
+      const value = part / 255;
+      return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  let node = el;
+  let background = getComputedStyle(node).backgroundColor;
+  while (node && (background === 'rgba(0, 0, 0, 0)' || background === 'transparent')) {
+    node = node.parentElement;
+    if (node) background = getComputedStyle(node).backgroundColor;
+  }
+  const foreground = rgb(getComputedStyle(el).color);
+  const surface = rgb(background);
+  if (!foreground || !surface) return 0;
+  const first = luminance(foreground);
+  const second = luminance(surface);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+});
 async function main() {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({ executablePath: process.env.FOLIO_BROWSER_EXECUTABLE, headless: true });
@@ -353,6 +380,12 @@ async function main() {
       await page.locator('#report-created [data-chat-task]').click();
       await visible(page, '#task-detail-body .run-report');
       await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes('A readable result'));
+      for (const scheme of ['light', 'dark']) {
+        await page.emulateMedia({ colorScheme: scheme });
+        const ratio = await reportContrast(page);
+        assert.ok(ratio >= 4.5, `report contrast in ${scheme} theme: ${ratio.toFixed(2)}`);
+      }
+      await page.emulateMedia({ colorScheme: 'light' });
       assert.equal(await page.locator('#task-detail-body img').count(), 0);
       await page.locator('#task-detail-body [data-report-followup]').click();
       await visible(page, '#chat-view');
