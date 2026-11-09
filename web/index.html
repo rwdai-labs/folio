@@ -85,7 +85,6 @@
         <nav class="section-nav" aria-label="Sections" data-i18n-aria-label="nav.aria">
           <a href="#dashboard" data-view="dashboard" data-i18n="nav.dashboard">Dashboard</a>
           <a href="#chat" data-view="chat" data-i18n="nav.chat">Assistant</a>
-          <a href="#feedback" data-view="feedback" data-i18n="nav.feedback">Feedback</a>
           <a href="#actions" data-view="actions" data-i18n="nav.actions">Actions</a>
           <a href="#runs" data-view="runs" data-i18n="nav.runs">Run history</a>
           <a href="#review" data-view="review" data-i18n="nav.review">Owner review</a>
@@ -355,11 +354,17 @@
             </form>
           </section>
         </section>
-        <section id="feedback-view" class="page-view" aria-labelledby="feedback-heading" hidden>
-          <header class="page-heading"><div><p class="eyebrow" data-i18n="feedback.kicker">Improve Folio</p>
-            <h1 id="feedback-heading" tabindex="-1" data-i18n="feedback.title">Send feedback</h1>
-            <p class="lede" data-i18n="feedback.lead">Report a concrete problem or improvement. Screenshots stay in this page until you submit and are never saved in browser storage.</p></div></header>
-          <section class="card">
+        <aside id="feedback-view" class="feedback-window" role="dialog" aria-modal="false" aria-labelledby="feedback-heading" hidden>
+          <header class="feedback-window-head" id="feedback-drag-handle" data-i18n-title="feedback.drag">
+            <span class="feedback-grip" aria-hidden="true">⠿</span>
+            <div class="feedback-window-title">
+              <p class="eyebrow" data-i18n="feedback.kicker">Improve Folio</p>
+              <h2 id="feedback-heading" tabindex="-1" data-i18n="feedback.title">Send feedback</h2>
+            </div>
+            <button id="feedback-close" class="feedback-close" type="button" aria-label="Close feedback" data-i18n-aria-label="feedback.close">×</button>
+          </header>
+          <div class="feedback-window-body">
+            <p class="lede" data-i18n="feedback.lead">Report a concrete problem or improvement. Drag this window aside, then paste or drop a screenshot. Screenshots stay in this page until you submit and are never saved in browser storage.</p>
             <form id="feedback-form" class="form feedback-form" novalidate>
               <div class="field">
                 <label for="feedback-title" data-i18n="feedback.title_label">Title</label>
@@ -430,8 +435,12 @@
             </form>
             <p id="feedback-message" class="form-message" role="status" aria-live="polite"></p>
             <div id="feedback-created"></div>
-          </section>
-        </section>
+          </div>
+        </aside>
+        <button id="feedback-launcher" class="feedback-launcher" type="button" aria-controls="feedback-view" aria-expanded="false">
+          <span class="feedback-launcher-icon" aria-hidden="true">✎</span>
+          <span data-i18n="feedback.open">Feedback</span>
+        </button>
         <section id="actions-view" class="page-view" aria-labelledby="actions-heading" hidden>
           <header class="page-heading"><div><p class="eyebrow" data-i18n="actions.kicker">Runtime</p>
             <h1 id="actions-heading" tabindex="-1" data-i18n="actions.title">Actions</h1>

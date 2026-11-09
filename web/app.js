@@ -99,6 +99,7 @@
     catalogResults: new Map(),
     catalogNotices: new Map(),
     feedbackBusy: false,
+    feedbackOpen: false,
     feedbackNotice: null,
     feedback: {
       image: null, imageName: "", dataURL: "", loadGeneration: 0,
@@ -903,7 +904,7 @@
 
   /* --------------------------------------------------------------- state */
 
-  const views = ["dashboard", "chat", "feedback", "actions", "runs", "review", "settings"];
+  const views = ["dashboard", "chat", "actions", "runs", "review", "settings"];
   const sectionViews = {
     "repository-section": "settings", "runner-settings": "settings",
     "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings", "model-services-settings": "settings",
@@ -962,6 +963,7 @@
       }
       else if (heading) heading.focus();
     }
+    if (fragment === "feedback") feedbackWindowOpen(focus);
     state.viewInitialized = true;
     renderSetup();
   }
@@ -3799,6 +3801,87 @@
   };
   const FEEDBACK_TOOL_IDS = { pen: "feedback-tool-pen", arrow: "feedback-tool-arrow", rect: "feedback-tool-rect" };
 
+  let feedbackDrag = null;
+
+  function feedbackClampWindow() {
+    const panel = $("feedback-view");
+    if (!panel || panel.hidden || !panel.style.left || !panel.style.top) return;
+    const rect = panel.getBoundingClientRect();
+    const maxLeft = Math.max(0, window.innerWidth - rect.width);
+    const maxTop = Math.max(0, window.innerHeight - rect.height);
+    panel.style.left = `${Math.min(Math.max(0, Number.parseFloat(panel.style.left) || 0), maxLeft)}px`;
+    panel.style.top = `${Math.min(Math.max(0, Number.parseFloat(panel.style.top) || 0), maxTop)}px`;
+  }
+
+  function feedbackWindowOpen(focus = false) {
+    if (!state.authenticated) return;
+    const panel = $("feedback-view");
+    const launcher = $("feedback-launcher");
+    if (!panel || !launcher) return;
+    panel.hidden = false;
+    state.feedbackOpen = true;
+    launcher.setAttribute("aria-expanded", "true");
+    feedbackClampWindow();
+    if (focus) $("feedback-heading").focus();
+  }
+
+  function feedbackWindowClose(restoreFocus = true) {
+    const panel = $("feedback-view");
+    const launcher = $("feedback-launcher");
+    if (!panel || panel.hidden) return;
+    const focusInside = panel.contains(document.activeElement);
+    panel.hidden = true;
+    state.feedbackOpen = false;
+    feedbackDrag = null;
+    if (launcher) launcher.setAttribute("aria-expanded", "false");
+    if (restoreFocus && focusInside && launcher) launcher.focus();
+  }
+
+  function feedbackWindowToggle() {
+    if (state.feedbackOpen) feedbackWindowClose();
+    else feedbackWindowOpen(true);
+  }
+
+  function feedbackDragStart(event) {
+    if (event.button !== 0) return;
+    if (event.target instanceof Element && event.target.closest("button")) return;
+    const panel = $("feedback-view");
+    if (!panel || panel.hidden) return;
+    const rect = panel.getBoundingClientRect();
+    panel.style.left = `${rect.left}px`;
+    panel.style.top = `${rect.top}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+    feedbackDrag = { pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
+    const handle = $("feedback-drag-handle");
+    if (handle) {
+      handle.setPointerCapture(event.pointerId);
+      handle.classList.add("dragging");
+    }
+    event.preventDefault();
+  }
+
+  function feedbackDragMove(event) {
+    if (!feedbackDrag || event.pointerId !== feedbackDrag.pointerId) return;
+    const panel = $("feedback-view");
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const maxLeft = Math.max(0, window.innerWidth - rect.width);
+    const maxTop = Math.max(0, window.innerHeight - rect.height);
+    panel.style.left = `${Math.min(Math.max(0, event.clientX - feedbackDrag.offsetX), maxLeft)}px`;
+    panel.style.top = `${Math.min(Math.max(0, event.clientY - feedbackDrag.offsetY), maxTop)}px`;
+  }
+
+  function feedbackDragEnd(event) {
+    if (!feedbackDrag || (event && event.pointerId !== feedbackDrag.pointerId)) return;
+    feedbackDrag = null;
+    const handle = $("feedback-drag-handle");
+    if (handle) {
+      handle.classList.remove("dragging");
+      if (event && handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    }
+  }
+
   function feedbackReasonText(code) {
     if (typeof code !== "string" || !code) return t("feedback.reason.unknown");
     const key = FEEDBACK_REASONS[code];
@@ -3906,6 +3989,7 @@
   function resetFeedbackSession() {
     state.feedbackBusy = false;
     state.feedbackNotice = null;
+    feedbackWindowClose(false);
     resetFeedbackDraft();
     const created = $("feedback-created");
     if (created) created.replaceChildren();
@@ -4889,6 +4973,17 @@
   on("chat-log", "click", inspectChatTask);
   on("catalog-list", "click", inspectChatTask);
   on("feedback-created", "click", inspectChatTask);
+  on("feedback-launcher", "click", feedbackWindowToggle);
+  on("feedback-close", "click", () => feedbackWindowClose());
+  on("feedback-view", "keydown", (event) => {
+    if (event.key !== "Escape" || !state.feedbackOpen) return;
+    event.preventDefault();
+    feedbackWindowClose();
+  });
+  on("feedback-drag-handle", "pointerdown", feedbackDragStart);
+  on("feedback-drag-handle", "pointermove", feedbackDragMove);
+  on("feedback-drag-handle", "pointerup", feedbackDragEnd);
+  on("feedback-drag-handle", "pointercancel", feedbackDragEnd);
   on("feedback-form", "submit", submitFeedback);
   on("feedback-image", "change", feedbackFileInputChanged);
   on("feedback-choose-image", "click", feedbackChooseImage);
@@ -4978,6 +5073,8 @@
   on("weixin-toggle", "click", toggleWeixin);
   on("weixin-push-toggle", "change", toggleWeixinPush);
   on("weixin-push-test", "click", testWeixinPush);
+
+  window.addEventListener("resize", feedbackClampWindow);
 
   on("bark-form", "submit", saveBark);
   on("bark-test", "click", testBark);

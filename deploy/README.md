@@ -100,8 +100,10 @@ not completion. Read the result and use its follow-up entry to ask about the sam
 run. This small report is also an inference check that **Test connection** cannot
 provide.
 
-Use **Feedback** for an improvement request about Folio itself. The screenshot
-and structured text stay in the private data volume under `/data/feedback/`
+Use the fixed **Feedback** launcher for an improvement request about Folio
+itself. It opens a movable floating window so you can drag it aside and capture
+the affected area. The screenshot and structured text stay in the private data
+volume under `/data/feedback/`
 unless an owner later adds an explicit mirror. The request is rejected if it is
 incomplete or too vague; an accepted request creates a bounded planning task,
 not a source edit or deployment. Source self-modification requires the separate

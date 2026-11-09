@@ -18,7 +18,8 @@ Inherit `../AGENTS.md`.
   must not show a green connected badge.
   A configured deployment token does not prove live repository access.
 - Daily navigation is dashboard (catalog, tasks and usage), assistant chat,
-  feedback, actions, run history, owner review, and settings. `/api/state.capabilities` independently
+  actions, run history, owner review, and settings; feedback is a fixed launcher
+  and movable floating window available alongside those views. `/api/state.capabilities` independently
   describes `assistant`, `report`, `maintenance`, and `context` with `available`,
   fixed `reason`, and `verification`. Availability means configured readiness,
   never live provider acceptance. Any usable daily capability defaults to the
@@ -41,7 +42,10 @@ Inherit `../AGENTS.md`.
   reason only. If the catalog is missing or returns 404, show one generic hint and
   never resurrect hardcoded report/maintenance cards. No action-specific IDs or
   labels belong in the shell.
-- Feedback is a top-level view. POST multipart FormData with `title`, `area`,
+- Feedback is a movable floating window available from every authenticated view,
+  opened by the fixed launcher and closed without discarding the draft. Drag only
+  by the header, keep the window inside the viewport on pointer/resize, and keep
+  Escape/Close focus behaviour. POST multipart FormData with `title`, `area`,
   `current`, `expected`, `acceptance`, `priority` and an optional PNG/JPEG
   `image`, with the session CSRF header. Show an accepted task card or the
   rejection reason without clearing drafted fields; translate known
@@ -166,8 +170,8 @@ review snapshots and safe links, recheck success/failure, subscription-quota
 cards and refresh, usage errors/recovery, both languages, mobile overflow,
 state-load failure, capability-specific readiness without repository/Codex,
 catalog submit/field validation/disabled requirements/404 fallback, structured
-task cards and chat, run-ID report results and follow-up, feedback image/canvas
-export, accepted and rejected submissions with preserved drafts, and session
-expiry cleanup. Set
+task cards and chat, run-ID report results and follow-up, feedback floating
+launcher/drag/draft-preserving close, image/canvas export, accepted and rejected
+submissions with preserved drafts, and session expiry cleanup. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed
 provider authorization and external manual review still need runtime acceptance.

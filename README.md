@@ -35,12 +35,14 @@ volume. This repository contains only generic service code and Web assets.
    any owner-defined `actions.json` entries appear there. Submitting a card
    creates durable task intent. Its task card shows queue state, waiting rules,
    attempts and results; creation is not completion.
-3. Use **Assistant** for conversation and **Feedback** to submit an improvement
-   request about Folio itself. Feedback can include a pasted, dropped or selected
-   PNG/JPEG screenshot annotated with pen, arrow or rectangle tools. Fill in the
-   current behavior, expected behavior and acceptance criteria. Vague or
-   incomplete requests are rejected with a fixed reason; an accepted request
-   currently creates a bounded planning task, not a source edit or deployment.
+3. Use **Assistant** for conversation. Open **Feedback** from the fixed launcher
+   to report an improvement request about Folio itself. The feedback form is a
+   movable floating window: drag it aside, then paste, drop or select a PNG/JPEG
+   screenshot and annotate it with pen, arrow or rectangle tools. Fill in the
+   current behavior, expected behavior and acceptance criteria. Closing the
+   window keeps the draft. Vague or incomplete requests are rejected with a fixed
+   reason; an accepted request currently creates a bounded planning task, not a
+   source edit or deployment.
 4. For personal-context answers and organization, authorize GitHub and connect
    the private Markdown repository. Organization also needs the Codex worker
    and its configured model route. Missing optional channels do not block chat

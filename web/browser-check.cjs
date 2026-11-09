@@ -599,9 +599,20 @@ async function main() {
       await page.goto(origin);
       await visible(page, '#dashboard-view');
       // Feedback captures a synthetic PNG, annotates it on canvas, exports PNG and
-      // keeps the draft when the server rejects it.
-      await page.locator('[data-view="feedback"]').click();
+      // keeps the draft when the server rejects it. The panel floats over every
+      // view and can be dragged away from the area being captured.
+      assert.equal(await page.locator('#feedback-view').isVisible(), false);
+      await page.locator('#feedback-launcher').click();
       await visible(page, '#feedback-view');
+      assert.equal(await page.locator('#feedback-launcher').getAttribute('aria-expanded'), 'true');
+      const panelBefore = await page.locator('#feedback-view').boundingBox();
+      const handle = await page.locator('#feedback-drag-handle').boundingBox();
+      await page.mouse.move(handle.x + 48, handle.y + 18);
+      await page.mouse.down();
+      await page.mouse.move(handle.x + 8, handle.y - 22, { steps: 5 });
+      await page.mouse.up();
+      const panelAfter = await page.locator('#feedback-view').boundingBox();
+      assert.ok(Math.abs(panelAfter.x - panelBefore.x) > 20 || Math.abs(panelAfter.y - panelBefore.y) > 20, 'feedback window is draggable');
       await page.locator('#feedback-image').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: syntheticPNG() });
       await visible(page, '#feedback-editor');
       await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
@@ -679,6 +690,13 @@ async function main() {
       await page.waitForFunction(() => document.getElementById('feedback-image-error').dataset.error === 'true');
       assert.match(await page.locator('#feedback-image-error').textContent(), language === 'zh' ? /PNG|JPEG/ : /PNG|JPEG/);
       feedbackAccepted = true;
+      await page.locator('#feedback-close').click();
+      assert.equal(await page.locator('#feedback-view').isVisible(), false);
+      assert.equal(await page.locator('#feedback-launcher').getAttribute('aria-expanded'), 'false');
+      await page.locator('#feedback-launcher').click();
+      await visible(page, '#feedback-view');
+      assert.equal(await page.locator('#feedback-title').inputValue(), 'Preserved rejected draft', 'closing the floating window preserves the draft');
+      await page.locator('#feedback-close').click();
       // The board uses real stages, explains waiting, filters, and opens an attempt drawer.
       reviewRun = { ...maintenance(), needs_review: [] };
       run = { ...maintenance(), needs_review: [], task_id: 't-000000000002', status: 'running', stage: 'organize' };
@@ -786,12 +804,16 @@ async function main() {
       await page.locator("#work-usage-details").evaluate(node => { node.open = false; });
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-dashboard-${language}.png`, fullPage: true });
       await page.setViewportSize({ width: 390, height: 844 });
-      for (const view of ['dashboard', 'chat', 'feedback', 'settings', 'review', 'runs']) {
+      for (const view of ['dashboard', 'chat', 'settings', 'review', 'runs']) {
         await page.locator(`[data-view="${view}"]`).click();
         await visible(page, `#${view}-view`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile overflow in ${view}`);
         if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-${view}-mobile-${language}.png`, fullPage: true });
       }
+      await page.locator('#feedback-launcher').click();
+      await visible(page, '#feedback-view');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile overflow in feedback window');
+      await page.locator('#feedback-close').click();
       // Delayed history and report responses from a logged-out session must not
       // restore private data after a fresh login (even for the same owner).
       await page.setViewportSize({ width: 1440, height: 1000 });
@@ -840,7 +862,7 @@ async function main() {
       stateError = false;
       // Expiry hides private app data and returns to Folio sign-in.
       await page.locator("#chat-input").evaluate(input => { input.value = "Synthetic private draft"; });
-      await page.locator('[data-view="feedback"]').click();
+      await page.locator('#feedback-launcher').click();
       await visible(page, '#feedback-view');
       await page.locator('#feedback-image').setInputFiles({ name: 'private.png', mimeType: 'image/png', buffer: syntheticPNG() });
       await visible(page, '#feedback-editor');
@@ -850,6 +872,7 @@ async function main() {
       await page.locator('#review-refresh').evaluate(button => button.click());
       await visible(page, '#login-view');
       assert.equal(await page.locator('#app-view').isVisible(), false);
+      assert.equal(await page.locator('#feedback-view').isVisible(), false);
       assert.equal(await page.locator('#chat-input').inputValue(), '');
       assert.equal(await page.locator('#chat-log').textContent(), '');
       assert.equal(await page.locator('#feedback-title').inputValue(), '');
@@ -859,7 +882,7 @@ async function main() {
       assert.equal(await page.locator('#feedback-created').textContent(), '');
       assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, capability readiness, catalog submit/validation/disabled/fallback, chat task events/history, report result/retry/follow-up, feedback image/canvas/accept/reject, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, catalog submit/validation/disabled/fallback, chat task events/history, report result/retry/follow-up, floating draggable feedback image/canvas/accept/reject, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

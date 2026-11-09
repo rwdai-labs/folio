@@ -72,7 +72,10 @@ upstream account or inference call works.
 ## Phase 2: feedback inbox and gate
 
 Feedback is private owner data stored under `data/feedback/`; the public image
-never contains context, credentials, or runtime files. A submission contains:
+never contains context, credentials, or runtime files. The console exposes it as
+a movable floating window opened from a fixed launcher, so the owner can drag it
+aside and capture the affected area without navigating away; closing the window
+keeps the draft. A submission contains:
 
 - title and a fixed page/area;
 - current behavior, expected behavior, and acceptance criteria;
