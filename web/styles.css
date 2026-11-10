@@ -2770,3 +2770,232 @@ textarea {
   .feedback-tool-field input[type="range"] { flex: 1 1 auto; width: auto; }
   .feedback-context-list { grid-template-columns: 1fr; }
 }
+
+/* ------------------------------------------------- daily activity shell */
+
+/* One dashboard column keeps the compact current card, quick actions and the
+   collapsed usage console in a deliberate daily reading order. */
+#dashboard-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+#dashboard-view > * { grid-column: 1 / -1; }
+.card { padding: 20px; }
+.dashboard-current { display: grid; gap: 12px; }
+.dashboard-current .card-head { margin-bottom: 0; align-items: center; }
+.current-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.current-count {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.current-count strong { color: var(--ink); font: 620 1.05rem var(--mono); }
+.current-count span { color: var(--muted); font-size: .72rem; line-height: 1.3; }
+.current-list { display: grid; gap: 6px; }
+.current-task {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--ease), background-color var(--ease);
+}
+.current-task:hover { border-color: var(--accent-border); background: var(--accent-soft); }
+.current-task-title { min-width: 0; font-size: .84rem; font-weight: 620; line-height: 1.4; overflow-wrap: anywhere; }
+.current-task-title .task-priority { margin-left: 6px; padding: 1px 5px; font-size: .62rem; }
+.current-task .badge { padding: 2px 7px; font-size: .64rem; }
+.current-task-meta { grid-column: 1 / -1; color: var(--muted); font-size: .72rem; line-height: 1.4; overflow-wrap: anywhere; }
+.empty-state.compact-empty { padding: 12px; text-align: left; font-size: .78rem; }
+
+/* Activity and Settings tabs share one compact, keyboard-operable strip. */
+.tab-list {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  max-width: 100%;
+  padding: 4px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  scrollbar-width: none;
+}
+.tab-list::-webkit-scrollbar { display: none; }
+.tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 5px 13px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: .8rem;
+  font-weight: 640;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--ease), color var(--ease), box-shadow var(--ease);
+}
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(31, 38, 31, .14);
+}
+.tab-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--line-subtle);
+  color: var(--muted);
+  font: 620 .66rem var(--mono);
+  line-height: 1.55;
+  text-align: center;
+}
+.tab-count:empty { display: none; }
+.tab-panel { min-width: 0; }
+.tab-panel > .card:first-child { margin-top: 0; }
+.settings-panel { display: grid; gap: 16px; min-width: 0; }
+.settings-panel[hidden] { display: none !important; }
+
+/* Run history is a bounded, filterable list; selected detail stays above. */
+.run-filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.run-filter-bar label { color: var(--muted); font-size: .74rem; font-weight: 640; }
+.run-filter-bar select { width: auto; min-height: 32px; padding: 4px 8px; font-size: .76rem; }
+#runs-window-status { margin: 0 0 0 auto; }
+#runs-show-more { margin-top: 8px; }
+.run-history-item { gap: 2px; padding: 8px 11px; }
+.run-history-head { justify-content: flex-start; }
+.run-history-summary { flex: 1 1 auto; min-width: 0; font-weight: 600; }
+.run-history-meta { font-size: .68rem; line-height: 1.4; }
+
+/* Review help is explained once, and findings stay compact source rows. */
+.review-help {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.review-help > summary { color: var(--ink-soft); font-size: .8rem; font-weight: 650; cursor: pointer; }
+.review-help .review-steps { margin: 10px 0 0; padding-left: 20px; gap: 6px; font-size: .82rem; line-height: 1.48; }
+.review-help .hint { margin-top: 8px; }
+.review-actions { margin: 8px 0; }
+.review-list { margin-top: 10px; gap: 8px; }
+#activity-panel-review .review-finding { gap: 4px; padding: 10px 12px; background: var(--surface); }
+#activity-panel-review .review-finding h3 { font-size: .76rem; }
+#activity-panel-review .review-finding p { font-size: .8rem; line-height: 1.45; }
+#activity-panel-review .review-finding .actions { margin-top: 2px; }
+#activity-panel-review .run-edit-list .empty-state { padding: 18px 14px; }
+
+@media (max-width: 720px) {
+  .site-header { position: sticky; top: 0; }
+  .header-inner { flex-wrap: nowrap; gap: 8px; min-height: 50px; padding: 6px 0; }
+  .header-tools { width: auto; flex-wrap: nowrap; justify-content: flex-end; gap: 6px; }
+  .brand { gap: 8px; }
+  .brand-mark { width: 30px; height: 30px; border-radius: 8px; font-size: .9rem; }
+  .brand-name { font-size: .94rem; }
+  .brand-tagline { display: none; }
+  .status-pill { min-height: 24px; padding: 2px 7px; gap: 5px; font-size: .62rem; }
+  .status-dot { width: 6px; height: 6px; }
+  .lang-switch { gap: 0; padding: 2px; }
+  .lang-option { min-height: 22px; padding: 2px 6px; font-size: .68rem; }
+  #logout-button { min-height: 26px; padding: 0 7px; font-size: .64rem; }
+  .shell { width: calc(100% - 24px); }
+  main.shell { padding: 18px 0 calc(92px + env(safe-area-inset-bottom)); }
+  .app-layout { gap: 0; }
+  .sidebar {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 45;
+    display: block;
+    min-width: 0;
+    border-top: 1px solid var(--line);
+    background: var(--header-bg);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    backdrop-filter: blur(14px) saturate(1.2);
+  }
+  .sidebar .side-card { display: none !important; }
+  .section-nav {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 4px;
+    margin: 0;
+    padding: 5px 8px calc(5px + env(safe-area-inset-bottom));
+    overflow-x: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    scrollbar-width: none;
+  }
+  .section-nav::-webkit-scrollbar { display: none; }
+  .section-nav a {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 9px 5px;
+    overflow: hidden;
+    border-radius: 8px;
+    font-size: .78rem;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .feedback-launcher { right: 12px; bottom: calc(74px + env(safe-area-inset-bottom)); min-height: 40px; padding: 9px 13px; font-size: .8rem; }
+  .page-view { gap: 16px; }
+  .page-heading { padding: 4px 0; }
+  .card { padding: 16px; border-radius: 13px; }
+  .current-count { flex-wrap: wrap; padding: 7px 8px; }
+  .current-count strong { font-size: 1rem; }
+  .current-count span { font-size: .66rem; }
+  .run-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .site-footer { padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
+}
+
+@media (max-width: 720px) {
+  .brand { flex: 0 0 auto; }
+  .tab { padding: 5px 9px; }
+}
+@media (max-width: 480px) {
+  #connection-state { gap: 0; padding: 2px 6px; }
+  #connection-label { display: none; }
+  .lang-option { min-width: 28px; padding: 2px 6px; }
+  #feedback-launcher {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+  }
+  #feedback-launcher .feedback-launcher-icon { font-size: 1.08rem; }
+  #feedback-launcher span:not(.feedback-launcher-icon) { display: none; }
+}
+
+@media (max-width: 720px) {
+  .tab-list { gap: 2px; padding: 3px; }
+  .tab { padding: 5px 7px; font-size: .72rem; }
+}

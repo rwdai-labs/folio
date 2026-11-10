@@ -29,6 +29,20 @@ const maintenance = () => ({
   needs_review: [{ source: 'inbox/observation.md', reason: 'candidate_requires_owner_review' }],
   edits: [{ target: 'core/overview.md', reason: 'Synthetic structural edit', diff: '+## Example\n', action: 'update' }],
 });
+const syntheticRunHistory = () => Array.from({ length: 25 }, (_, index) => {
+  const day = String(20 - Math.floor(index / 4)).padStart(2, '0');
+  const status = index % 5 === 1 ? 'failed' : index % 4 === 0 ? 'reported' : index % 3 === 0 ? 'no_changes' : 'pushed';
+  return {
+    run_id: `202610${day}T0100${String(index).padStart(2, '0')}.000000000Z-history${index}`,
+    status,
+    trigger: index % 2 ? 'scheduler' : 'manual',
+    started_at: `2026-10-${day}T01:00:${String(index).padStart(2, '0')}Z`,
+    finished_at: `2026-10-${day}T01:01:${String(index).padStart(2, '0')}Z`,
+    runner: 'codex', model: 'synthetic-model', stage: 'done',
+    summary: `Synthetic ${status} history run ${index + 1}`,
+    files_changed: index % 4, remaining: 0, edits: [],
+  };
+});
 const quotaSnapshot = () => {
   const now = Date.now();
   return {
@@ -295,7 +309,7 @@ async function main() {
         else if (endpoint.endsWith('/repositories')) body = { repositories: [{ full_name: 'example/context', private: true }], count: 1 };
         else if (endpoint === '/api/repository/connect') { connected = true; body = { connected: true }; }
         else if (endpoint === '/api/task-kinds') body = { kinds: [{ id: 'maintenance', label: 'Maintenance' }] };
-        else if (endpoint === '/api/automation') body = { latest: reviewRun ? run : null, review_run: reviewRun, runs: reviewRun ? [run] : [], models: { codex: [] } };
+        else if (endpoint === '/api/automation') body = { latest: reviewRun ? run : null, review_run: reviewRun, runs: syntheticRunHistory(), models: { codex: [] } };
         else if (endpoint.endsWith('/result')) {
           const oldSession = holdResult;
           if (holdResult) { holdResult = false; await new Promise(resolve => { releaseResult = resolve; }); }
@@ -303,7 +317,10 @@ async function main() {
           else if (resultError) { status = 404; body = { error: 'report_result_unavailable' }; }
           else body = { run_id: reportID, format: 'markdown', text: '# Synthetic report\n<img src=x onerror=alert(1)>\nA readable result.', historical_snapshot: historicalResult, truncated: historicalResult };
         }
-        else if (endpoint.startsWith('/api/automation/runs/')) body = run;
+        else if (endpoint.startsWith('/api/automation/runs/')) {
+          const id = decodeURIComponent(endpoint.split('/').pop());
+          body = [run, ...syntheticRunHistory()].find(candidate => candidate.run_id === id) || run;
+        }
         else if (endpoint === '/api/automation/run') { runRequests.push(req.postDataJSON()); body = { job_id: 'maintenance' }; }
         else if (endpoint.startsWith('/api/jobs/')) {
           jobRequests++;
@@ -412,6 +429,31 @@ async function main() {
         await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
       });
       const origin = `http://127.0.0.1:${server.address().port}`;
+      const activityTab = (tab) => page.locator(`[data-activity-tab="${tab}"]`);
+      const settingsTab = (tab) => page.locator(`[data-settings-tab="${tab}"]`);
+      const settleNavigation = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const openActivity = async (tab = 'tasks') => {
+        await page.locator('[data-view="activity"]').click();
+        await visible(page, '#activity-view');
+        await settleNavigation();
+        await activityTab(tab).click();
+        await page.waitForFunction((value) => {
+          const button = document.querySelector(`[data-activity-tab="${value}"]`);
+          const panel = document.getElementById(`activity-panel-${value}`);
+          return button && button.getAttribute('aria-selected') === 'true' && panel && !panel.hidden;
+        }, tab);
+      };
+      const openSettings = async (tab = 'connections') => {
+        await page.locator('[data-view="settings"]').click();
+        await visible(page, '#settings-view');
+        await settleNavigation();
+        await settingsTab(tab).click();
+        await page.waitForFunction((value) => {
+          const button = document.querySelector(`[data-settings-tab="${value}"]`);
+          const panel = document.getElementById(`settings-panel-${value}`);
+          return button && button.getAttribute('aria-selected') === 'true' && panel && !panel.hidden;
+        }, tab);
+      };
       const openCatalog = async (id) => {
         await page.locator(`button[data-catalog-launch="${id}"]`).click();
         await visible(page, '#catalog-dialog');
@@ -430,16 +472,26 @@ async function main() {
       await page.locator('#password').fill('synthetic-password');
       await page.locator('#login-submit').click();
       await visible(page, '#settings-view');
-      assert.equal(await page.locator('[data-view="actions"]').count(), 0, 'Actions is not exposed in daily navigation');
+      assert.deepEqual(await page.locator('.section-nav a').evaluateAll(links => links.map(link => link.dataset.view)), ['dashboard', 'chat', 'activity', 'settings'], 'daily navigation has four destinations');
+      assert.equal(await page.locator('[data-view="actions"], [data-view="runs"], [data-view="review"]').count(), 0, 'Actions, Run history and Owner review are not daily navigation entries');
+      assert.equal(await page.locator('.page-view:visible').count(), 1, 'only one page section is visible');
+      assert.equal(await page.locator('#settings-tab-connections').getAttribute('aria-selected'), 'true', 'settings defaults to Connections');
+      assert.equal(await page.locator('.settings-panel:visible').count(), 1, 'only the active settings group is shown');
+      assert.equal(await page.locator('#settings-panel-connections').isVisible(), true);
+      assert.equal(await page.locator('#settings-panel-notifications').isVisible(), false);
+      assert.equal(await page.locator('#settings-advanced-card').isVisible(), false, 'Advanced actions live only in the Advanced tab');
+      await openSettings('advanced');
       await visible(page, '#settings-advanced-card');
       assert.equal(await page.locator('#settings-advanced-heading').textContent(), language === 'zh' ? '高级' : 'Advanced');
       assert.match(await page.locator('#settings-advanced-card .hint').textContent(), language === 'zh' ? /所有者配置/ : /owner configuration/i);
       assert.equal(await page.locator('#settings-advanced-actions').getAttribute('href'), '#actions');
+      assert.equal(await page.locator('#settings-panel-connections').isVisible(), false, 'Connections hides when Advanced is active');
       await page.locator('#settings-advanced-actions').click();
       await visible(page, '#actions-view');
       assert.equal(await page.locator('#actions-heading').textContent(), language === 'zh' ? '动作' : 'Actions');
       await page.locator('[data-view="settings"]').click();
       await visible(page, '#settings-view');
+      assert.equal(await page.locator('#settings-tab-connections').getAttribute('aria-selected'), 'true', 'returning to Settings defaults to Connections');
       assert.equal(await page.locator('#run-now-button').isDisabled(), true);
       await visible(page, '#repo-picker-slot button');
       await page.locator('#repo-picker-slot button').click();
@@ -483,8 +535,10 @@ async function main() {
       await page.waitForFunction(() => document.getElementById('model-services-test').disabled === false);
       assert.match(await page.locator('#model-services-test-result').textContent(), language === 'zh' ? /未测试推理/ : /not tested/);
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-model-settings-${language}.png`, fullPage: true });
-      // The main-agent runtime is configurable from Settings; saving a key
-      // switches the assistant from unavailable to available without a restart.
+      // The main-agent runtime is configurable from the Advanced settings tab;
+      // saving a key switches the assistant from unavailable to available.
+      await openSettings('advanced');
+      assert.equal(await page.locator('#agent-settings').isVisible(), false, 'legacy runtime stays collapsed');
       await page.locator('#advanced-settings > summary').click();
       await visible(page, '#agent-settings');
       assert.equal(await page.locator('#agent-badge').getAttribute('data-state'), 'disabled');
@@ -497,6 +551,7 @@ async function main() {
       assert.equal(await page.locator('#agent-key-hint').textContent(), language === 'zh' ? '已保存 key。留空则保持不变。' : 'A key is stored. Leave the field blank to keep it.');
       // WeChat: the QR renders, the phone asks for digits, the owner decides, then
       // the channel starts without a restart.
+      await openSettings('notifications');
       await visible(page, '#weixin-section');
       // Assert translated copy, not just state: a missing dictionary entry used
       // to pass because every assertion above read data attributes.
@@ -537,6 +592,66 @@ async function main() {
       assert.equal(await page.locator('#channels-section').isVisible(), false);
       assert.equal(await page.locator('#usage-total').textContent(), '12,345');
       assert.match(await page.locator('#usage-cost').textContent(), /\$0\.0123/);
+      assert.equal(await page.locator('#dashboard-view #tasks-section').count(), 0, 'the task board no longer lives on the dashboard');
+      assert.equal(await page.locator('#dashboard-view .task-board').count(), 0);
+      await visible(page, '#dashboard-current');
+      assert.equal(await page.locator('#dashboard-current .current-count').count(), 3);
+      assert.equal(await page.locator('#dashboard-current-list').isVisible(), true);
+      const currentActivityLink = page.locator('#dashboard-current a[href="#activity"]');
+      assert.equal(await currentActivityLink.count(), 1);
+      assert.equal((await currentActivityLink.textContent()).trim(), language === 'zh' ? '查看全部动态' : 'View all activity');
+      // Settings deep links switch to the owning tab and focus its heading.
+      await page.goto(origin + '#channels-section');
+      await visible(page, '#settings-view');
+      assert.equal(await page.locator('#settings-tab-notifications').getAttribute('aria-selected'), 'true', 'channels deep link opens Notifications');
+      assert.equal(await page.locator('#settings-panel-notifications').isVisible(), true);
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'channels-heading');
+      await page.goto(origin + '#hooks-section');
+      await visible(page, '#settings-view');
+      assert.equal(await page.locator('#settings-tab-triggers').getAttribute('aria-selected'), 'true', 'hooks deep link opens Triggers');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'hooks-heading');
+      await page.goto(origin + '#agent-settings');
+      await visible(page, '#settings-view');
+      assert.equal(await page.locator('#settings-tab-advanced').getAttribute('aria-selected'), 'true', 'agent deep link opens Advanced');
+      assert.equal(await page.locator('#advanced-settings').evaluate(node => node.open), true, 'agent deep link opens the legacy runtime disclosure');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'agent-heading');
+      await page.goto(origin + '#model-services-settings');
+      await visible(page, '#settings-view');
+      assert.equal(await page.locator('#settings-tab-connections').getAttribute('aria-selected'), 'true', 'model deep link opens Connections');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'model-services-heading');
+      // Settings tabs share the roving keyboard behaviour.
+      await settingsTab('connections').focus();
+      await page.keyboard.press('ArrowRight');
+      assert.equal(await page.locator('#settings-tab-notifications').getAttribute('aria-selected'), 'true');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-tab-notifications');
+      await page.keyboard.press('End');
+      assert.equal(await page.locator('#settings-tab-advanced').getAttribute('aria-selected'), 'true');
+      await page.keyboard.press('Home');
+      assert.equal(await page.locator('#settings-tab-connections').getAttribute('aria-selected'), 'true');
+      // Hash aliases open the Activity tab they name.
+      await page.goto(origin + '#runs');
+      await visible(page, '#activity-view');
+      assert.equal(await page.locator('#activity-tab-runs').getAttribute('aria-selected'), 'true', '#runs opens Activity Runs');
+      assert.equal(await page.locator('#activity-panel-runs').isVisible(), true);
+      await page.goto(origin + '#review');
+      await visible(page, '#activity-view');
+      assert.equal(await page.locator('#activity-tab-review').getAttribute('aria-selected'), 'true', '#review opens Activity Review');
+      assert.equal(await page.locator('#activity-panel-review').isVisible(), true);
+      await page.goto(origin + '#activity');
+      await visible(page, '#activity-view');
+      assert.equal(await page.locator('#activity-tab-tasks').getAttribute('aria-selected'), 'true', '#activity opens Activity Tasks');
+      // Browser back restores the previous Activity tab through the hash route.
+      await activityTab('runs').click();
+      await page.waitForFunction(() => location.hash === '#runs');
+      await page.locator('[data-view="settings"]').click();
+      await visible(page, '#settings-view');
+      await page.goBack();
+      await visible(page, '#activity-view');
+      assert.equal(await page.locator('#activity-tab-runs').getAttribute('aria-selected'), 'true', 'back navigation restores the Runs tab');
+      await page.locator('[data-view="dashboard"]').click();
+      await visible(page, '#dashboard-view');
+      // Activity owns the task board and refresh controls.
+      await openActivity('tasks');
       await page.locator('#tasks-pause').click();
       assert.equal(paused, true);
       await page.locator('#tasks-pause').click();
@@ -935,10 +1050,13 @@ async function main() {
         { id: 't-000000000004', kind: 'maintenance', title: 'Done example', status: 'done', priority: 'P2', source: 'manual' },
         { id: 't-000000000005', kind: 'feedback-plan', title: 'Feedback plan example', status: 'queued', enabled: true, priority: 'P2', source: 'manual' },
       ];
-      await page.locator('[data-view="review"]').click();
+      await openActivity('review');
+      assert.equal(await page.locator('#review-help').evaluate(node => node.open), false, 'review help starts collapsed');
+      assert.equal(await page.locator('#review-list details').count(), 0, 'findings do not repeat the workflow help');
       await page.locator('#review-refresh').click();
-      await page.locator('[data-view="dashboard"]').click();
+      await openActivity('tasks');
       await page.waitForFunction(() => document.querySelectorAll('.task-board .task-item').length === 5);
+      assert.equal(await page.locator('#activity-view').isVisible(), true);
       for (const column of ['current', 'attention', 'recent']) assert.equal(await page.locator(`[data-column="${column}"] .task-item`).count(), column === 'current' ? 3 : 1);
       const planMeta = page.locator('.task-item:has([data-task-inspect="t-000000000005"]) .task-meta');
       assert.match(await planMeta.textContent(), language === 'zh' ? /反馈计划/ : /Feedback plan/);
@@ -950,12 +1068,29 @@ async function main() {
       await page.locator('#task-priority-filter').selectOption('P0');
       assert.equal(await page.locator('.task-board .task-item').count(), 1);
       await page.locator('#task-priority-filter').selectOption('');
+      // The dashboard keeps a compact current-work card with up to three rows.
+      await page.locator('[data-view="dashboard"]').click();
+      await visible(page, '#dashboard-current');
+      await page.waitForFunction(() => document.querySelectorAll('#dashboard-current .current-task').length === 3);
+      assert.equal(await page.locator('#dashboard-current-active').textContent(), '3');
+      assert.equal(await page.locator('#dashboard-current-attention').textContent(), '1');
+      assert.equal(await page.locator('#dashboard-current-done').textContent(), '1');
+      assert.equal(await page.locator('#dashboard-view .task-board').count(), 0, 'the dashboard stays compact');
+      const dashboardTask = page.locator('#dashboard-current [data-dashboard-task]').first();
+      const dashboardTaskId = await dashboardTask.getAttribute('data-dashboard-task');
+      await dashboardTask.click();
+      await visible(page, '#task-detail');
+      await page.locator('#task-detail-close').click();
+      await page.waitForFunction((id) => document.activeElement.dataset.dashboardTask === id, dashboardTaskId);
+      await openActivity('tasks');
+      const taskCountBadge = await page.locator('#activity-count-tasks').textContent();
+      assert.equal(taskCountBadge, '3', 'Activity Tasks count shows queued and running work');
       await page.locator('[data-task-inspect="t-000000000002"]').click();
       await visible(page, '#task-detail');
       await visible(page, '#task-detail-body .run-head');
       assert.match(await page.locator('#task-detail-body .run-meta').innerText(), /\$0\.0123/);
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-task-drawer-${language}.png`, fullPage: true });
-      assert.equal(await page.locator('#dashboard-view').isVisible(), true);
+      assert.equal(await page.locator('#activity-view').isVisible(), true);
       run = { ...run, status: 'no_changes', stage: 'done' };
       tasks[1].status = 'done'; tasks[1].run_id = run.run_id;
       await page.evaluate(() => window.folio.refreshState());
@@ -977,41 +1112,87 @@ async function main() {
       tasks = [];
       // Report/failure details must not replace the last maintenance snapshot.
       reviewRun = maintenance(); run = { ...maintenance(), status: 'failed', needs_review: [], remaining: 0 };
-      await page.locator('[data-view="review"]').click();
+      await openActivity('review');
       await page.locator('#review-refresh').click();
       await visible(page, '#review-list .review-finding');
+      assert.equal(await page.locator('#review-help').evaluate(node => node.open), false, 'review help is collapsed by default');
+      assert.equal(await page.locator('#review-list details').count(), 0, 'each finding does not repeat long help');
+      assert.equal(await page.locator('#activity-count-review').textContent(), '1', 'Activity Review shows a finding count');
+      await page.locator('#review-help > summary').click();
+      await visible(page, '#review-help .review-steps');
       const links = page.locator('#review-list a');
       assert.equal(await links.count(), 2);
       assert.match(await links.nth(0).getAttribute('href'), new RegExp('/blob/' + sha + '/inbox/observation.md$'));
       assert.match(await links.nth(1).getAttribute('href'), /\/blob\/main\/inbox\/observation.md$/);
       assert.equal(await links.nth(0).getAttribute('rel'), 'noopener noreferrer');
+      await page.locator('#review-help > summary').click();
+      assert.equal(await page.locator('#review-help').evaluate(node => node.open), false, 'review help collapses again');
+      // The review model link still lands on the run options inside Activity Tasks.
+      await page.locator('#activity-panel-review a[href="#run-options"]').click();
+      await visible(page, '#activity-panel-tasks');
+      assert.equal(await page.locator('#activity-tab-tasks').getAttribute('aria-selected'), 'true');
+      assert.equal(await page.locator('#run-options').evaluate(node => node.open), true, 'review model link opens runner options');
+      await openActivity('review');
       // Unknown model text is inert, and an unsafe path never becomes a link.
       reviewRun.needs_review.push({ source: '../bad.md', reason: '<img src=x onerror=alert(1)>' });
       await page.locator('#review-refresh').click();
       await page.waitForFunction(() => document.querySelectorAll('#review-list .review-finding').length === 2);
       assert.equal(await page.locator('#review-list img').count(), 0);
       assert.equal(await page.locator('#review-list a').count(), 2);
+      assert.equal(await page.locator('#activity-count-review').textContent(), '2');
       reviewRun = maintenance();
       // Run details distinguish automatic backlog from human review.
       run = maintenance();
-      await page.locator('[data-view="runs"]').click();
+      await openActivity('runs');
       await page.locator('#automation-refresh').click();
       await page.waitForFunction(() => document.getElementById('latest-run').textContent.includes('17'));
       assert.equal(await page.locator('#latest-run .review-finding').count(), 1);
       assert.equal(await page.locator('#latest-run .run-summary').first().isVisible(), false, 'raw model summary starts collapsed');
-      // Keyboard navigation reaches the page heading, not a hidden setup control.
-      await page.locator('[data-view="review"]').focus();
-      await page.keyboard.press('Enter');
-      await visible(page, '#review-view');
-      assert.equal(await page.evaluate(() => document.activeElement.id), 'review-heading');
+      // History is a bounded client window with an explicit status filter.
+      await page.waitForFunction(() => document.querySelectorAll('#runs-list .run-history-item').length === 20);
+      assert.equal(await page.locator('#runs-show-more').isVisible(), true);
+      assert.match(await page.locator('#runs-window-status').textContent(), language === 'zh' ? /20 \/ 25/ : /20 of 25/);
+      await page.locator('#runs-show-more').click();
+      await page.waitForFunction(() => document.querySelectorAll('#runs-list .run-history-item').length === 25);
+      assert.equal(await page.locator('#runs-show-more').isVisible(), false);
+      await page.locator('#run-status-filter').selectOption('failed');
+      await page.waitForFunction(() => document.querySelectorAll('#runs-list .run-history-item').length === 5);
+      assert.equal(await page.locator('#runs-list .run-history-item .badge[data-state="failed"]').count(), 5);
+      await page.locator('#run-status-filter').selectOption('reported');
+      await page.waitForFunction(() => document.querySelectorAll('#runs-list .run-history-item').length > 0);
+      const reportedBadges = await page.locator('#runs-list .run-history-item .badge').evaluateAll(nodes => nodes.map(node => node.dataset.state));
+      assert.ok(reportedBadges.every(state => state === 'reported' || state === 'completed'), 'Reported filter only shows reported runs');
+      await page.locator('#run-status-filter').selectOption('all');
+      await page.waitForFunction(() => document.querySelectorAll('#runs-list .run-history-item').length === 20);
+      assert.equal(await page.locator('#runs-show-more').isVisible(), true, 'changing a filter resets the bounded window');
+      const selectedHistory = page.locator('#runs-list .run-history-item').nth(1);
+      const selectedSummary = (await selectedHistory.locator('.run-history-summary').textContent()).trim();
+      await selectedHistory.click();
+      await page.waitForFunction((summary) => (document.getElementById('latest-run')?.textContent || '').includes(summary), selectedSummary);
+      assert.equal(await page.locator('#runs-list .run-history-item[data-selected="true"]').count(), 1, 'selected run stays marked in history');
+      // Keyboard tab behavior: arrows, Home/End and Escape back to the dashboard.
+      await page.locator('#activity-tab-tasks').focus();
+      await page.keyboard.press('ArrowRight');
+      assert.equal(await page.locator('#activity-tab-runs').getAttribute('aria-selected'), 'true');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'activity-tab-runs');
+      await page.keyboard.press('End');
+      assert.equal(await page.locator('#activity-tab-review').getAttribute('aria-selected'), 'true');
+      await page.keyboard.press('Home');
+      assert.equal(await page.locator('#activity-tab-tasks').getAttribute('aria-selected'), 'true');
+      await page.keyboard.press('Escape');
+      await visible(page, '#dashboard-view');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'dashboard-heading', 'Escape returns to the dashboard heading');
       // Failed checks retain findings; successful checks refresh them via one run job.
+      await openActivity('review');
+      await page.locator('#review-refresh').click();
+      await page.waitForFunction(() => document.querySelectorAll('#review-list .review-finding').length === 1);
       jobFailed = true;
       await page.locator('#review-recheck').click();
       await page.waitForFunction(() => document.getElementById('review-message').dataset.error === 'true');
       assert.equal(await page.locator('#review-list .review-finding').count(), 1);
       jobFailed = false;
       await page.locator('[data-view="dashboard"]').click();
-      await page.locator('[data-view="review"]').click();
+      await openActivity('review');
       await page.locator('#review-recheck').click();
       await page.waitForFunction(() => document.getElementById('review-recheck').disabled === false && document.querySelectorAll('#review-list .review-finding').length === 0);
       assert.deepEqual(runRequests.at(-1), {});
@@ -1032,7 +1213,26 @@ async function main() {
       await page.locator("#work-usage-details").evaluate(node => { node.open = false; });
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-dashboard-${language}.png`, fullPage: true });
       await page.setViewportSize({ width: 390, height: 844 });
-      for (const view of ['dashboard', 'chat', 'settings', 'review', 'runs']) {
+      await page.locator('[data-view="dashboard"]').click();
+      await visible(page, '#dashboard-view');
+      // The sidebar becomes a fixed four-item bottom tab bar and content keeps
+      // clear of it; the top controls stay on one compact row.
+      assert.equal(await page.locator('.sidebar').evaluate(node => getComputedStyle(node).position), 'fixed');
+      assert.equal(await page.locator('.section-nav').evaluate(node => getComputedStyle(node).display), 'flex');
+      assert.equal(await page.locator('.section-nav a').count(), 4);
+      const mobileNav = await page.locator('.sidebar').boundingBox();
+      assert.ok(mobileNav && mobileNav.y + mobileNav.height >= 843, 'bottom tab bar reaches the bottom edge');
+      const mainPadding = await page.locator('main.shell').evaluate(node => parseFloat(getComputedStyle(node).paddingBottom));
+      assert.ok(mainPadding >= 80, `main clears the bottom bar: ${mainPadding}`);
+      const launcherBefore = await page.locator('#feedback-launcher').boundingBox();
+      assert.ok(launcherBefore && launcherBefore.y + launcherBefore.height <= mobileNav.y + 1, 'feedback launcher sits above the tab bar');
+      assert.equal(await page.locator('.header-inner').evaluate(node => getComputedStyle(node).flexWrap), 'nowrap');
+      const headerHeight = await page.locator('.header-inner').evaluate(node => node.getBoundingClientRect().height);
+      assert.ok(headerHeight < 64, `compact mobile header: ${headerHeight}`);
+      for (const control of ['#connection-state', '.lang-switch', '#logout-button']) assert.equal(await page.locator(control).isVisible(), true, `${control} stays reachable`);
+      assert.equal(await page.locator('#dashboard-view .task-board').count(), 0, 'mobile dashboard has no task board');
+      assert.equal(await page.locator('#dashboard-current').isVisible(), true);
+      for (const view of ['dashboard', 'chat', 'activity', 'settings']) {
         await page.locator(`[data-view="${view}"]`).click();
         await visible(page, `#${view}-view`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile overflow in ${view}`);
@@ -1042,14 +1242,34 @@ async function main() {
           await closeCatalog();
           assert.equal(await focusedCatalogLauncher(), 'report', 'mobile dialog close returns focus');
         }
+        if (view === 'activity') {
+          for (const tab of ['tasks', 'runs', 'review']) {
+            await activityTab(tab).click();
+            await page.waitForFunction((value) => !document.getElementById(`activity-panel-${value}`).hidden, tab);
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile overflow in activity ${tab}`);
+            if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-activity-${tab}-mobile-${language}.png`, fullPage: true });
+          }
+        }
+        if (view === 'settings') {
+          for (const tab of ['connections', 'notifications', 'triggers', 'advanced']) {
+            await settingsTab(tab).click();
+            await page.waitForFunction((value) => !document.getElementById(`settings-panel-${value}`).hidden, tab);
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile overflow in settings ${tab}`);
+            if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-settings-${tab}-mobile-${language}.png`, fullPage: true });
+          }
+        }
         if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-${view}-mobile-${language}.png`, fullPage: true });
       }
+      await openActivity('runs');
+      const navAfter = await page.locator('.sidebar').boundingBox();
+      const launcherAfter = await page.locator('#feedback-launcher').boundingBox();
+      assert.ok(launcherAfter.y + launcherAfter.height <= navAfter.y + 1, 'launcher stays above the fixed tab bar');
       await page.locator('#feedback-launcher').click();
       await visible(page, '#feedback-view');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile overflow in feedback window');
       const mobilePanel = await page.locator('#feedback-view').boundingBox();
       assert.ok(mobilePanel.width >= 388 && mobilePanel.width <= 391, `full-width mobile sheet: ${mobilePanel.width}`);
-      assert.equal(await page.locator('#feedback-area').inputValue(), 'runs', 'area follows the active view');
+      assert.equal(await page.locator('#feedback-area').inputValue(), 'runs', 'area follows the active Activity tab');
       assert.ok(mobilePanel.y + mobilePanel.height >= 843, 'mobile sheet reaches the bottom edge');
       assert.equal(await submitVisible(), true, 'submit stays visible in the mobile sheet');
       assert.equal(await page.locator('#feedback-form textarea:visible').count(), 2);
@@ -1063,6 +1283,7 @@ async function main() {
       holdHistory = true;
       await page.locator('[data-view="chat"]').click();
       await page.locator('[data-view="dashboard"]').click();
+      await openActivity('tasks');
       await page.evaluate(() => window.folio.refreshTasks());
       holdResult = true;
       await page.locator('[data-task-inspect="report-task"]').click();
@@ -1070,6 +1291,7 @@ async function main() {
       assert.equal(typeof releaseHistory, 'function');
       assert.equal(typeof releaseResult, 'function');
       await page.locator('#task-detail-close').click();
+      await page.locator('[data-view="dashboard"]').click();
       await openCatalog('report');
       await page.locator('#logout-button').evaluate(button => button.click());
       await visible(page, '#login-view');
@@ -1087,6 +1309,7 @@ async function main() {
       await visible(page, '#chat-view');
       assert.equal(await page.locator('#chat-log').textContent().then(text => text.includes('OLD SESSION')), false);
       await page.locator('[data-view="dashboard"]').click();
+      await openActivity('tasks');
       await page.locator('[data-task-inspect="report-task"]').click();
       await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes('A readable result'));
       assert.equal(await page.locator('#task-detail-body').textContent().then(text => text.includes('OLD SESSION')), false);
@@ -1128,7 +1351,7 @@ async function main() {
       assert.equal(await page.locator('#feedback-created').textContent(), '');
       assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, capability readiness, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/suggestions, chat task events/history, report result/retry/follow-up, screenshot-first feedback capture/context/fallback/accept/reject, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, four-item nav, dashboard current card, Activity/Settings tabs with keyboard/hash/back/deep links, run window/status filter/selected detail, compact review help/recheck, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/suggestions, chat task events/history, report result/retry/follow-up, screenshot-first feedback capture/context/fallback/accept/reject, board/filter/drawer/actions, errors, both languages, mobile bottom nav/launcher/overflow, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

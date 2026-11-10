@@ -17,10 +17,12 @@ Inherit `../AGENTS.md`.
   separate: a saved checkout with missing credentials needs authorization, and
   must not show a green connected badge.
   A configured deployment token does not prove live repository access.
-- Daily navigation is dashboard (quick actions, tasks and usage), assistant chat,
-  run history, owner review, and settings; the raw action registry is reachable
-  only from Settings' compact Advanced card (`#actions`), not the sidebar.
-  Feedback is a fixed launcher
+- Daily navigation is dashboard (compact current work, quick actions and usage),
+  assistant chat, activity (Tasks / Runs / Review tabs), and settings. Hash aliases
+  `#runs` and `#review` open the matching Activity tab and `#activity` opens Tasks.
+  The raw action registry is reachable only from Settings' Advanced tab
+  (`#actions`), not the sidebar. At 720px and below the sidebar becomes a fixed
+  four-item bottom tab bar. Feedback is a fixed launcher
   and movable floating window available alongside those views. `/api/state.capabilities` independently
   describes `assistant`, `report`, `maintenance`, and `context` with `available`,
   fixed `reason`, and `verification`. Availability means configured readiness,
@@ -108,7 +110,10 @@ Inherit `../AGENTS.md`.
   composer starts at two rows, grows to about eight rows/160px and keeps Send
   inline; the empty state offers three translated prompt chips that fill and
   focus the composer without sending, and it hides once the conversation has
-  content. Settings includes the
+  content. Settings is grouped into Connections, Notifications, Triggers and
+  Advanced tabs; keep the readiness summary and setup steps visible, show only the
+  active group's cards, and make section deep links select and focus their tab.
+  The Advanced tab includes the
   main-agent runtime form: OpenAI-compatible or command mode, provider preset,
   base URL, model, write-only API key and timeout. Never prefill the key from a
   response; show key presence only. The actions view edits one owner action as
@@ -120,18 +125,20 @@ Inherit `../AGENTS.md`.
   keep unknown prices visibly unavailable, and never derive token counts from
   cost. The catalog is an automatic background input, not a settings card;
   render cost errors as translated text, not raw upstream bodies.
-- The dashboard work console keeps a compact status bar (tokens, estimated cost,
-  subscription allowance and selectable 7/30/90-day window) above detailed usage
-  and quota readings. Its board groups queued/running records as current work,
-  failed records as Needs attention, and done/canceled records as recently finished,
-  with a separately labelled human-review snapshot in Needs attention.
+- The dashboard keeps a compact current-work card (counts and at most three
+  queued/running or failed rows linking to Activity) plus a work console with a
+  compact status bar (tokens, estimated cost, subscription allowance and
+  selectable 7/30/90-day window) above detailed usage and quota readings.
+  Activity Tasks groups queued/running records as current work, failed records as
+  Needs attention, and done/canceled records as recently finished, with a
+  separately labelled human-review snapshot in Needs attention.
   Preserve backend priorities and wait/pause semantics; no drag-to-complete or
   fabricated approvals. Include unmatched recent direct runs. Live task attempts
   correlate through `run.task_id`; a retry's old `task.run_id` is historical until
   a current run is identified. Search and priority filters are local view state.
   Card inspection uses a native dialog with safe run evidence; keep board scroll
   and keyboard focus on refresh and close, and close private dialogs on logout.
-- Owner review uses `/api/automation.review_run`, the last retained successful
+- Activity Review uses `/api/automation.review_run`, the last retained successful
   maintenance snapshot, not the selected historical run or a live approval queue.
   Explain the snapshot timestamp and the external repository review workflow.
   Recheck runs maintenance (which already pulls) using the maintenance task binding;
@@ -201,10 +208,14 @@ NODE_PATH=/tmp/folio-ui-browser/node_modules FOLIO_BROWSER_EXECUTABLE=/path/to/c
 The check serves only allowlisted static assets on loopback and intercepts API
 calls with synthetic data; it performs no real GitHub authorization, model call,
 repository write, or delivery. It covers fresh/restored sessions, pending auth,
-keyboard repository selection, default routes, optional settings, board grouping,
-search/priority filters, attempt drawer and keyboard return, pause/resume,
-review snapshots and safe links, recheck success/failure, subscription-quota
-cards and refresh, usage errors/recovery, both languages, mobile overflow,
+keyboard repository selection, default routes, optional settings, four-item
+navigation, Activity/Settings tabs and keyboard roving, hash aliases and back
+navigation, board grouping, search/priority filters, dashboard current card,
+bounded run history with status filters, attempt drawer and keyboard return,
+pause/resume, compact review help and snapshots with safe links, recheck
+success/failure, settings deep links, subscription-quota
+cards and refresh, usage errors/recovery, both languages, mobile bottom navigation,
+launcher placement and overflow,
 state-load failure, capability-specific readiness without repository/Codex,
 quick-action launcher/dialog submit, field validation, disabled requirements,
 close focus and 404 fallback; assistant title, growing composer and prompt

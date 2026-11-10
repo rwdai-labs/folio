@@ -76,8 +76,12 @@
     modelActive: -1,
     modelCatalogSignature: "",
     selectedRunId: "",
+    runStatusFilter: "all",
+    runWindow: 20,
     lastState: null,
     view: "dashboard",
+    activityTab: "tasks",
+    settingsTab: "connections",
     viewInitialized: false,
     rechecking: false,
     selectedRun: null,
@@ -340,6 +344,7 @@
     if (!pill) return;
     pill.dataset.state = online ? "online" : "offline";
     $("connection-label").textContent = t(online ? "status.online" : "status.offline");
+    pill.setAttribute("aria-label", t(online ? "status.online" : "status.offline"));
   }
 
   function showLogin() {
@@ -905,12 +910,107 @@
 
   /* --------------------------------------------------------------- state */
 
-  const views = ["dashboard", "chat", "actions", "runs", "review", "settings"];
+  const views = ["dashboard", "chat", "actions", "activity", "settings"];
+  const activityTabs = ["tasks", "runs", "review"];
+  const settingsTabs = ["connections", "notifications", "triggers", "advanced"];
+  const activityTabForSection = {
+    "tasks-section": "tasks", "run-options": "tasks", "automation-section": "runs",
+    "latest-run": "runs", "runs-list": "runs", "review-list": "review",
+    "review-refresh": "review", "review-snapshot-heading": "review",
+  };
+  const settingsTabForSection = {
+    "plugin-github": "connections", "repository-section": "connections", "runner-settings": "connections",
+    "model-services-settings": "connections", "channels-section": "notifications", "weixin-section": "notifications",
+    "hooks-section": "triggers", "settings-advanced-card": "advanced", "advanced-settings": "advanced",
+    "agent-settings": "advanced", "state-heading": "advanced",
+  };
   const sectionViews = {
     "repository-section": "settings", "runner-settings": "settings",
-    "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings", "model-services-settings": "settings",
-    "automation-section": "runs", "tasks-section": "dashboard", "usage-section": "dashboard", "run-options": "dashboard",
+    "channels-section": "settings", "hooks-section": "settings", "agent-settings": "settings",
+    "model-services-settings": "settings", "settings-advanced-card": "settings",
+    "advanced-settings": "settings", "state-heading": "settings",
+    "automation-section": "activity", "tasks-section": "activity", "usage-section": "dashboard",
+    "run-options": "activity", "latest-run": "activity", "runs-list": "activity",
+    "review-list": "activity", "review-refresh": "activity", "review-snapshot-heading": "activity",
+    "quotas-section": "dashboard", "work-usage-details": "dashboard",
   };
+
+  function activityHash(tab) {
+    return tab === "runs" ? "#runs" : tab === "review" ? "#review" : "#activity";
+  }
+
+  function setActivityTab(tab, options = {}) {
+    if (!activityTabs.includes(tab)) tab = "tasks";
+    state.activityTab = tab;
+    activityTabs.forEach((name) => {
+      const button = $(`activity-tab-${name}`);
+      const panel = $(`activity-panel-${name}`);
+      if (button) {
+        button.setAttribute("aria-selected", name === tab ? "true" : "false");
+        button.tabIndex = name === tab ? 0 : -1;
+      }
+      if (panel) panel.hidden = name !== tab;
+    });
+    if (options.updateHash) {
+      try { window.history.replaceState(null, "", activityHash(tab)); } catch (_) {}
+    }
+    if (state.feedbackOpen && state.view === "activity") {
+      const areaNode = $("feedback-area");
+      if (areaNode) areaNode.value = feedbackAreaForView("activity");
+      if (state.feedback.context && feedbackContextCount(state.feedback.context) === 0) {
+        setFeedbackContext(feedbackBaseContext());
+      }
+    }
+    updateActivityCounts();
+    if (options.refresh && state.authenticated) {
+      refreshTasks();
+      if (tab === "runs" || tab === "review") refreshAutomation({ silent: true });
+    }
+  }
+
+  function setSettingsTab(tab, options = {}) {
+    if (!settingsTabs.includes(tab)) tab = "connections";
+    state.settingsTab = tab;
+    settingsTabs.forEach((name) => {
+      const button = $(`settings-tab-${name}`);
+      const panel = $(`settings-panel-${name}`);
+      if (button) {
+        button.setAttribute("aria-selected", name === tab ? "true" : "false");
+        button.tabIndex = name === tab ? 0 : -1;
+      }
+      if (panel) panel.hidden = name !== tab;
+    });
+    if (options.openAdvancedDetails) {
+      const details = $("advanced-settings");
+      if (details) details.open = true;
+    }
+  }
+
+  function focusSection(section) {
+    if (!section) return false;
+    const parentDetails = section.closest ? section.closest("details") : null;
+    if (parentDetails) parentDetails.open = true;
+    if (section.tagName === "DETAILS") section.open = true;
+    section.scrollIntoView({ block: "start" });
+    const heading = /^H[1-3]$/.test(section.tagName) ? section : section.querySelector("h1, h2, h3");
+    const target = heading || section.querySelector("summary") || section;
+    if (target && !target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    if (target && typeof target.focus === "function") target.focus({ preventScroll: true });
+    return true;
+  }
+
+  function updateActivityCounts() {
+    if (!$("activity-count-tasks")) return;
+    const all = boardTasks();
+    const pending = all.filter((task) => ["queued", "running"].includes(task.status)).length;
+    const runs = Array.isArray(state.automationRuns) ? state.automationRuns : [];
+    const reviewRun = state.automation && state.automation.review_run;
+    const findings = Array.isArray(reviewRun && reviewRun.needs_review) ? reviewRun.needs_review : [];
+    const tasksReady = Boolean(state.tasks || state.automation);
+    $("activity-count-tasks").textContent = tasksReady ? String(pending) : "";
+    $("activity-count-runs").textContent = state.automation ? String(runs.length) : "";
+    $("activity-count-review").textContent = reviewRun ? String(findings.length) : "";
+  }
 
   function capability(name) {
     const data = state.lastState || {};
@@ -946,9 +1046,29 @@
     if (!state.authenticated) return;
     if ($("task-detail").open) $("task-detail").close();
     const fragment = window.location.hash.slice(1);
-    const target = views.includes(fragment) ? fragment : sectionViews[fragment];
+    let target = "";
+    let activityTab = "";
+    let settingsTab = "";
+    if (views.includes(fragment)) {
+      target = fragment;
+      if (fragment === "activity") activityTab = "tasks";
+      if (fragment === "settings") settingsTab = "connections";
+    } else if (fragment === "runs" || fragment === "review" || fragment === "activity") {
+      target = "activity";
+      activityTab = fragment === "runs" ? "runs" : fragment === "review" ? "review" : "tasks";
+    } else if (Object.prototype.hasOwnProperty.call(sectionViews, fragment)) {
+      target = sectionViews[fragment];
+      if (target === "activity") activityTab = activityTabForSection[fragment] || "tasks";
+      if (target === "settings") settingsTab = settingsTabForSection[fragment] || "connections";
+    }
     state.view = target || (setupReady() ? "dashboard" : "settings");
-    views.forEach((view) => { $(`${view}-view`).hidden = view !== state.view; });
+    views.forEach((view) => { const node = $(`${view}-view`); if (node) node.hidden = view !== state.view; });
+    if (state.view === "activity") setActivityTab(activityTab || "tasks", { refresh: state.viewInitialized });
+    if (state.view === "settings") {
+      setSettingsTab(settingsTab || state.settingsTab || "connections", {
+        openAdvancedDetails: fragment === "agent-settings" || fragment === "advanced-settings",
+      });
+    }
     if (state.feedbackOpen) {
       const areaNode = $("feedback-area");
       if (areaNode) areaNode.value = feedbackAreaForView(state.view);
@@ -963,13 +1083,17 @@
       else link.removeAttribute("aria-current");
     });
     if (focus) {
-      const section = sectionViews[fragment] ? $(fragment) : null;
-      const heading = $(`${state.view === "runs" ? "runs-page" : state.view === "settings" ? "settings" : state.view}-heading`);
-      if (section) {
-        if (section.tagName === "DETAILS") section.open = true;
-        section.scrollIntoView({ block: "start" });
+      const section = Object.prototype.hasOwnProperty.call(sectionViews, fragment) ? $(fragment) : null;
+      if (section && focusSection(section)) {
+        // Deep links open the destination card and place focus on its heading.
+      } else if (state.view === "activity") {
+        $("activity-heading").focus({ preventScroll: true });
+      } else if (state.view === "settings") {
+        $("settings-heading").focus({ preventScroll: true });
+      } else {
+        const heading = $(`${state.view}-heading`);
+        if (heading) heading.focus({ preventScroll: true });
       }
-      else if (heading) heading.focus();
     }
     if (fragment === "feedback") feedbackWindowOpen(focus);
     state.viewInitialized = true;
@@ -984,7 +1108,7 @@
     $("setup-repository-state").textContent = t(!authorized ? "setup.authorize" : repository.connected ? "setup.selected" : "setup.select");
     $("setup-runner-state").textContent = t(available ? "setup.installed" : "setup.required");
     $("setup-runner-detail").textContent = t(available ? "setup.runner_available" : "setup.runner_missing");
-    $("setup-alert").hidden = capability("maintenance").ready || !["dashboard", "review", "runs"].includes(state.view);
+    $("setup-alert").hidden = capability("maintenance").ready || !["dashboard", "activity"].includes(state.view);
     $("dashboard-repository").textContent = repository.connected ? repository.full_name || "" : t("repo.none");
     ["chat", "report", "maintenance"].forEach((name) => { $("settings-" + name + "-ready").textContent = capabilityText(name); });
     updateChatAgentHint();
@@ -1026,14 +1150,9 @@
       source.textContent = issue.source;
       const reason = document.createElement("p");
       reason.textContent = translateKnown(`automation.finding.${issue.reason}`, issue.reason);
-      const next = document.createElement("p");
-      next.className = "hint";
-      next.textContent = t(issue.reason === "candidate_requires_owner_review" ? "review.candidate_next" : "review.finding_next");
-      const guidance = document.createElement("details");
-      const guidanceTitle = document.createElement("summary");
-      guidanceTitle.textContent = t("review.what_next");
-      guidance.append(guidanceTitle, next);
-      card.append(source, reason, guidance);
+      // The shared review help disclosure explains the workflow once; each
+      // finding stays a compact source, reason and link row.
+      card.append(source, reason);
       if (current && !(run.repository && run.repository.full_name)) {
         const warning = document.createElement("p");
         warning.className = "hint";
@@ -1083,6 +1202,7 @@
       empty.textContent = t(run ? "review.empty" : "review.no_snapshot_hint");
       list.appendChild(empty);
     }
+    updateActivityCounts();
     renderSetup();
   }
 
@@ -2515,6 +2635,53 @@
     return tasks;
   }
 
+  function renderDashboardCurrent() {
+    const list = $("dashboard-current-list");
+    if (!list) return;
+    const all = boardTasks();
+    const current = all.filter((task) => ["queued", "running"].includes(task.status));
+    const attention = all.filter((task) => task.status === "failed");
+    const recent = all.filter((task) => ["done", "canceled"].includes(task.status));
+    $("dashboard-current-active").textContent = String(current.length);
+    $("dashboard-current-attention").textContent = String(attention.length);
+    $("dashboard-current-done").textContent = String(recent.length);
+    list.replaceChildren();
+    const rows = [...current, ...attention].slice(0, 3);
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-state compact-empty";
+      empty.textContent = t("dashboard.current_empty");
+      list.appendChild(empty);
+      return;
+    }
+    rows.forEach((task) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "current-task";
+      row.dataset.dashboardTask = task.id;
+      const title = document.createElement("span");
+      title.className = "current-task-title";
+      title.textContent = task.source === "maintenance:continuation"
+        ? t("board.continuation") : task.title || task.kind || task.id;
+      const chip = document.createElement("span");
+      chip.className = "badge";
+      chip.dataset.state = task.status || "unknown";
+      chip.textContent = t(taskStatusKey(task.status));
+      if (task.priority) {
+        const priority = document.createElement("span");
+        priority.className = "task-priority";
+        priority.dataset.priority = task.priority;
+        priority.textContent = task.priority;
+        title.append(" ", priority);
+      }
+      const meta = document.createElement("span");
+      meta.className = "current-task-meta";
+      meta.textContent = [kindLabel(task.kind), taskWaitText(task, state.tasks)].filter(Boolean).join(" · ");
+      row.append(title, chip, meta);
+      list.appendChild(row);
+    });
+  }
+
   function taskCard(task, data) {
     const row = document.createElement("article");
     row.className = "task-item";
@@ -2639,6 +2806,8 @@
         : focus.action && button.dataset.taskAction === focus.action && button.dataset.taskId === focus.id);
       if (replacement) replacement.focus({ preventScroll: true });
     }
+    renderDashboardCurrent();
+    updateActivityCounts();
     syncInspectedTask();
   }
 
@@ -3969,6 +4138,13 @@
   let feedbackDrag = null;
 
   function feedbackAreaForView(view) {
+    // The feedback contract keeps its fixed area vocabulary. Activity reports
+    // the sub-view it is showing so a task, run or review report stays legible.
+    if (view === "activity") {
+      if (state.activityTab === "runs") return "runs";
+      if (state.activityTab === "review") return "review";
+      return "dashboard";
+    }
     return Object.prototype.hasOwnProperty.call(FEEDBACK_VIEW_AREAS, view) ? FEEDBACK_VIEW_AREAS[view] : "other";
   }
 
@@ -5428,18 +5604,39 @@
     container.appendChild(list);
   }
 
+  function runFilterMatches(run, filter) {
+    if (filter === "reported") return run && (run.status === "reported" || run.status === "completed");
+    if (filter === "failed") return run && run.status === "failed";
+    return true;
+  }
+
   function renderRunHistory(runs) {
     const list = $("runs-list");
     if (!list) return;
+    const select = $("run-status-filter");
+    if (select && select.value !== state.runStatusFilter) select.value = state.runStatusFilter;
     while (list.firstChild) list.removeChild(list.firstChild);
-    if (!Array.isArray(runs) || !runs.length) {
+    const all = Array.isArray(runs) ? runs.slice() : [];
+    const ordered = all.sort((a, b) => String((b && (b.finished_at || b.started_at)) || "")
+      .localeCompare(String((a && (a.finished_at || a.started_at)) || "")));
+    const filtered = ordered.filter((run) => runFilterMatches(run, state.runStatusFilter));
+    const shown = filtered.slice(0, state.runWindow);
+    const showMore = $("runs-show-more");
+    if (showMore) showMore.hidden = filtered.length <= state.runWindow;
+    const windowStatus = $("runs-window-status");
+    if (windowStatus) {
+      windowStatus.textContent = filtered.length
+        ? t("automation.window", { shown: shown.length, total: filtered.length })
+        : "";
+    }
+    if (!shown.length) {
       const empty = document.createElement("p");
       empty.className = "empty-state";
-      empty.textContent = t("automation.no_runs");
+      empty.textContent = t(all.length ? "automation.filter_empty" : "automation.no_runs");
       list.appendChild(empty);
       return;
     }
-    runs.forEach((run) => {
+    shown.forEach((run) => {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "run-history-item";
@@ -5453,22 +5650,22 @@
       badge.dataset.state = run.status || "unknown";
       badge.textContent = t(statusKey(run.status));
       head.appendChild(badge);
-      const when = document.createElement("span");
-      when.className = "run-history-time";
-      const time = run.finished_at || run.started_at;
-      when.textContent = time ? formatTime(time) || time : "";
-      head.appendChild(when);
-      item.appendChild(head);
-
       const summary = document.createElement("span");
       summary.className = "run-history-summary";
       summary.textContent = run.summary || t(statusKey(run.status));
-      item.appendChild(summary);
+      head.appendChild(summary);
+      item.appendChild(head);
 
       const meta = document.createElement("span");
       meta.className = "run-history-meta";
+      const time = run.finished_at || run.started_at;
       const runner = run.runner ? `${run.runner}${run.model ? " · " + run.model : ""}` : "—";
-      meta.textContent = `${t(triggerKey(run.trigger))} · ${runner} · ${t("automation.files")}: ${run.files_changed || 0}`;
+      meta.textContent = [
+        time ? formatTime(time) || time : "",
+        t(triggerKey(run.trigger)),
+        runner,
+        `${t("automation.files")}: ${run.files_changed || 0}`,
+      ].filter(Boolean).join(" · ");
       item.appendChild(meta);
 
       list.appendChild(item);
@@ -5510,6 +5707,7 @@
     renderRaw("automation-output", { service: service, automation: state.automation });
     renderReview();
     renderTasks(state.tasks);
+    updateActivityCounts();
   }
 
   async function refreshAutomation(options = {}) {
@@ -5590,6 +5788,69 @@
     try { await refreshAll(); } finally { clearBusy(button); }
   });
   on("review-recheck", "click", recheckReview);
+  on("activity-tabs", "click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-activity-tab]") : null;
+    if (!target) return;
+    setActivityTab(target.dataset.activityTab, { updateHash: true, refresh: true });
+    target.focus();
+  });
+  on("activity-tabs", "keydown", (event) => {
+    const current = event.target instanceof Element ? event.target.closest("[data-activity-tab]") : null;
+    if (!current) return;
+    const index = activityTabs.indexOf(current.dataset.activityTab);
+    let next = null;
+    if (event.key === "ArrowRight") next = activityTabs[(index + 1) % activityTabs.length];
+    else if (event.key === "ArrowLeft") next = activityTabs[(index - 1 + activityTabs.length) % activityTabs.length];
+    else if (event.key === "Home") next = activityTabs[0];
+    else if (event.key === "End") next = activityTabs[activityTabs.length - 1];
+    else if (event.key === "Escape") {
+      event.preventDefault();
+      window.location.hash = "#dashboard";
+      return;
+    }
+    if (!next) return;
+    event.preventDefault();
+    setActivityTab(next, { updateHash: true, refresh: true });
+    $(`activity-tab-${next}`).focus();
+  });
+  on("settings-tabs", "click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-settings-tab]") : null;
+    if (!target) return;
+    setSettingsTab(target.dataset.settingsTab);
+    target.focus();
+  });
+  on("settings-tabs", "keydown", (event) => {
+    const current = event.target instanceof Element ? event.target.closest("[data-settings-tab]") : null;
+    if (!current) return;
+    const index = settingsTabs.indexOf(current.dataset.settingsTab);
+    let next = null;
+    if (event.key === "ArrowRight") next = settingsTabs[(index + 1) % settingsTabs.length];
+    else if (event.key === "ArrowLeft") next = settingsTabs[(index - 1 + settingsTabs.length) % settingsTabs.length];
+    else if (event.key === "Home") next = settingsTabs[0];
+    else if (event.key === "End") next = settingsTabs[settingsTabs.length - 1];
+    else if (event.key === "Escape") {
+      event.preventDefault();
+      $("settings-heading").focus();
+      return;
+    }
+    if (!next) return;
+    event.preventDefault();
+    setSettingsTab(next);
+    $(`settings-tab-${next}`).focus();
+  });
+  on("run-status-filter", "change", (event) => {
+    state.runStatusFilter = ["all", "reported", "failed"].includes(event.target.value) ? event.target.value : "all";
+    state.runWindow = 20;
+    renderRunHistory(state.automation ? state.automation.runs : []);
+  });
+  on("runs-show-more", "click", () => {
+    state.runWindow += 20;
+    renderRunHistory(state.automation ? state.automation.runs : []);
+  });
+  on("dashboard-current-list", "click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-dashboard-task]") : null;
+    if (target) inspectTask(target.dataset.dashboardTask);
+  });
   on("task-search", "input", () => renderTasks(state.tasks));
   on("task-priority-filter", "change", () => renderTasks(state.tasks));
   on("task-detail-close", "click", () => $("task-detail").close());
@@ -5598,10 +5859,11 @@
     inspectGeneration += 1;
     inspectedRun = null;
     inspectedRunId = "";
-    if (state.authenticated && state.view === "dashboard") {
-      const opener = Array.from($("tasks-list").querySelectorAll("[data-task-inspect]")).find((button) => button.dataset.taskInspect === inspectedTask);
-      (opener || $("tasks-list")).focus({ preventScroll: true });
-    }
+    if (!state.authenticated) return;
+    const opener = Array.from(document.querySelectorAll("[data-task-inspect], [data-dashboard-task]"))
+      .find((button) => button.dataset.taskInspect === inspectedTask || button.dataset.dashboardTask === inspectedTask);
+    if (opener) opener.focus({ preventScroll: true });
+    else if ($("tasks-list") && !$("activity-panel-tasks").hidden) $("tasks-list").focus({ preventScroll: true });
   });
   on("tasks-list", "click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("button[data-task-inspect]") : null;
@@ -5951,6 +6213,12 @@
     if ($("task-detail").open) $("task-detail").close();
     if ($("catalog-dialog").open) closeCatalogDialog(false);
     state.viewInitialized = false;
+    state.activityTab = "tasks";
+    state.settingsTab = "connections";
+    state.runStatusFilter = "all";
+    state.runWindow = 20;
+    setActivityTab("tasks");
+    setSettingsTab("connections");
     state.sessionEpoch += 1;
     state.chatLoadGeneration += 1;
     if (state.chatController) state.chatController.abort();
@@ -5985,6 +6253,8 @@
     if ($("weixin-section")) $("weixin-section").hidden = true;
     $("review-list").replaceChildren();
     $("latest-run").replaceChildren();
+    $("dashboard-current-list").replaceChildren();
+    updateActivityCounts();
     document.dispatchEvent(new CustomEvent("folio:session", { detail: { authenticated: false } }));
   }
 
@@ -6021,6 +6291,8 @@
     t,
   };
 
+  setActivityTab("tasks");
+  setSettingsTab("connections");
   if (missingElements.length) {
     window.console.warn("folio: missing elements: " + Array.from(new Set(missingElements)).join(", "));
   }
