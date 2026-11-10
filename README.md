@@ -36,11 +36,13 @@ volume. This repository contains only generic service code and Web assets.
    creates durable task intent. Its task card shows queue state, waiting rules,
    attempts and results; creation is not completion.
 3. Use **Assistant** for conversation. Open **Feedback** from the fixed launcher
-   to report an improvement request about Folio itself. The feedback form is a
-   movable floating window: drag it aside, then paste, drop or select a PNG/JPEG
-   screenshot and annotate it with pen, arrow or rectangle tools. Fill in the
-   current behavior, expected behavior and acceptance criteria. Closing the
-   window keeps the draft. Vague or incomplete requests are rejected with a fixed
+   to report an improvement request about Folio itself. The screenshot-first
+   floating window can capture the current tab in one click, or accept a pasted,
+   dropped or selected PNG/JPEG; it attaches the current view and a bounded set
+   of visible page elements automatically. Annotate with pen, arrow or rectangle
+   tools, describe what happened and what you want, and open **More** only if
+   the derived title, priority or acceptance needs editing. Closing the window
+   keeps the draft. Vague or incomplete requests are rejected with a fixed
    reason; an accepted request currently creates a bounded planning task, not a
    source edit or deployment.
 4. For personal-context answers and organization, authorize GitHub and connect
@@ -168,7 +170,8 @@ unknown kind is rejected at hook creation and again at dispatch, never guessed.
 `context`, `agent`, `script`, `push`, `http` and `task` steps. The registry is
 validated and versioned before a write; scripts run as argv under
 `/data/scripts` with no shell, and HTTP steps require the configured HTTPS host
-allowlist. The Actions page can validate, publish, disable, restore versions and
+allowlist. The Advanced action editor can validate, publish, disable, restore
+versions and
 edit the host allowlist; the Assistant can edit the same registry when an owner
 runtime is configured.
 Source code and deployment remain outside the agent's write surface.
@@ -295,39 +298,48 @@ hiding entries. There is no owner/name form of its own; the shell keeps the
 connect transaction (`/api/repository/connect`) and the plugin drives it.
 
 The console separates daily work from setup. The default page after repository
-setup is a task and Token usage dashboard; run history and owner review have
-separate pages. The board groups waiting work, running attempts, items needing
-attention, and finished work into columns, with local search and priority
-filters. Cards explain waiting or failure and open run evidence in a side dialog:
-runner/model, reported tokens, changes and diffs. Human-review snapshots are
-labelled separately from failed tasks. GitHub authorization, repository selection, model runner
-readiness, push notifications and event hooks are grouped in Settings. On an
-unconfigured installation the console starts there, with a setup checklist;
-notifications and triggers are optional. Runner installation is reported
-separately from provider authentication, which the first model run checks.
+setup is a dashboard with compact current work, server-driven quick actions and
+Token usage; the full task board, run history and owner review live together
+under **Activity** with Tasks, Runs and Review tabs. The board groups waiting
+work, running attempts, items needing attention, and finished work into columns,
+with local search and priority filters. Cards explain waiting or failure and open
+run evidence in a side dialog: runner/model, reported tokens, changes and diffs.
+Human-review snapshots are labelled separately from failed tasks. Run history is
+bounded to a compact recent window with status filters and an explicit Show more;
+GitHub authorization, repository selection, model connections, push
+notifications, event hooks and advanced action tooling are grouped into Settings
+tabs. On an unconfigured installation the console starts in Settings, with a
+setup checklist; notifications and triggers are optional. Runner installation is
+reported separately from provider authentication, which the first model run
+checks.
 
-The console also has an Assistant chat and an Actions registry. Chat goes to the
-main-agent runtime configured under Settings → Main agent runtime. The built-in
-adapter speaks the OpenAI-compatible chat-completions API (base URL, model,
-provider, key), so DeepSeek, OpenAI, OpenRouter and compatible gateways work
-without an extra sidecar; an installed command adapter at `/data/agent/runtime`
-remains available for a pi wrapper. The key is stored in the private volume and
-never returned to the browser. Until a runtime is configured the view reports
-unavailable and Weixin keeps its bounded read-only answer. The agent's tool
-surface is queue/action/route/policy/channel/context/audit control, not source
-or deploy. Actions can be validated, published, disabled, and restored from
-retained versions; the same operations are exposed as agent tools.
+The console also has an Assistant chat and a server-driven quick-action
+catalog. Daily actions open a small form dialog from compact launchers; the raw
+registry lives under Settings → Advanced and is not part of normal navigation.
+Chat goes to the main-agent runtime configured under Settings → Advanced. The
+built-in adapter speaks the OpenAI-compatible chat-completions API (base URL,
+model, provider, key), so DeepSeek, OpenAI, OpenRouter and compatible gateways
+work without an extra sidecar; an installed command adapter at
+`/data/agent/runtime` remains available for a pi wrapper. The key is stored in
+the private volume and never returned to the browser. Until a runtime is
+configured the view reports unavailable and Weixin keeps its bounded read-only
+answer. The agent's tool surface is queue/action/route/policy/channel/context/
+audit control, not source or deploy. Actions can be validated, published,
+disabled, and restored from retained versions; the same operations are exposed as
+agent tools.
 
-Owner review shows the findings from the most recent retained successful
+Owner review lives in **Activity → Review** and shows the findings from the most
+recent retained successful
 maintenance, with a timestamp. It is a historical snapshot, not a live approval
-queue; reports and failed runs do not replace it. Each finding explains the next
+queue; reports and failed runs do not replace it. The shared handling workflow is
+collapsed behind help; each finding explains the next
 step and can link to its input version and current file on GitHub. Older runs
 without repository identity cannot supply a historical source link. Review
 happens in the private repository: read the evidence, record a decision, and make
 any intended canonical edit explicitly, then commit and push. Changing a
 candidate's status alone does not promote it. The console offers no in-page
-approval. **Pull latest and recheck** runs maintenance using the dashboard's
-selected runner/model and may consume tokens. Remaining changed documents are
+approval. **Pull latest and recheck** runs maintenance using the Activity
+Runs/full board task binding and may consume tokens. Remaining changed documents are
 shown separately from human findings, including whether a continuation task was
 queued; pauses and off-peak policy still apply.
 

@@ -88,22 +88,25 @@ the context repository or chat. Inspect the Web model status after setup.
 ## First useful task
 
 After creating the owner account, configure the assistant and/or report model
-under **Settings → Model services**. A private repository and Codex login are
+under **Settings → Connections**. A private repository and Codex login are
 not prerequisites for API-backed chat or reports. The dashboard and settings
 show separate capability readiness; these checks describe local configuration,
 not verified provider credentials.
 
-Use the **Background report** action in the dashboard catalog, enter a concrete
-request and submit it. Open the accepted task to see its queue state and eventual
+Use the **Create background report** quick action on the dashboard, enter a
+concrete request in the dialog and submit it. Open the accepted task to see its
+queue state and eventual
 report. A paused queue or an off-peak priority can delay execution; acceptance is
 not completion. Read the result and use its follow-up entry to ask about the same
 run. This small report is also an inference check that **Test connection** cannot
 provide.
 
 Use the fixed **Feedback** launcher for an improvement request about Folio
-itself. It opens a movable floating window so you can drag it aside and capture
-the affected area. The screenshot and structured text stay in the private data
-volume under `/data/feedback/`
+itself. The floating window captures the current tab in one click (or accepts a
+pasted/dropped/selected image), attaches the current view and a bounded set of
+visible page elements, and asks only what happened and what you want; title,
+priority and acceptance live under More. The screenshot and structured context
+stay in the private data volume under `/data/feedback/`
 unless an owner later adds an explicit mirror. The request is rejected if it is
 incomplete or too vague; an accepted request creates a bounded planning task,
 not a source edit or deployment. Source self-modification requires the separate

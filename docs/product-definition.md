@@ -45,13 +45,14 @@ access.
 
 ## Current scope
 
-The current service includes the Web task and usage dashboard, assistant chat,
-runtime action registry, event hooks and schedules, context maintenance and
-read-only reports, owner review snapshots, optional Bark and native Weixin
-channels, and a GitHub storage plugin. The dashboard renders a server-driven
-action catalog rather than a fixed daily task list; built-in report and
-maintenance actions can be extended or shadowed by owner action definitions.
-Feedback capture, private screenshot storage and a sufficiency gate create a
+The current service includes the Web dashboard, assistant chat, an Activity view
+with Tasks/Runs/Review tabs, runtime action registry, event hooks and schedules,
+context maintenance and read-only reports, owner review snapshots, optional Bark
+and native Weixin channels, and a GitHub storage plugin. The dashboard renders a
+server-driven quick-action catalog rather than a fixed daily task list; built-in
+report and maintenance actions can be extended or shadowed by owner action
+definitions. Feedback is a screenshot-first floating window with automatic page
+context, private screenshot storage and a sufficiency gate that creates a
 plan-only task when accepted; source self-modification and deployment remain
 planned. Assistant and report configuration can be used without a connected
 repository; context-dependent work has separate requirements. Task acceptance,

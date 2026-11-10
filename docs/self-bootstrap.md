@@ -73,14 +73,25 @@ upstream account or inference call works.
 
 Feedback is private owner data stored under `data/feedback/`; the public image
 never contains context, credentials, or runtime files. The console exposes it as
-a movable floating window opened from a fixed launcher, so the owner can drag it
-aside and capture the affected area without navigating away; closing the window
-keeps the draft. A submission contains:
+a screenshot-first movable floating window opened from a fixed launcher. The
+owner captures the current tab (or pastes/drops/chooses a file), describes what
+happened and what they want, and can close the window without losing the draft.
+The area, title and acceptance text are derived automatically and remain editable
+under a collapsed “More” section, so the visible form stays small. A submission
+contains:
 
-- title and a fixed page/area;
-- current behavior, expected behavior, and acceptance criteria;
-- optional screenshot;
-- priority.
+- a screenshot, captured or uploaded;
+- current behavior and expected behavior;
+- derived title, area, acceptance criteria and priority;
+- optionally, a bounded page/element context captured with the screenshot.
+
+Current-page capture records the view, route, viewport and up to 24 visible
+semantic elements (tags, accessible names, stable selectors, section labels and
+relative rectangles). It never records input values, passwords, raw HTML or
+hidden elements. Uploaded files carry only the basic view/route metadata, not
+invented DOM elements. The context is capped at 24 KiB, stored only in the
+private feedback record, and summarized into the gate/plan prompt; the detail API
+exposes it to the authenticated owner while list summaries expose only a count.
 
 The screenshot is decoded and re-encoded as PNG to strip metadata, bounded by
 dimensions and byte size, and served only through an authenticated route. No
