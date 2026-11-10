@@ -5481,27 +5481,29 @@
       return existing;
     }
     let candidate = "";
-    const elements = context && Array.isArray(context.elements) ? context.elements : [];
-    for (const element of elements) {
-      const name = feedbackTruncateText(element && element.name, 120);
-      if (Array.from(name).length >= 4) {
-        candidate = name;
-        break;
-      }
-      const text = feedbackTruncateText(element && element.text, 120);
-      if (Array.from(text).length >= 4) {
-        candidate = text;
-        break;
-      }
-    }
-    if (!candidate) {
-      const current = $("feedback-current") ? $("feedback-current").value.trim() : "";
-      const lines = current.split(/\r?\n/).map((line) => feedbackTruncateText(line, 120)).filter(Boolean);
-      candidate = lines.find((line) => Array.from(line).length >= 4) || feedbackTruncateText(current, 120);
-    }
+    const current = $("feedback-current") ? $("feedback-current").value.trim() : "";
+    const currentLines = current.split(/\r?\n/).map((line) => feedbackTruncateText(line, 120)).filter(Boolean);
+    const currentLine = currentLines.find((line) => Array.from(line).length >= 4) || "";
+    if (currentLine) candidate = feedbackTruncateText(currentLine.replace(/[.!?。！？].*$/, ""), 80);
     if (!candidate) {
       const expected = $("feedback-expected") ? $("feedback-expected").value.trim() : "";
-      candidate = feedbackTruncateText(expected, 120);
+      const expectedLines = expected.split(/\r?\n/).map((line) => feedbackTruncateText(line, 120)).filter(Boolean);
+      candidate = expectedLines.find((line) => Array.from(line).length >= 4) || "";
+    }
+    if (!candidate) {
+      const elements = context && Array.isArray(context.elements) ? context.elements : [];
+      for (const element of elements) {
+        const name = feedbackTruncateText(element && element.name, 120);
+        if (Array.from(name).length >= 4) {
+          candidate = name;
+          break;
+        }
+        const text = feedbackTruncateText(element && element.text, 120);
+        if (Array.from(text).length >= 4) {
+          candidate = text;
+          break;
+        }
+      }
     }
     const title = feedbackEnsureTitle(candidate);
     if (node) node.value = title;
