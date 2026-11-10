@@ -238,6 +238,7 @@ async function main() {
           media = {};
           try { Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: media }); } catch (_) {}
         }
+        window.__folioMediaDevices = media;
         media.getDisplayMedia = async (options) => {
           window.__folioCaptureOptions = options;
           const panel = document.getElementById('feedback-view');
@@ -1027,16 +1028,48 @@ async function main() {
       const panelAfter = await page.locator('#feedback-view').boundingBox();
       assert.ok(Math.abs(panelAfter.x - panelBefore.x) > 20 || Math.abs(panelAfter.y - panelBefore.y) > 20, 'feedback window is draggable');
       assert.equal(await submitVisible(), true, 'submit remains visible after dragging');
-      // Denied screen capture is a translated, non-blocking fallback: the file
-      // path stays available and the panel is restored.
+      // A denied screen capture falls back to a permission-free DOM snapshot
+      // instead of surfacing an error.
+      const assertSnapshotFallback = async () => {
+        await page.waitForFunction(() => (document.getElementById('feedback-image-state')?.textContent || '').includes('page-snapshot.png'));
+        await visible(page, '#feedback-editor');
+        await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
+        assert.equal(await page.locator('#feedback-image-error').getAttribute('data-error'), 'false', 'a successful snapshot is not shown as an error');
+        assert.equal((await page.locator('#feedback-image-error').textContent()).trim(), '', 'the snapshot fallback leaves no capture error');
+        assert.match(await page.locator('#feedback-context-summary').textContent(), language === 'zh' ? /已附带 \d+ 个页面元素/ : /Attached \d+ page elements/, 'the snapshot keeps element context');
+        const snapshotRatio = await page.locator('#feedback-canvas').evaluate((canvas) => canvas.width / canvas.height);
+        const viewportRatio = await page.evaluate(() => window.innerWidth / window.innerHeight);
+        assert.ok(Math.abs(snapshotRatio - viewportRatio) < 0.06, `the snapshot crops the viewport, not the full page: ${snapshotRatio} vs ${viewportRatio}`);
+        const painted = await page.locator('#feedback-canvas').evaluate((canvas) => {
+          const context = canvas.getContext('2d');
+          const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+          let colored = 0;
+          for (let index = 0; index < data.length; index += 160) {
+            if (data[index + 3] > 0 && !(data[index] > 250 && data[index + 1] > 250 && data[index + 2] > 250)) colored += 1;
+          }
+          return colored;
+        });
+        assert.ok(painted > 20, `the DOM snapshot contains rendered page pixels: ${painted}`);
+        if (process.env.FOLIO_SCREENSHOTS) {
+          const dataURL = await page.locator('#feedback-canvas').evaluate((canvas) => canvas.toDataURL('image/png'));
+          fs.writeFileSync(`/tmp/folio-feedback-snapshot-${language}.png`, Buffer.from(dataURL.split(',')[1], 'base64'));
+        }
+        assert.equal(await page.locator('#feedback-view').isVisible(), true);
+      };
       await page.evaluate(() => { window.__folioCaptureDenied = true; });
       await page.locator('#feedback-capture-page').click();
-      await page.waitForFunction(() => document.getElementById('feedback-image-error').dataset.error === 'true');
-      assert.match(await page.locator('#feedback-image-error').textContent(), language === 'zh' ? /取消截屏/ : /cancelled/i);
-      assert.equal(await page.locator('#feedback-view').isVisible(), true);
-      assert.equal(await page.locator('#feedback-choose-image').isVisible(), true);
-      assert.equal(await page.locator('#feedback-dropzone').isVisible(), true);
+      await assertSnapshotFallback();
+      await page.locator('#feedback-remove-image').click();
+      await page.waitForFunction(() => document.getElementById('feedback-editor').hidden);
       await page.evaluate(() => { window.__folioCaptureDenied = false; });
+      // HTTP LAN pages have no navigator.mediaDevices at all; the same snapshot
+      // path must still attach an image and context.
+      await page.evaluate(() => { Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined }); });
+      await page.locator('#feedback-capture-page').click();
+      await assertSnapshotFallback();
+      await page.locator('#feedback-remove-image').click();
+      await page.waitForFunction(() => document.getElementById('feedback-editor').hidden);
+      await page.evaluate(() => { Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: window.__folioMediaDevices }); });
       // Successful capture hides the panel while getDisplayMedia runs, stores
       // one native-resolution frame, attaches element context and restores it.
       await page.locator('#feedback-capture-page').click();
@@ -1670,7 +1703,7 @@ async function main() {
       assert.equal(await page.locator('#feedback-created').textContent(), '');
       assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, capability readiness, four-item nav, scrolled navigation/deep links, dashboard current card and content-sized actions, settings URL tabs/readiness/mobile panel focus, Activity/Settings tabs with keyboard/hash/back/deep links, run filter groups/selected detail/mobile window, compact review help/recheck, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/layout/suggestions, chat task events/history, report result/retry/follow-up, screenshot-first feedback capture/context/fallback/accept/reject/focus/safe-area, board/filter/drawer/actions, errors, both languages, mobile 44px targets/header/bottom nav/launcher/overflow, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, four-item nav, scrolled navigation/deep links, dashboard current card and content-sized actions, settings URL tabs/readiness/mobile panel focus, Activity/Settings tabs with keyboard/hash/back/deep links, run filter groups/selected detail/mobile window, compact review help/recheck, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/layout/suggestions, chat task events/history, report result/retry/follow-up, screenshot-first feedback media capture and HTTP/DOM-snapshot fallback/context/accept/reject/focus/safe-area, board/filter/drawer/actions, errors, both languages, mobile 44px targets/header/bottom nav/launcher/overflow, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

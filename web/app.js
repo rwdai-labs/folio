@@ -4685,130 +4685,252 @@
     return "feedback.capture_failed";
   }
 
+  function stopFeedbackCaptureMedia(stream, video) {
+    if (video) {
+      try {
+        video.pause();
+      } catch (_) {
+        // A detached video may already be paused.
+      }
+      video.srcObject = null;
+      video.remove();
+    }
+    if (stream) {
+      stream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch (_) {
+          // Track cleanup is best effort.
+        }
+      });
+    }
+  }
+
+  function feedbackSnapshotCSS() {
+    const chunks = [];
+    const sheets = Array.from(document.styleSheets || []);
+    sheets.forEach((sheet) => {
+      let rules = null;
+      try {
+        rules = sheet.cssRules;
+      } catch (_) {
+        // Cross-origin sheets are not readable; they are not needed for Folio's
+        // same-origin console styles.
+        return;
+      }
+      if (!rules || !rules.length) return;
+      let text = "";
+      Array.from(rules).forEach((rule) => {
+        if (rule && typeof rule.cssText === "string") text += rule.cssText + "\n";
+      });
+      if (!text) return;
+      const media = sheet.media && typeof sheet.media.mediaText === "string" ? sheet.media.mediaText.trim() : "";
+      chunks.push(media && media !== "all" ? `@media ${media} {\n${text}}\n` : text);
+    });
+    return chunks.join("\n");
+  }
+
+  // HTTP LAN deployments do not expose getDisplayMedia. Rebuild the rendered
+  // page from the live DOM and same-origin CSS, render it through an SVG
+  // foreignObject, then crop the current viewport onto a PNG canvas.
+  function feedbackSnapshotFile() {
+    return new Promise((resolve, reject) => {
+      const doc = document.documentElement;
+      const body = document.body;
+      const pageWidth = Math.max(1, Math.round(Math.max(doc ? doc.scrollWidth : 0, body ? body.scrollWidth : 0, window.innerWidth)));
+      const pageHeight = Math.max(1, Math.round(Math.max(doc ? doc.scrollHeight : 0, body ? body.scrollHeight : 0, window.innerHeight)));
+      const pageScale = Math.min(1, 4096 / pageWidth, 4096 / pageHeight,
+        Math.sqrt(8_000_000 / (pageWidth * pageHeight)));
+      const renderWidth = Math.max(1, Math.round(pageWidth * pageScale));
+      const renderHeight = Math.max(1, Math.round(pageHeight * pageScale));
+      let serialized = "";
+      try {
+        const clone = doc.cloneNode(true);
+        clone.querySelectorAll('script, link[rel="stylesheet"], #feedback-view, #feedback-launcher').forEach((node) => node.remove());
+        const style = document.createElement("style");
+        style.textContent = feedbackSnapshotCSS();
+        const head = clone.querySelector("head");
+        if (head) head.appendChild(style);
+        clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+        clone.style.width = `${pageWidth}px`;
+        clone.style.height = `${pageHeight}px`;
+        clone.style.overflow = "visible";
+        const cloneBody = clone.querySelector("body");
+        if (cloneBody) {
+          cloneBody.style.width = `${pageWidth}px`;
+          cloneBody.style.minHeight = `${pageHeight}px`;
+        }
+        serialized = new XMLSerializer().serializeToString(clone);
+      } catch (_) {
+        reject(new Error("snapshot_dom"));
+        return;
+      }
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${renderWidth}" height="${renderHeight}" viewBox="0 0 ${pageWidth} ${pageHeight}"><foreignObject x="0" y="0" width="${pageWidth}" height="${pageHeight}">${serialized}</foreignObject></svg>`;
+      const image = new Image();
+      let settled = false;
+      const timer = window.setTimeout(() => finish(new Error("snapshot_timeout")), 15000);
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (error) reject(error);
+      };
+      image.onload = () => {
+        if (settled) return;
+        try {
+          const viewportWidth = Math.max(1, Math.round(window.innerWidth));
+          const viewportHeight = Math.max(1, Math.round(window.innerHeight));
+          const outputScale = Math.min(pageScale, 4096 / viewportWidth, 4096 / viewportHeight,
+            Math.sqrt(8_000_000 / (viewportWidth * viewportHeight)));
+          const width = Math.max(1, Math.round(viewportWidth * outputScale));
+          const height = Math.max(1, Math.round(viewportHeight * outputScale));
+          const sx = Math.min(Math.max(0, window.scrollX * pageScale), Math.max(0, renderWidth - 1));
+          const sy = Math.min(Math.max(0, window.scrollY * pageScale), Math.max(0, renderHeight - 1));
+          const sw = Math.max(1, Math.min(viewportWidth * pageScale, renderWidth - sx));
+          const sh = Math.max(1, Math.min(viewportHeight * pageScale, renderHeight - sy));
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const drawing = canvas.getContext("2d");
+          if (!drawing) throw new Error("canvas");
+          drawing.drawImage(image, sx, sy, sw, sh, 0, 0, width, height);
+          canvas.toBlob((blob) => {
+            if (!blob) {
+              finish(new Error("snapshot_empty"));
+              return;
+            }
+            finish(null);
+            try {
+              resolve(new File([blob], "page-snapshot.png", { type: "image/png" }));
+            } catch (_) {
+              resolve(blob);
+            }
+          }, "image/png");
+        } catch (error) {
+          finish(error);
+        }
+      };
+      image.onerror = () => finish(new Error("snapshot_image"));
+      image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    });
+  }
+
   async function captureFeedbackPage() {
     if (!state.authenticated || state.feedbackBusy || state.feedback.capturing) return;
     const media = navigator.mediaDevices;
-    if (!media || typeof media.getDisplayMedia !== "function") {
-      setFeedbackImageError("feedback.capture_unsupported");
-      return;
-    }
     const panel = $("feedback-view");
     const launcher = $("feedback-launcher");
     const button = $("feedback-capture-page");
     const context = feedbackBuildContext(true);
     let stream = null;
     let video = null;
+    let file = null;
     state.feedback.capturing = true;
     setFeedbackImageError("");
     setBusy(button, "feedback.capturing");
-    // Hide the floating feedback UI before asking for the current tab. The
-    // context above is collected while the page is still visible and excludes
-    // this panel and launcher explicitly.
+    // Hide the floating feedback UI before capture. The context above is
+    // collected while the page is still visible and excludes this panel and
+    // launcher explicitly.
     if (panel) panel.style.visibility = "hidden";
     if (launcher) launcher.style.visibility = "hidden";
     try {
-      stream = await media.getDisplayMedia({
-        video: { frameRate: { ideal: 1, max: 2 } },
-        audio: false,
-        preferCurrentTab: true,
-      });
-      video = document.createElement("video");
-      video.muted = true;
-      video.playsInline = true;
-      video.setAttribute("aria-hidden", "true");
-      video.style.cssText = "position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;";
-      video.srcObject = stream;
-      document.body.appendChild(video);
-      await new Promise((resolve, reject) => {
-        let settled = false;
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          resolve();
-        };
-        const fail = () => {
-          if (settled) return;
-          settled = true;
-          reject(new Error("video"));
-        };
-        const timer = window.setTimeout(fail, 5000);
-        const start = () => {
-          window.clearTimeout(timer);
-          Promise.resolve(video.play()).then(finish, fail);
-        };
-        if (video.readyState >= 1) start();
-        else video.addEventListener("loadedmetadata", start, { once: true });
-        video.addEventListener("error", fail, { once: true });
-      });
-      await new Promise((resolve) => {
-        let finished = false;
-        const finish = () => {
-          if (finished) return;
-          finished = true;
-          resolve();
-        };
-        if (typeof video.requestVideoFrameCallback === "function") {
-          try {
-            video.requestVideoFrameCallback(finish);
-          } catch (_) {
-            // The timeout below still captures the current frame.
-          }
-          window.setTimeout(finish, 800);
-        } else {
-          window.setTimeout(finish, 180);
-        }
-      });
-      const naturalWidth = video.videoWidth || 0;
-      const naturalHeight = video.videoHeight || 0;
-      if (!naturalWidth || !naturalHeight) throw new Error("empty");
-      // Keep the native frame unless it exceeds the existing 4096px / 8MP
-      // client boundary; typical pages are captured one-for-one.
-      const scale = Math.min(1, 4096 / naturalWidth, 4096 / naturalHeight,
-        Math.sqrt(8_000_000 / (naturalWidth * naturalHeight)));
-      const width = Math.max(1, Math.floor(naturalWidth * scale));
-      const height = Math.max(1, Math.floor(naturalHeight * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const drawing = canvas.getContext("2d");
-      if (!drawing) throw new Error("canvas");
-      drawing.drawImage(video, 0, 0, width, height);
-      const blob = await new Promise((resolve, reject) => {
+      if (media && typeof media.getDisplayMedia === "function") {
         try {
-          canvas.toBlob((value) => (value ? resolve(value) : reject(new Error("empty"))), "image/png");
-        } catch (error) {
-          reject(error);
+          stream = await media.getDisplayMedia({
+            video: { frameRate: { ideal: 1, max: 2 } },
+            audio: false,
+            preferCurrentTab: true,
+          });
+          video = document.createElement("video");
+          video.muted = true;
+          video.playsInline = true;
+          video.setAttribute("aria-hidden", "true");
+          video.style.cssText = "position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+          video.srcObject = stream;
+          document.body.appendChild(video);
+          await new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              resolve();
+            };
+            const fail = () => {
+              if (settled) return;
+              settled = true;
+              reject(new Error("video"));
+            };
+            const timer = window.setTimeout(fail, 5000);
+            const start = () => {
+              window.clearTimeout(timer);
+              Promise.resolve(video.play()).then(finish, fail);
+            };
+            if (video.readyState >= 1) start();
+            else video.addEventListener("loadedmetadata", start, { once: true });
+            video.addEventListener("error", fail, { once: true });
+          });
+          await new Promise((resolve) => {
+            let finished = false;
+            const finish = () => {
+              if (finished) return;
+              finished = true;
+              resolve();
+            };
+            if (typeof video.requestVideoFrameCallback === "function") {
+              try {
+                video.requestVideoFrameCallback(finish);
+              } catch (_) {
+                // The timeout below still captures the current frame.
+              }
+              window.setTimeout(finish, 800);
+            } else {
+              window.setTimeout(finish, 180);
+            }
+          });
+          const naturalWidth = video.videoWidth || 0;
+          const naturalHeight = video.videoHeight || 0;
+          if (!naturalWidth || !naturalHeight) throw new Error("empty");
+          // Keep the native frame unless it exceeds the existing 4096px / 8MP
+          // client boundary; typical pages are captured one-for-one.
+          const scale = Math.min(1, 4096 / naturalWidth, 4096 / naturalHeight,
+            Math.sqrt(8_000_000 / (naturalWidth * naturalHeight)));
+          const width = Math.max(1, Math.floor(naturalWidth * scale));
+          const height = Math.max(1, Math.floor(naturalHeight * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const drawing = canvas.getContext("2d");
+          if (!drawing) throw new Error("canvas");
+          drawing.drawImage(video, 0, 0, width, height);
+          const blob = await new Promise((resolve, reject) => {
+            try {
+              canvas.toBlob((value) => (value ? resolve(value) : reject(new Error("empty"))), "image/png");
+            } catch (error) {
+              reject(error);
+            }
+          });
+          try {
+            file = new File([blob], "current-page.png", { type: "image/png" });
+          } catch (_) {
+            file = blob;
+          }
+        } catch (_) {
+          // A denied/unsupported/failed screen capture falls through to the
+          // permission-free DOM snapshot below.
+          file = null;
+        } finally {
+          stopFeedbackCaptureMedia(stream, video);
+          stream = null;
+          video = null;
         }
-      });
-      let file;
-      try {
-        file = new File([blob], "current-page.png", { type: "image/png" });
-      } catch (_) {
-        file = blob;
       }
+      if (!file) file = await feedbackSnapshotFile();
       if (!state.authenticated) return;
       feedbackSelectFile(file, context);
     } catch (error) {
       if (state.authenticated) setFeedbackImageError(feedbackCaptureErrorKey(error));
     } finally {
-      if (video) {
-        try {
-          video.pause();
-        } catch (_) {
-          // A detached video may already be paused.
-        }
-        video.srcObject = null;
-        video.remove();
-      }
-      if (stream) {
-        stream.getTracks().forEach((track) => {
-          try {
-            track.stop();
-          } catch (_) {
-            // Track cleanup is best effort.
-          }
-        });
-      }
+      stopFeedbackCaptureMedia(stream, video);
       if (panel) panel.style.visibility = "";
       if (launcher) launcher.style.visibility = "";
       state.feedback.capturing = false;

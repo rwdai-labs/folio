@@ -78,9 +78,16 @@ Inherit `../AGENTS.md`.
   feedback panel and launcher, draws one frame at its native resolution (bounded
   to the existing 4096px/8MP image limits), stops all tracks, restores the
   panel, and feeds a PNG through the existing FileReader/canvas pipeline. Never
-  use `blob:` or object URLs; CSP permits only `self` and `data:`. If capture is
-  unsupported or denied, show a translated non-blocking error and keep
-  paste/drop/file selection available. No external libraries or build step.
+  use `blob:` or object URLs; CSP permits only `self` and `data:`. No external
+  libraries or build step.
+- Screen capture is optional. When `navigator.mediaDevices`/`getDisplayMedia` is
+  missing (HTTP LAN pages) or the request is denied/fails, fall back to a
+  permission-free DOM snapshot: clone the document, remove scripts, stylesheet
+  links and the feedback UI, inline readable same-origin `cssRules`, render the
+  full page through one `data:image/svg+xml` foreignObject, then crop the current
+  viewport onto a PNG (`page-snapshot.png`). Scale the full render only to stay
+  within 4096px/8MP and keep the same collected context and hide/restore the
+  panel/launcher. If the snapshot also fails, show the translated capture error.
 - Immediately before a page capture, collect at most 24 visible semantic
   elements outside the feedback UI (buttons, links, non-password inputs,
   textareas, selects, headings, cards/sections) with tag, id, role, accessible
@@ -259,9 +266,9 @@ close focus and 404 fallback; assistant title, growing composer and prompt
 suggestions; structured task cards and chat, run-ID report results and
 follow-up, screenshot-first
 feedback with no element-selection mode, compact two-field/collapsed-advanced
-layout and sticky submit, draggable header and draft-preserving close, denied
-capture fallback, current-page capture with element context, uploaded-file
-context without elements, image/canvas export, accepted and rejected submissions
+layout and sticky submit, draggable header and draft-preserving close, media and
+DOM-snapshot capture fallback (including missing `navigator.mediaDevices`),
+current-page capture with element context, uploaded-file context without elements, image/canvas export, accepted and rejected submissions
 with preserved drafts, mobile sheet layout, and session expiry cleanup. The mock
 multipart parser exposes the parsed `context` JSON. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed
