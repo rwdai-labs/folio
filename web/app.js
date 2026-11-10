@@ -112,7 +112,8 @@
       cssWidth: 0, cssHeight: 0, dpr: 1,
       strokes: [], current: null, drawing: false, pointerId: null,
       tool: "pen", color: "#d64545", width: 3,
-      imageError: "", context: null, capturing: false,
+      imageError: "", context: null, capturing: false, selecting: false,
+      captureRegion: null,
     },
   };
 
@@ -4314,6 +4315,7 @@
   });
 
   let feedbackDrag = null;
+  let feedbackSelectorDrag = null;
 
   function feedbackAreaForView(view) {
     // The feedback contract keeps its fixed area vocabulary. Activity reports
@@ -4534,7 +4536,13 @@
     return true;
   }
 
-  function feedbackCollectElements() {
+  function feedbackRectIntersects(rect, region) {
+    if (!region) return true;
+    return rect.right > region.x && rect.left < region.x + region.width &&
+      rect.bottom > region.y && rect.top < region.y + region.height;
+  }
+
+  function feedbackCollectElements(region) {
     const panel = $("feedback-view");
     const launcher = $("feedback-launcher");
     const elements = [];
@@ -4549,6 +4557,7 @@
       }
       if (!feedbackElementVisible(node)) return;
       const rect = node.getBoundingClientRect();
+      if (!feedbackRectIntersects(rect, region)) return;
       const width = Math.round(feedbackClampNumber(rect.width, 0, 100000, 0));
       const height = Math.round(feedbackClampNumber(rect.height, 0, 100000, 0));
       if (width < 2 || height < 2) return;
@@ -4572,10 +4581,10 @@
     return elements;
   }
 
-  function feedbackBuildContext(includeElements) {
+  function feedbackBuildContext(includeElements, region) {
     const context = feedbackBaseContext();
     if (includeElements) {
-      const elements = feedbackCollectElements();
+      const elements = feedbackCollectElements(region);
       if (elements.length) context.elements = elements;
     }
     return context;
@@ -4652,9 +4661,14 @@
     const view = feedbackAreaLabel(context.view);
     container.hidden = false;
     if (summary) {
-      summary.textContent = count
+      let text = count
         ? t("feedback.context_summary", { count, view })
         : t("feedback.context_file", { view });
+      const region = state.feedback.captureRegion;
+      if (region && region.width > 0 && region.height > 0) {
+        text += ` · ${t("feedback.context_region", { width: region.width, height: region.height })}`;
+      }
+      summary.textContent = text;
     }
     if (details) details.hidden = count === 0;
     if (!list) return;
@@ -4733,7 +4747,7 @@
   // HTTP LAN deployments do not expose getDisplayMedia. Rebuild the rendered
   // page from the live DOM and same-origin CSS, render it through an SVG
   // foreignObject, then crop the current viewport onto a PNG canvas.
-  function feedbackSnapshotFile() {
+  function feedbackSnapshotFile(region) {
     return new Promise((resolve, reject) => {
       const doc = document.documentElement;
       const body = document.body;
@@ -4746,7 +4760,7 @@
       let serialized = "";
       try {
         const clone = doc.cloneNode(true);
-        clone.querySelectorAll('script, link[rel="stylesheet"], #feedback-view, #feedback-launcher').forEach((node) => node.remove());
+        clone.querySelectorAll('script, link[rel="stylesheet"], #feedback-view, #feedback-launcher, #feedback-selector').forEach((node) => node.remove());
         const style = document.createElement("style");
         style.textContent = feedbackSnapshotCSS();
         const head = clone.querySelector("head");
@@ -4780,14 +4794,17 @@
         try {
           const viewportWidth = Math.max(1, Math.round(window.innerWidth));
           const viewportHeight = Math.max(1, Math.round(window.innerHeight));
-          const outputScale = Math.min(pageScale, 4096 / viewportWidth, 4096 / viewportHeight,
-            Math.sqrt(8_000_000 / (viewportWidth * viewportHeight)));
-          const width = Math.max(1, Math.round(viewportWidth * outputScale));
-          const height = Math.max(1, Math.round(viewportHeight * outputScale));
-          const sx = Math.min(Math.max(0, window.scrollX * pageScale), Math.max(0, renderWidth - 1));
-          const sy = Math.min(Math.max(0, window.scrollY * pageScale), Math.max(0, renderHeight - 1));
-          const sw = Math.max(1, Math.min(viewportWidth * pageScale, renderWidth - sx));
-          const sh = Math.max(1, Math.min(viewportHeight * pageScale, renderHeight - sy));
+          const crop = region || { x: 0, y: 0, width: viewportWidth, height: viewportHeight };
+          const cropWidth = Math.max(1, Math.min(viewportWidth, Math.round(crop.width)));
+          const cropHeight = Math.max(1, Math.min(viewportHeight, Math.round(crop.height)));
+          const outputScale = Math.min(pageScale, 4096 / cropWidth, 4096 / cropHeight,
+            Math.sqrt(8_000_000 / (cropWidth * cropHeight)));
+          const width = Math.max(1, Math.round(cropWidth * outputScale));
+          const height = Math.max(1, Math.round(cropHeight * outputScale));
+          const sx = Math.min(Math.max(0, (window.scrollX + crop.x) * pageScale), Math.max(0, renderWidth - 1));
+          const sy = Math.min(Math.max(0, (window.scrollY + crop.y) * pageScale), Math.max(0, renderHeight - 1));
+          const sw = Math.max(1, Math.min(cropWidth * pageScale, renderWidth - sx));
+          const sh = Math.max(1, Math.min(cropHeight * pageScale, renderHeight - sy));
           const canvas = document.createElement("canvas");
           canvas.width = width;
           canvas.height = height;
@@ -4815,13 +4832,208 @@
     });
   }
 
-  async function captureFeedbackPage() {
-    if (!state.authenticated || state.feedbackBusy || state.feedback.capturing) return;
+  const FEEDBACK_SELECTION_MIN = 24;
+
+  function feedbackCaptureChrome(visible) {
+    const panel = $("feedback-view");
+    const launcher = $("feedback-launcher");
+    if (panel) panel.style.visibility = visible ? "" : "hidden";
+    if (launcher) launcher.style.visibility = visible ? "" : "hidden";
+  }
+
+  function feedbackSelectionRect(startX, startY, endX, endY) {
+    const left = Math.max(0, Math.min(startX, endX));
+    const top = Math.max(0, Math.min(startY, endY));
+    const right = Math.min(window.innerWidth, Math.max(startX, endX));
+    const bottom = Math.min(window.innerHeight, Math.max(startY, endY));
+    return {
+      x: left,
+      y: top,
+      width: Math.max(0, right - left),
+      height: Math.max(0, bottom - top),
+    };
+  }
+
+  function feedbackSelectorPaint(region) {
+    const box = $("feedback-selection");
+    const size = $("feedback-selector-size");
+    if (!box) return;
+    if (!region || region.width < 1 || region.height < 1) {
+      box.hidden = true;
+      if (size) size.textContent = "";
+      return;
+    }
+    box.hidden = false;
+    box.style.left = `${region.x}px`;
+    box.style.top = `${region.y}px`;
+    box.style.width = `${region.width}px`;
+    box.style.height = `${region.height}px`;
+    if (size) {
+      size.textContent = t("feedback.select_size", {
+        width: Math.round(region.width),
+        height: Math.round(region.height),
+      });
+    }
+  }
+
+  function feedbackSelectorClose(restoreChrome = true) {
+    const overlay = $("feedback-selector");
+    if (overlay) overlay.hidden = true;
+    feedbackSelectorDrag = null;
+    feedbackSelectorPaint(null);
+    state.feedback.selecting = false;
+    if (restoreChrome) feedbackCaptureChrome(true);
+  }
+
+  function feedbackSelectorOpen() {
+    if (!state.authenticated || state.feedbackBusy || state.feedback.capturing || state.feedback.selecting) return;
+    const overlay = $("feedback-selector");
+    if (!overlay) return;
+    state.feedback.selecting = true;
+    feedbackSelectorDrag = null;
+    setFeedbackImageError("");
+    feedbackCaptureChrome(false);
+    feedbackSelectorPaint(null);
+    overlay.hidden = false;
+    overlay.focus({ preventScroll: true });
+  }
+
+  function feedbackSelectorCancel() {
+    if (!state.feedback.selecting) return;
+    feedbackSelectorClose(true);
+    const button = $("feedback-capture-page");
+    if (button) button.focus({ preventScroll: true });
+  }
+
+  function feedbackSelectorStart(event) {
+    if (!state.feedback.selecting) return;
+    if (event.button !== 0 || event.isPrimary === false) return;
+    if (event.target instanceof Element && event.target.closest(".feedback-selector-bar")) return;
+    const overlay = $("feedback-selector");
+    if (!overlay) return;
+    feedbackSelectorDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+    const region = feedbackSelectionRect(event.clientX, event.clientY, event.clientX, event.clientY);
+    feedbackSelectorPaint(region);
+    if (typeof overlay.setPointerCapture === "function") {
+      try {
+        overlay.setPointerCapture(event.pointerId);
+      } catch (_) {
+        // Pointer capture is an enhancement; move events still arrive.
+      }
+    }
+    event.preventDefault();
+  }
+
+  function feedbackSelectorMove(event) {
+    if (!feedbackSelectorDrag || event.pointerId !== feedbackSelectorDrag.pointerId) return;
+    feedbackSelectorPaint(feedbackSelectionRect(
+      feedbackSelectorDrag.startX,
+      feedbackSelectorDrag.startY,
+      event.clientX,
+      event.clientY,
+    ));
+    event.preventDefault();
+  }
+
+  function feedbackSelectorEnd(event) {
+    if (!feedbackSelectorDrag || event.pointerId !== feedbackSelectorDrag.pointerId) return;
+    const drag = feedbackSelectorDrag;
+    feedbackSelectorDrag = null;
+    const overlay = $("feedback-selector");
+    if (overlay && typeof overlay.releasePointerCapture === "function") {
+      try {
+        overlay.releasePointerCapture(event.pointerId);
+      } catch (_) {
+        // The pointer may already have been released by the browser.
+      }
+    }
+    const region = feedbackSelectionRect(drag.startX, drag.startY, event.clientX, event.clientY);
+    if (region.width < FEEDBACK_SELECTION_MIN || region.height < FEEDBACK_SELECTION_MIN) {
+      feedbackSelectorPaint(null);
+      return;
+    }
+    // Keep the feedback chrome hidden while the capture runs so the selected
+    // area is exactly what the owner saw under the selection rectangle.
+    feedbackSelectorClose(false);
+    captureFeedbackPage(region);
+  }
+
+  function feedbackSelectorCancelDrag(event) {
+    if (!feedbackSelectorDrag || event.pointerId !== feedbackSelectorDrag.pointerId) return;
+    feedbackSelectorDrag = null;
+    feedbackSelectorPaint(null);
+  }
+
+  function feedbackSelectorWheel(event) {
+    if (!state.feedback.selecting) return;
+    event.preventDefault();
+  }
+
+  function feedbackSelectorKeydown(event) {
+    if (!state.feedback.selecting) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      feedbackSelectorCancel();
+      return;
+    }
+    const scrollKeys = ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "];
+    if (scrollKeys.includes(event.key)) {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target || !target.closest("button")) event.preventDefault();
+    }
+    if (event.key !== "Tab") return;
+    const overlay = $("feedback-selector");
+    if (!overlay) return;
+    const focusable = Array.from(overlay.querySelectorAll("button:not([disabled])"));
+    if (!focusable.length) {
+      event.preventDefault();
+      overlay.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === overlay)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function feedbackSelectorFull() {
+    if (!state.feedback.selecting) return;
+    feedbackSelectorClose(false);
+    captureFeedbackPage(null);
+  }
+
+  async function captureFeedbackPage(region) {
+    if (!state.authenticated || state.feedbackBusy || state.feedback.capturing || state.feedback.selecting) return;
+    const selectedRegion = region && region.width >= FEEDBACK_SELECTION_MIN && region.height >= FEEDBACK_SELECTION_MIN
+      ? {
+        x: feedbackClampNumber(region.x, 0, window.innerWidth, 0),
+        y: feedbackClampNumber(region.y, 0, window.innerHeight, 0),
+        width: feedbackClampNumber(region.width, 1, window.innerWidth, 1),
+        height: feedbackClampNumber(region.height, 1, window.innerHeight, 1),
+      }
+      : null;
     const media = navigator.mediaDevices;
     const panel = $("feedback-view");
     const launcher = $("feedback-launcher");
     const button = $("feedback-capture-page");
-    const context = feedbackBuildContext(true);
+    let context;
+    try {
+      context = feedbackBuildContext(true, selectedRegion);
+    } catch (_) {
+      // A hostile or unusual DOM must not leave the hidden selector chrome
+      // stranded; keep the basic view metadata and continue the capture.
+      context = feedbackBaseContext();
+    }
     let stream = null;
     let video = null;
     let file = null;
@@ -4829,8 +5041,8 @@
     setFeedbackImageError("");
     setBusy(button, "feedback.capturing");
     // Hide the floating feedback UI before capture. The context above is
-    // collected while the page is still visible and excludes this panel and
-    // launcher explicitly.
+    // collected while the page is still visible and excludes this panel,
+    // launcher and selection layer explicitly.
     if (panel) panel.style.visibility = "hidden";
     if (launcher) launcher.style.visibility = "hidden";
     try {
@@ -4890,18 +5102,43 @@
           const naturalWidth = video.videoWidth || 0;
           const naturalHeight = video.videoHeight || 0;
           if (!naturalWidth || !naturalHeight) throw new Error("empty");
+          let sourceX = 0;
+          let sourceY = 0;
+          let sourceWidth = naturalWidth;
+          let sourceHeight = naturalHeight;
+          if (selectedRegion) {
+            // A region only maps cleanly when the shared surface is the browser
+            // tab itself and its frame has the viewport aspect ratio. Window or
+            // monitor shares (and unusual frames) fall through to the DOM
+            // snapshot so the crop cannot silently take the wrong pixels.
+            const track = stream && typeof stream.getVideoTracks === "function" ? stream.getVideoTracks()[0] : null;
+            const settings = track && typeof track.getSettings === "function" ? track.getSettings() : {};
+            const surface = settings && typeof settings.displaySurface === "string" ? settings.displaySurface : "";
+            const viewportWidth = Math.max(1, window.innerWidth);
+            const viewportHeight = Math.max(1, window.innerHeight);
+            const frameRatio = naturalWidth / naturalHeight;
+            const viewportRatio = viewportWidth / viewportHeight;
+            if (surface && surface !== "browser") throw new Error("region_surface");
+            if (Math.abs(frameRatio - viewportRatio) > 0.03) throw new Error("region_mapping");
+            const scaleX = naturalWidth / viewportWidth;
+            const scaleY = naturalHeight / viewportHeight;
+            sourceX = Math.min(naturalWidth - 1, Math.max(0, Math.round(selectedRegion.x * scaleX)));
+            sourceY = Math.min(naturalHeight - 1, Math.max(0, Math.round(selectedRegion.y * scaleY)));
+            sourceWidth = Math.max(1, Math.min(naturalWidth - sourceX, Math.round(selectedRegion.width * scaleX)));
+            sourceHeight = Math.max(1, Math.min(naturalHeight - sourceY, Math.round(selectedRegion.height * scaleY)));
+          }
           // Keep the native frame unless it exceeds the existing 4096px / 8MP
           // client boundary; typical pages are captured one-for-one.
-          const scale = Math.min(1, 4096 / naturalWidth, 4096 / naturalHeight,
-            Math.sqrt(8_000_000 / (naturalWidth * naturalHeight)));
-          const width = Math.max(1, Math.floor(naturalWidth * scale));
-          const height = Math.max(1, Math.floor(naturalHeight * scale));
+          const scale = Math.min(1, 4096 / sourceWidth, 4096 / sourceHeight,
+            Math.sqrt(8_000_000 / (sourceWidth * sourceHeight)));
+          const width = Math.max(1, Math.floor(sourceWidth * scale));
+          const height = Math.max(1, Math.floor(sourceHeight * scale));
           const canvas = document.createElement("canvas");
           canvas.width = width;
           canvas.height = height;
           const drawing = canvas.getContext("2d");
           if (!drawing) throw new Error("canvas");
-          drawing.drawImage(video, 0, 0, width, height);
+          drawing.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
           const blob = await new Promise((resolve, reject) => {
             try {
               canvas.toBlob((value) => (value ? resolve(value) : reject(new Error("empty"))), "image/png");
@@ -4915,8 +5152,9 @@
             file = blob;
           }
         } catch (_) {
-          // A denied/unsupported/failed screen capture falls through to the
-          // permission-free DOM snapshot below.
+          // A denied/unsupported/failed screen capture, or a region that cannot
+          // be mapped to the shared frame, falls through to the permission-free
+          // DOM snapshot below.
           file = null;
         } finally {
           stopFeedbackCaptureMedia(stream, video);
@@ -4924,9 +5162,9 @@
           video = null;
         }
       }
-      if (!file) file = await feedbackSnapshotFile();
+      if (!file) file = await feedbackSnapshotFile(selectedRegion);
       if (!state.authenticated) return;
-      feedbackSelectFile(file, context);
+      feedbackSelectFile(file, context, selectedRegion);
     } catch (error) {
       if (state.authenticated) setFeedbackImageError(feedbackCaptureErrorKey(error));
     } finally {
@@ -4935,6 +5173,9 @@
       if (launcher) launcher.style.visibility = "";
       state.feedback.capturing = false;
       clearBusy(button);
+      // The selector had focus while the panel was hidden. Return it to the
+      // capture control so keyboard users do not land on the document body.
+      if (state.authenticated && state.feedbackOpen && button) button.focus({ preventScroll: true });
     }
   }
 
@@ -5118,6 +5359,7 @@
     feedback.pointerId = null;
     feedback.imageError = "";
     feedback.context = null;
+    feedback.captureRegion = null;
     clearFeedbackCanvas();
     const input = $("feedback-image");
     if (input) input.value = "";
@@ -5149,6 +5391,8 @@
   function resetFeedbackSession() {
     state.feedbackBusy = false;
     state.feedback.capturing = false;
+    feedbackSelectorClose(true);
+    state.feedback.selecting = false;
     state.feedbackNotice = null;
     feedbackWindowClose(false);
     resetFeedbackDraft();
@@ -5257,7 +5501,7 @@
     redrawFeedback();
   }
 
-  function feedbackSelectFile(file, capturedContext) {
+  function feedbackSelectFile(file, capturedContext, capturedRegion) {
     if (!file) return;
     const type = typeof file.type === "string" ? file.type : "";
     if (type !== "image/png" && type !== "image/jpeg") {
@@ -5272,6 +5516,9 @@
     }
     clearFeedbackImage();
     setFeedbackImageError("");
+    state.feedback.captureRegion = capturedRegion
+      ? { width: Math.round(capturedRegion.width), height: Math.round(capturedRegion.height) }
+      : null;
     setFeedbackContext(capturedContext || feedbackBuildContext(false));
     const feedback = state.feedback;
     const generation = ++feedback.loadGeneration;
@@ -5524,7 +5771,7 @@
 
   async function submitFeedback(event) {
     event.preventDefault();
-    if (state.feedbackBusy || state.feedback.capturing) return;
+    if (state.feedbackBusy || state.feedback.capturing || state.feedback.selecting) return;
     const created = $("feedback-created");
     if (created) created.replaceChildren();
     const titleNode = $("feedback-title");
@@ -5659,7 +5906,7 @@
   }
 
   function feedbackPaste(event) {
-    if (!state.authenticated || !state.feedbackOpen) return;
+    if (!state.authenticated || !state.feedbackOpen || state.feedback.selecting) return;
     const items = event.clipboardData && event.clipboardData.items ? Array.from(event.clipboardData.items) : [];
     const image = items.find((item) => item && (item.type === "image/png" || item.type === "image/jpeg"));
     if (!image) return;
@@ -6455,11 +6702,19 @@
   on("feedback-drag-handle", "pointercancel", feedbackDragEnd);
   on("feedback-form", "submit", submitFeedback);
   on("feedback-image", "change", feedbackFileInputChanged);
-  on("feedback-capture-page", "click", captureFeedbackPage);
+  on("feedback-capture-page", "click", feedbackSelectorOpen);
+  on("feedback-selector", "pointerdown", feedbackSelectorStart);
+  on("feedback-selector", "pointermove", feedbackSelectorMove);
+  on("feedback-selector", "pointerup", feedbackSelectorEnd);
+  on("feedback-selector", "pointercancel", feedbackSelectorCancelDrag);
+  on("feedback-selector", "wheel", feedbackSelectorWheel, { passive: false });
+  on("feedback-selector", "keydown", feedbackSelectorKeydown);
+  on("feedback-selector-cancel", "click", feedbackSelectorCancel);
+  on("feedback-selector-full", "click", feedbackSelectorFull);
   on("feedback-choose-image", "click", feedbackChooseImage);
   on("feedback-dropzone", "click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("button, input") : null;
-    if (!target) feedbackChooseImage();
+    if (!target) feedbackSelectorOpen();
   });
   on("feedback-dropzone", "dragover", (event) => {
     event.preventDefault();
@@ -6540,6 +6795,7 @@
   on("weixin-push-test", "click", testWeixinPush);
 
   window.addEventListener("resize", () => {
+    if (state.feedback.selecting) feedbackSelectorCancel();
     feedbackClampWindow();
     syncSettingsDisclosures();
     const limit = runWindowLimit();

@@ -74,8 +74,10 @@ upstream account or inference call works.
 Feedback is private owner data stored under `data/feedback/`; the public image
 never contains context, credentials, or runtime files. The console exposes it as
 a screenshot-first movable floating window opened from a fixed launcher. The
-owner captures the current tab (or pastes/drops/chooses a file), describes what
-happened and what they want, and can close the window without losing the draft.
+owner drags a rectangle around just the part of the current tab that shows the
+problem, or captures the whole view, then describes what happened and what they
+want; pasted/dropped/selected files are also accepted. The window can be closed
+without losing the draft.
 The area, title and acceptance text are derived automatically and remain editable
 under a collapsed “More” section, so the visible form stays small. A submission
 contains:
@@ -87,15 +89,18 @@ contains:
 
 Current-page capture records the view, route, viewport and up to 24 visible
 semantic elements (tags, accessible names, stable selectors, section labels and
-relative rectangles). It never records input values, passwords, raw HTML or
-hidden elements. Uploaded files carry only the basic view/route metadata, not
-invented DOM elements. The context is capped at 24 KiB, stored only in the
-private feedback record, and summarized into the gate/plan prompt; the detail API
-exposes it to the authenticated owner while list summaries expose only a count.
-Screen capture uses the browser display-capture API when the page is a secure
-context; on an HTTP LAN address the same button renders a permission-free local
-DOM snapshot (same-origin CSS and the current viewport) and attaches the same
-metadata. The screenshot still never leaves the private feedback store.
+relative rectangles). A region capture includes only elements intersecting the
+selected rectangle; the summary also names the region size. It never records
+input values, passwords, raw HTML or hidden elements. Uploaded files carry only
+the basic view/route metadata, not invented DOM elements. The context is capped
+at 24 KiB, stored only in the private feedback record, and summarized into the
+gate/plan prompt; the detail API exposes it to the authenticated owner while list
+summaries expose only a count. Screen capture uses the browser display-capture
+API when the page is a secure context and the selected region can be mapped to a
+tab frame; on an HTTP LAN address, or when the browser shares a window/monitor
+instead of the tab, the same selector renders a permission-free local DOM
+snapshot cropped to the chosen region and attaches the same metadata. The
+screenshot still never leaves the private feedback store.
 
 The screenshot is decoded and re-encoded as PNG to strip metadata, bounded by
 dimensions and byte size, and served only through an authenticated route. No
@@ -172,8 +177,9 @@ and attachment policy.
   hard-coded in `index.html` or `app.js`.
 - Built-in report and maintenance actions remain usable and keep their existing
   task semantics.
-- A screenshot can be pasted, dropped, or selected, annotated, and submitted;
-  the stored image is private and authenticated.
+- A screenshot can be dragged as a region (or captured whole), pasted, dropped,
+  selected, annotated, and submitted; the stored image is private and
+  authenticated.
 - Missing or vague feedback is rejected with a fixed reason and no task.
 - Accepted feedback creates a durable plan task and preserves the feedback and
   task association.

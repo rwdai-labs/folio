@@ -51,10 +51,10 @@ context maintenance and read-only reports, owner review snapshots, optional Bark
 and native Weixin channels, and a GitHub storage plugin. The dashboard renders a
 server-driven quick-action catalog rather than a fixed daily task list; built-in
 report and maintenance actions can be extended or shadowed by owner action
-definitions. Feedback is a screenshot-first floating window with automatic page
-context, private screenshot storage and a sufficiency gate that creates a
-plan-only task when accepted; source self-modification and deployment remain
-planned. Assistant and report configuration can be used without a connected
+definitions. Feedback is a screenshot-first floating window with an explicit
+region selector, automatic page context, private screenshot storage and a
+sufficiency gate that creates a plan-only task when accepted; source
+self-modification and deployment remain planned. Assistant and report configuration can be used without a connected
 repository; context-dependent work has separate requirements. Task acceptance,
 execution evidence and run-owned report results remain distinct. See
 [Start using Folio](../README.md#start-using-folio) and

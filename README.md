@@ -37,15 +37,16 @@ volume. This repository contains only generic service code and Web assets.
    attempts and results; creation is not completion.
 3. Use **Assistant** for conversation. Open **Feedback** from the fixed launcher
    to report an improvement request about Folio itself. The screenshot-first
-   floating window can capture the current tab in one click (on an HTTP LAN
-   address it falls back to a local page snapshot), or accept a pasted,
-   dropped or selected PNG/JPEG; it attaches the current view and a bounded set
-   of visible page elements automatically. Annotate with pen, arrow or rectangle
-   tools, describe what happened and what you want, and open **More** only if
-   the derived title, priority or acceptance needs editing. Closing the window
-   keeps the draft. Vague or incomplete requests are rejected with a fixed
-   reason; an accepted request currently creates a bounded planning task, not a
-   source edit or deployment.
+   floating window lets you drag a rectangle around just the part that matters
+   (or capture the whole view); on an HTTP LAN address the region comes from a
+   local page snapshot instead of screen sharing. You can also paste, drop or
+   choose a PNG/JPEG. The capture attaches the current view and a bounded set of
+   visible page elements automatically, limited to the chosen region. Annotate
+   with pen, arrow or rectangle tools, describe what happened and what you want,
+   and open **More** only if the derived title, priority or acceptance needs
+   editing. Closing the window keeps the draft. Vague or incomplete requests are
+   rejected with a fixed reason; an accepted request currently creates a bounded
+   planning task, not a source edit or deployment.
 4. For personal-context answers and organization, authorize GitHub and connect
    the private Markdown repository. Organization also needs the Codex worker
    and its configured model route. Missing optional channels do not block chat

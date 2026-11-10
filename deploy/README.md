@@ -102,10 +102,11 @@ run. This small report is also an inference check that **Test connection** canno
 provide.
 
 Use the fixed **Feedback** launcher for an improvement request about Folio
-itself. The floating window captures the current tab in one click (on an HTTP LAN
-address it falls back to a local page snapshot), or accepts a
-pasted/dropped/selected image, attaches the current view and a bounded set of
-visible page elements, and asks only what happened and what you want; title,
+itself. The floating window lets you drag a rectangle around the part that
+matters (or capture the whole view); on an HTTP LAN address the region comes from
+a local page snapshot instead of screen sharing. You can also paste, drop or
+choose an image. It attaches the current view and a bounded set of visible page
+elements in that region, and asks only what happened and what you want; title,
 priority and acceptance live under More. The screenshot and structured context
 stay in the private data volume under `/data/feedback/`
 unless an owner later adds an explicit mirror. The request is rejected if it is

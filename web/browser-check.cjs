@@ -231,6 +231,7 @@ async function main() {
       // the stream is open, and stop the track after taking its frame.
       await context.addInitScript(() => {
         window.__folioCaptureDenied = false;
+        window.__folioCaptureMismatch = false;
         window.__folioCaptureOptions = null;
         window.__folioCaptureVisibility = null;
         let media = navigator.mediaDevices;
@@ -245,14 +246,16 @@ async function main() {
           window.__folioCaptureVisibility = panel ? getComputedStyle(panel).visibility : 'missing';
           if (window.__folioCaptureDenied) throw new DOMException('denied', 'NotAllowedError');
           const canvas = document.createElement('canvas');
-          canvas.width = 800;
-          canvas.height = 600;
+          canvas.width = window.__folioCaptureMismatch ? 800 : window.innerWidth;
+          canvas.height = window.__folioCaptureMismatch ? 600 : window.innerHeight;
           const drawing = canvas.getContext('2d');
           let tick = 0;
           const draw = () => {
             tick += 1;
+            const width = canvas.width;
+            const height = canvas.height;
             drawing.fillStyle = '#f3efe6';
-            drawing.fillRect(0, 0, 800, 600);
+            drawing.fillRect(0, 0, width, height);
             drawing.fillStyle = '#1d6b57';
             drawing.font = 'bold 44px sans-serif';
             drawing.fillText('Folio synthetic capture', 48, 96);
@@ -260,10 +263,10 @@ async function main() {
             drawing.font = '24px sans-serif';
             drawing.fillText('Current page frame ' + tick, 48, 144);
             drawing.fillStyle = '#e6f0ea';
-            drawing.fillRect(48, 190, 700, 170);
+            drawing.fillRect(48, 190, Math.max(64, width - 96), 170);
             drawing.strokeStyle = '#145242';
             drawing.lineWidth = 2;
-            drawing.strokeRect(48, 190, 700, 170);
+            drawing.strokeRect(48, 190, Math.max(64, width - 96), 170);
             drawing.fillStyle = '#1f261f';
             drawing.font = '20px sans-serif';
             drawing.fillText('Synthetic controls and headings', 72, 238);
@@ -992,6 +995,7 @@ async function main() {
       assert.equal(feedbackButtons.some(text => /element mode|select an element|select element|选择元素|元素模式/i.test(text)), false, 'no separate element-selection mode');
       assert.equal(await page.locator('#feedback-view [data-feedback-element-mode]').count(), 0);
       assert.match(await page.locator('#feedback-capture-page').getAttribute('class'), /primary/);
+      assert.match(await page.locator('#feedback-capture-page').textContent(), language === 'zh' ? /框选区域/ : /Select area/i);
       assert.match(await page.locator('#feedback-choose-image').getAttribute('class'), /ghost/);
       assert.match(await page.locator('#feedback-dropzone .hint').textContent(), language === 'zh' ? /粘贴|拖入/ : /paste|drop/i);
       assert.equal(await page.locator('#feedback-form textarea:visible').count(), 2, 'only two primary textareas are visible');
@@ -1029,17 +1033,69 @@ async function main() {
       assert.ok(Math.abs(panelAfter.x - panelBefore.x) > 20 || Math.abs(panelAfter.y - panelBefore.y) > 20, 'feedback window is draggable');
       assert.equal(await submitVisible(), true, 'submit remains visible after dragging');
       // A denied screen capture falls back to a permission-free DOM snapshot
-      // instead of surfacing an error.
+      // instead of surfacing an error. The owner drags a region first, so the
+      // snapshot is cropped to exactly that area.
+      const capturedRegion = { x: 180, y: 150, width: 640, height: 420 };
+      const selectFeedbackRegion = async (region) => {
+        await page.locator('#feedback-capture-page').click();
+        await visible(page, '#feedback-selector');
+        assert.equal(await page.locator('#feedback-view').isVisible(), false, 'the feedback panel steps aside for region selection');
+        const overlay = await page.locator('#feedback-selector').boundingBox();
+        assert.ok(overlay && overlay.width > 1000 && overlay.height > 800, 'the selection layer covers the viewport');
+        await page.mouse.move(overlay.x + region.x, overlay.y + region.y);
+        await page.mouse.down();
+        await page.mouse.move(overlay.x + region.x + region.width, overlay.y + region.y + region.height, { steps: 6 });
+        assert.match(
+          await page.locator('#feedback-selector-size').textContent(),
+          new RegExp(`${region.width}\\s*×\\s*${region.height}`),
+          'the selector reports the chosen size',
+        );
+        if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-feedback-selection-${language}.png` });
+        await page.mouse.up();
+        await page.waitForFunction(() => document.getElementById('feedback-selector').hidden);
+      };
+      await page.locator('#feedback-capture-page').click();
+      await visible(page, '#feedback-selector');
+      if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-feedback-selector-${language}.png` });
+      assert.match(await page.locator('#feedback-selector-hint').textContent(), language === 'zh' ? /拖动/ : /Drag/i);
+      assert.equal(await page.locator('#feedback-selector-full').isVisible(), true, 'the whole-view option remains available');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#feedback-selector').isVisible(), false, 'Escape cancels region selection');
+      assert.equal(await page.locator('#feedback-view').isVisible(), true, 'cancelling selection restores the feedback panel');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'feedback-capture-page', 'cancel returns focus to capture');
+      // Clicking the dropzone itself (not just its primary button) starts the
+      // same region selection instead of opening the file picker.
+      await page.locator('#feedback-dropzone').click({ position: { x: 8, y: 8 } });
+      await visible(page, '#feedback-selector');
+      await page.keyboard.press('Escape');
+      await visible(page, '#feedback-view');
+      // The whole-view option keeps the previous one-click behaviour for an
+      // owner who really does want the entire viewport.
+      await page.locator('#feedback-capture-page').click();
+      await visible(page, '#feedback-selector');
+      await page.locator('#feedback-selector-full').click();
+      await visible(page, '#feedback-editor');
+      await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
+      assert.match(await page.locator('#feedback-image-state').textContent(), /current-page\.png/);
+      assert.match(await page.locator('#feedback-context-summary').textContent(), language === 'zh' ? /当前视图：/ : /Current view:/);
+      await page.locator('#feedback-remove-image').click();
+      await page.waitForFunction(() => document.getElementById('feedback-editor').hidden);
       const assertSnapshotFallback = async () => {
+        await selectFeedbackRegion(capturedRegion);
         await page.waitForFunction(() => (document.getElementById('feedback-image-state')?.textContent || '').includes('page-snapshot.png'));
         await visible(page, '#feedback-editor');
         await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
         assert.equal(await page.locator('#feedback-image-error').getAttribute('data-error'), 'false', 'a successful snapshot is not shown as an error');
         assert.equal((await page.locator('#feedback-image-error').textContent()).trim(), '', 'the snapshot fallback leaves no capture error');
         assert.match(await page.locator('#feedback-context-summary').textContent(), language === 'zh' ? /已附带 \d+ 个页面元素/ : /Attached \d+ page elements/, 'the snapshot keeps element context');
+        assert.match(
+          await page.locator('#feedback-context-summary').textContent(),
+          new RegExp(`${capturedRegion.width}\\s*×\\s*${capturedRegion.height}`),
+          'the context summary names the captured region',
+        );
         const snapshotRatio = await page.locator('#feedback-canvas').evaluate((canvas) => canvas.width / canvas.height);
-        const viewportRatio = await page.evaluate(() => window.innerWidth / window.innerHeight);
-        assert.ok(Math.abs(snapshotRatio - viewportRatio) < 0.06, `the snapshot crops the viewport, not the full page: ${snapshotRatio} vs ${viewportRatio}`);
+        const regionRatio = capturedRegion.width / capturedRegion.height;
+        assert.ok(Math.abs(snapshotRatio - regionRatio) < 0.08, `the snapshot crops the chosen region: ${snapshotRatio} vs ${regionRatio}`);
         const painted = await page.locator('#feedback-canvas').evaluate((canvas) => {
           const context = canvas.getContext('2d');
           const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -1057,7 +1113,6 @@ async function main() {
         assert.equal(await page.locator('#feedback-view').isVisible(), true);
       };
       await page.evaluate(() => { window.__folioCaptureDenied = true; });
-      await page.locator('#feedback-capture-page').click();
       await assertSnapshotFallback();
       await page.locator('#feedback-remove-image').click();
       await page.waitForFunction(() => document.getElementById('feedback-editor').hidden);
@@ -1065,14 +1120,22 @@ async function main() {
       // HTTP LAN pages have no navigator.mediaDevices at all; the same snapshot
       // path must still attach an image and context.
       await page.evaluate(() => { Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined }); });
-      await page.locator('#feedback-capture-page').click();
       await assertSnapshotFallback();
       await page.locator('#feedback-remove-image').click();
       await page.waitForFunction(() => document.getElementById('feedback-editor').hidden);
       await page.evaluate(() => { Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: window.__folioMediaDevices }); });
-      // Successful capture hides the panel while getDisplayMedia runs, stores
-      // one native-resolution frame, attaches element context and restores it.
-      await page.locator('#feedback-capture-page').click();
+      // A shared window/monitor frame does not match the viewport aspect. The
+      // selector must fall back to the cropped DOM snapshot instead of guessing
+      // which part of that unrelated frame contains the page.
+      await page.evaluate(() => { window.__folioCaptureMismatch = true; });
+      await assertSnapshotFallback();
+      await page.locator('#feedback-remove-image').click();
+      await page.waitForFunction(() => document.getElementById('feedback-editor').hidden);
+      await page.evaluate(() => { window.__folioCaptureMismatch = false; });
+      // Successful capture hides the panel while getDisplayMedia runs, crops the
+      // selected region from the native frame, attaches element context and
+      // restores the panel.
+      await selectFeedbackRegion(capturedRegion);
       await visible(page, '#feedback-editor');
       await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
       await page.waitForFunction(() => {
@@ -1080,12 +1143,14 @@ async function main() {
         return /(?:Attached|已附带)\s*\d+/.test(text);
       });
       assert.match(await page.locator('#feedback-context-summary').textContent(), language === 'zh' ? /已附带 \d+ 个页面元素 \/ 当前视图：/ : /Attached \d+ page elements \/ Current view:/);
+      assert.match(await page.locator('#feedback-context-summary').textContent(), new RegExp(`${capturedRegion.width}\\s*×\\s*${capturedRegion.height}`));
       assert.match(await page.locator('#feedback-image-state').textContent(), /current-page\.png/);
       const captureOptions = await page.evaluate(() => window.__folioCaptureOptions);
       assert.equal(captureOptions.preferCurrentTab, true, 'current tab is preferred');
       assert.equal(captureOptions.audio, false);
       assert.equal(await page.evaluate(() => window.__folioCaptureVisibility), 'hidden', 'feedback panel is hidden during capture');
       assert.equal(await page.locator('#feedback-view').isVisible(), true, 'feedback panel is restored after capture');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'feedback-capture-page', 'capture returns focus to the capture control');
       assert.equal(await page.locator('#feedback-context-details').isVisible(), true);
       await page.locator('#feedback-context-details > summary').click();
       const contextListCount = await page.locator('#feedback-context-list li').count();
@@ -1130,8 +1195,8 @@ async function main() {
       assert.ok(captureRequest.fields.acceptance.length >= 8, 'acceptance is derived when empty');
       assert.ok(captureRequest.image && captureRequest.image.length > 0, 'captured PNG is attached');
       assert.equal(captureRequest.image.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-      assert.equal(captureRequest.image.readUInt32BE(16), 800, 'capture keeps native width');
-      assert.equal(captureRequest.image.readUInt32BE(20), 600, 'capture keeps native height');
+      assert.equal(captureRequest.image.readUInt32BE(16), capturedRegion.width, 'capture crops to the selected region width');
+      assert.equal(captureRequest.image.readUInt32BE(20), capturedRegion.height, 'capture crops to the selected region height');
       assert.ok(captureRequest.context, 'page capture attaches context JSON');
       assert.equal(captureRequest.context.view, 'dashboard');
       assert.match(captureRequest.context.route, /^#/);
@@ -1142,6 +1207,13 @@ async function main() {
       for (const element of captureRequest.context.elements) {
         assert.equal(Object.prototype.hasOwnProperty.call(element, 'value'), false, 'no input values in context');
         assert.ok(element.rect.x >= 0 && element.rect.y >= 0 && element.rect.width >= 0 && element.rect.height >= 0);
+        assert.ok(
+          element.rect.x < capturedRegion.x + capturedRegion.width &&
+          element.rect.x + element.rect.width > capturedRegion.x &&
+          element.rect.y < capturedRegion.y + capturedRegion.height &&
+          element.rect.y + element.rect.height > capturedRegion.y,
+          'context only includes elements intersecting the selected region',
+        );
         assert.equal(String(element.selector || '').includes('feedback-'), false, 'feedback UI is excluded from context');
       }
       assert.match(await page.locator('#feedback-message').textContent(), language === 'zh' ? /已接受/ : /accepted/i);
@@ -1617,6 +1689,21 @@ async function main() {
       assert.ok(feedbackSubmit.height >= 43.5, `feedback submit target ${feedbackSubmit.height}`);
       const submitPadding = await page.locator('.feedback-submit-bar').evaluate(node => parseFloat(getComputedStyle(node).paddingBottom));
       assert.ok(submitPadding >= 9, `feedback submit bar keeps safe-area padding: ${submitPadding}`);
+      // The region selector also works in the phone sheet: the instructions
+      // wrap inside the viewport and its controls remain 44px targets.
+      await page.locator('#feedback-capture-page').click();
+      await visible(page, '#feedback-selector');
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile overflow in region selector');
+      const selectorBar = await page.locator('.feedback-selector-bar').boundingBox();
+      assert.ok(selectorBar.width <= 390 - 20 + 1, `mobile selector bar fits: ${selectorBar.width}`);
+      const selectorCancel = await targetSize('#feedback-selector-cancel');
+      const selectorFull = await targetSize('#feedback-selector-full');
+      assert.ok(selectorCancel.height >= 43.5, `selector cancel target ${selectorCancel.height}`);
+      assert.ok(selectorFull.height >= 43.5, `selector full-view target ${selectorFull.height}`);
+      if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-feedback-selector-mobile-${language}.png` });
+      await page.keyboard.press('Escape');
+      await visible(page, '#feedback-view');
+      assert.equal(await page.locator('#feedback-selector').isVisible(), false, 'mobile Escape cancels selection');
       // A docked phone sheet cannot be dragged out of its dock; desktop drag stays.
       const mobileHandle = await page.locator('#feedback-drag-handle').boundingBox();
       await page.mouse.move(mobileHandle.x + 48, mobileHandle.y + 18);
@@ -1703,7 +1790,7 @@ async function main() {
       assert.equal(await page.locator('#feedback-created').textContent(), '');
       assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, capability readiness, four-item nav, scrolled navigation/deep links, dashboard current card and content-sized actions, settings URL tabs/readiness/mobile panel focus, Activity/Settings tabs with keyboard/hash/back/deep links, run filter groups/selected detail/mobile window, compact review help/recheck, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/layout/suggestions, chat task events/history, report result/retry/follow-up, screenshot-first feedback media capture and HTTP/DOM-snapshot fallback/context/accept/reject/focus/safe-area, board/filter/drawer/actions, errors, both languages, mobile 44px targets/header/bottom nav/launcher/overflow, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, four-item nav, scrolled navigation/deep links, dashboard current card and content-sized actions, settings URL tabs/readiness/mobile panel focus, Activity/Settings tabs with keyboard/hash/back/deep links, run filter groups/selected detail/mobile window, compact review help/recheck, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/layout/suggestions, chat task events/history, report result/retry/follow-up, feedback region selection/cancel/full-view/crop/context and HTTP/DOM-snapshot fallback/accept/reject/focus/safe-area, board/filter/drawer/actions, errors, both languages, mobile 44px targets/header/bottom nav/launcher/overflow, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

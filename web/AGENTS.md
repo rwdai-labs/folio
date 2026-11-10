@@ -63,7 +63,7 @@ Inherit `../AGENTS.md`.
   authenticated view, opened by the fixed launcher and closed without discarding
   the draft. Drag only by the header, keep the window inside the viewport on
   pointer/resize, and keep Escape/Close focus behaviour. The compact panel has a
-  prominent dropzone with the primary `截取当前页面` action plus paste/drop/choose
+  prominent dropzone with the primary `框选区域截取` action plus paste/drop/choose
   file, a preview/annotation canvas, only two visible textareas (`发生了什么？`
   and `你希望怎样？`), and a collapsed `更多` disclosure for title, priority and
   acceptance. The area is derived from the active view, never chosen separately.
@@ -73,36 +73,55 @@ Inherit `../AGENTS.md`.
   task card or the rejection reason without clearing drafted fields (including
   derived values); a server rejection that names a field opens `更多` when
   needed and focuses that field. There is no separate element-selection mode.
+- The primary capture action (and a click elsewhere in the dropzone) opens a
+  full-viewport region selector instead of immediately taking the page. The
+  selector hides the feedback panel and launcher, leaves the page readable, and
+  dims everything outside the rectangle while the owner drags. Show the live
+  `width × height` label and a `截取整个视图` escape hatch for the previous
+  whole-view behavior. Release with a region of at least 24×24 CSS pixels
+  captures it; Escape or Cancel dismisses the selector and restores the panel and
+  capture focus. The selector is a native overlay: use
+  pointer capture, `touch-action: none`, a wheel blocker, translated instructions,
+  44px mobile controls and a bounded Tab focus loop. Do not lock page scroll with
+  `overflow: hidden` because the scrollbar shift would offset the captured crop.
 - Current-page capture uses `navigator.mediaDevices.getDisplayMedia` with
   `preferCurrentTab: true` (the browser may still show a picker), hides the
   feedback panel and launcher, draws one frame at its native resolution (bounded
   to the existing 4096px/8MP image limits), stops all tracks, restores the
-  panel, and feeds a PNG through the existing FileReader/canvas pipeline. Never
-  use `blob:` or object URLs; CSP permits only `self` and `data:`. No external
-  libraries or build step.
+  panel, and feeds a PNG through the existing FileReader/canvas pipeline. A
+  selected region is cropped from that frame only when the shared surface is a
+  browser tab and the frame aspect ratio matches the viewport; window/monitor
+  shares or mismatched frames fall back to the DOM snapshot rather than risk
+  cropping the wrong pixels. Never use `blob:` or object URLs; CSP permits only
+  `self` and `data:`. No external libraries or build step.
 - Screen capture is optional. When `navigator.mediaDevices`/`getDisplayMedia` is
   missing (HTTP LAN pages) or the request is denied/fails, fall back to a
   permission-free DOM snapshot: clone the document, remove scripts, stylesheet
-  links and the feedback UI, inline readable same-origin `cssRules`, render the
-  full page through one `data:image/svg+xml` foreignObject, then crop the current
-  viewport onto a PNG (`page-snapshot.png`). Scale the full render only to stay
-  within 4096px/8MP and keep the same collected context and hide/restore the
-  panel/launcher. If the snapshot also fails, show the translated capture error.
+  links, the feedback window/launcher and the selector, inline readable
+  same-origin `cssRules`, render the full page through one
+  `data:image/svg+xml` foreignObject, then crop the selected region (or the
+  current viewport for whole-view capture) onto a PNG (`page-snapshot.png`).
+  Scale the full render only to stay within 4096px/8MP and keep the same
+  collected context and hide/restore the panel/launcher. If the snapshot also
+  fails, show the translated capture error.
 - Immediately before a page capture, collect at most 24 visible semantic
   elements outside the feedback UI (buttons, links, non-password inputs,
   textareas, selects, headings, cards/sections) with tag, id, role, accessible
   name, clamped visible text, stable selector (`id`, `data-testid`,
   `data-action`, `data-view`, then a bounded CSS path), nearest section/card
-  heading and non-negative viewport-relative rect. Never collect input values,
-  passwords, raw HTML or hidden elements. POST multipart FormData with `title`,
-  `area`, `current`, `expected`, `acceptance`, `priority`, an optional PNG/JPEG
-  `image`, and `context` when an image is present. `context` is a JSON string
-  shaped as `{view,route,theme,language,viewport:{width,height,dpr},elements:[...]}`,
+  heading and non-negative viewport-relative rect. A region capture includes only
+  elements intersecting that region; whole-view capture includes the viewport.
+  Never collect input values, passwords, raw HTML or hidden elements. POST
+  multipart FormData with `title`, `area`, `current`, `expected`, `acceptance`,
+  `priority`, an optional PNG/JPEG `image`, and `context` when an image is
+  present. `context` is a JSON string shaped as
+  `{view,route,theme,language,viewport:{width,height,dpr},elements:[...]}`,
   where `view` is a feedback area, bounded by 24 KiB. Uploaded/pasted files send
   only the base view/route/theme/language/viewport fields with no elements.
-  Show an expandable `已附带 N 个页面元素 / 当前视图：...` evidence summary after
-  capture; it is context only and never becomes a selection UI or drawn boxes.
-  Clear context when the image is removed or replaced and on logout/expiry.
+  Show an expandable `已附带 N 个页面元素 / 当前视图：... / 区域：W × H` evidence
+  summary after a region capture; it is context only and never becomes a
+  selection UI or drawn boxes. Clear context when the image is removed or
+  replaced and on logout/expiry.
 - On submit derive a title from the first context element or the current text
   (at least 4 characters), derive the area from the active view, derive
   acceptance when empty, and default priority to P2. All remain editable under
@@ -266,9 +285,11 @@ close focus and 404 fallback; assistant title, growing composer and prompt
 suggestions; structured task cards and chat, run-ID report results and
 follow-up, screenshot-first
 feedback with no element-selection mode, compact two-field/collapsed-advanced
-layout and sticky submit, draggable header and draft-preserving close, media and
+layout and sticky submit, draggable header and draft-preserving close, region
+selection with live size/cancel/full-view/44px mobile controls, media and
 DOM-snapshot capture fallback (including missing `navigator.mediaDevices`),
-current-page capture with element context, uploaded-file context without elements, image/canvas export, accepted and rejected submissions
+selected-region and whole-view capture with element context, uploaded-file
+context without elements, image/canvas export, accepted and rejected submissions
 with preserved drafts, mobile sheet layout, and session expiry cleanup. The mock
 multipart parser exposes the parsed `context` JSON. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed

@@ -2725,6 +2725,71 @@ textarea {
 .feedback-submit-bar .btn { flex: 0 0 auto; margin-left: auto; }
 .feedback-window #feedback-created:empty { display: none; }
 .feedback-window #feedback-created .chat-task-card { margin: 0; }
+
+/* Region capture is a full-viewport selection layer. The transparent overlay
+   leaves the page readable until a drag starts, then the selection's huge
+   box-shadow dims everything outside the chosen rectangle. */
+.feedback-selector {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.feedback-selector[hidden] { display: none; }
+.feedback-selection {
+  position: absolute;
+  border: 2px solid #ffffff;
+  outline: 1px solid rgba(0, 0, 0, .72);
+  background: rgba(255, 255, 255, .04);
+  box-shadow: 0 0 0 100vmax rgba(9, 15, 18, .46);
+  pointer-events: none;
+}
+.feedback-selection[hidden] { display: none; }
+.feedback-selector-bar {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(760px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: var(--radius-md);
+  background: rgba(17, 25, 23, .94);
+  color: #f7fbf8;
+  box-shadow: var(--shadow-lg);
+  cursor: default;
+  transform: translateX(-50%);
+}
+.feedback-selector-copy { flex: 1 1 auto; min-width: 0; }
+.feedback-selector-copy p { margin: 0; }
+.feedback-selector-copy p:first-child { font-size: .9rem; font-weight: 680; line-height: 1.3; }
+.feedback-selector-copy .hint { margin-top: 3px; color: rgba(247, 251, 248, .74); font-size: .74rem; line-height: 1.35; }
+.feedback-selector-size { flex: 0 0 auto; color: #ffffff; font: 600 .78rem var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.feedback-selector-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.feedback-selector-actions .btn { border-color: rgba(255, 255, 255, .28); background: rgba(255, 255, 255, .09); color: #ffffff; }
+.feedback-selector-actions .btn:hover { border-color: rgba(255, 255, 255, .5); background: rgba(255, 255, 255, .16); color: #ffffff; }
+@media (max-width: 720px) {
+  .feedback-selector-bar {
+    top: 10px;
+    left: 10px;
+    width: calc(100vw - 20px);
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 11px 12px;
+    transform: none;
+  }
+  .feedback-selector-copy { flex: 1 1 100%; }
+  .feedback-selector-size { flex: 1 1 auto; }
+  .feedback-selector-actions { flex: 0 0 auto; }
+  .feedback-selector-actions .btn { min-height: 44px; }
+}
 .feedback-launcher {
   position: fixed;
   right: 22px;

@@ -427,17 +427,17 @@
           <div class="feedback-window-body">
             <form id="feedback-form" class="form feedback-form" novalidate>
               <div class="feedback-scroll">
-                <p class="lede feedback-lede" data-i18n="feedback.lead">Capture this page, then describe what happened. The current view and a small set of visible page elements are attached automatically.</p>
+                <p class="lede feedback-lede" data-i18n="feedback.lead">Select the part of this page that shows the problem, then describe what happened. The current view and visible page elements are attached automatically.</p>
                 <div class="feedback-capture-panel">
                   <div id="feedback-dropzone" class="feedback-dropzone" role="group" aria-label="Add a screenshot" data-i18n-aria-label="feedback.image_add">
                     <input id="feedback-image" type="file" accept="image/png,image/jpeg" hidden>
                     <div class="feedback-dropzone-copy">
-                      <strong data-i18n="feedback.capture_title">Capture this page</strong>
-                      <p class="hint" data-i18n="feedback.capture_hint">Allow the browser to share the current tab. You can also paste, drop, or choose a PNG or JPEG.</p>
+                      <strong data-i18n="feedback.capture_title">Capture an area</strong>
+                      <p class="hint" data-i18n="feedback.capture_hint">Drag to select just the part you mean. You can also capture the whole view, paste, drop, or choose a PNG or JPEG.</p>
                     </div>
                     <div class="feedback-dropzone-actions">
                       <button id="feedback-capture-page" class="btn primary" type="button">
-                        <span class="btn-label" data-i18n="feedback.capture">Capture current page</span>
+                        <span class="btn-label" data-i18n="feedback.capture">Select area to capture</span>
                       </button>
                       <button id="feedback-choose-image" class="btn ghost small" type="button" data-i18n="feedback.choose_image">Choose file</button>
                     </div>
@@ -507,6 +507,20 @@
             </form>
           </div>
         </aside>
+        <div id="feedback-selector" class="feedback-selector" role="dialog" aria-modal="true" aria-labelledby="feedback-selector-hint" tabindex="-1" hidden>
+          <div class="feedback-selector-bar">
+            <div class="feedback-selector-copy">
+              <p id="feedback-selector-hint" data-i18n="feedback.select_hint">Drag over the page to select the area to capture</p>
+              <p class="hint" data-i18n="feedback.select_detail">Release to capture. Esc cancels.</p>
+            </div>
+            <span id="feedback-selector-size" class="feedback-selector-size" aria-live="polite"></span>
+            <div class="feedback-selector-actions">
+              <button id="feedback-selector-full" class="btn ghost small" type="button" data-i18n="feedback.capture_full">Capture whole view</button>
+              <button id="feedback-selector-cancel" class="btn ghost small" type="button" data-i18n="feedback.select_cancel">Cancel</button>
+            </div>
+          </div>
+          <div id="feedback-selection" class="feedback-selection" hidden></div>
+        </div>
         <button id="feedback-launcher" class="feedback-launcher" type="button" aria-controls="feedback-view" aria-expanded="false" aria-label="Feedback" data-i18n-aria-label="feedback.open">
           <span class="feedback-launcher-icon" aria-hidden="true">✎</span>
           <span data-i18n="feedback.open">Feedback</span>
