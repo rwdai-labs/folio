@@ -1004,11 +1004,37 @@
     if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(apply);
   }
 
+  function scrollToElementWithHeaderOffset(node, extra = 12) {
+    if (!node) return;
+    const header = document.querySelector(".site-header");
+    let offset = extra;
+    if (header) {
+      const style = window.getComputedStyle(header);
+      if (style.position === "sticky" || style.position === "fixed") {
+        offset = header.getBoundingClientRect().height + extra;
+      }
+    }
+    const root = document.documentElement;
+    const previous = root ? root.style.scrollBehavior : "";
+    try {
+      if (root) root.style.scrollBehavior = "auto";
+      const top = Math.max(0, window.scrollY + node.getBoundingClientRect().top - offset);
+      window.scrollTo({ top, left: 0, behavior: "auto" });
+    } catch (_) {
+      // Scrolling is an enhancement; focus still lands on the target.
+    } finally {
+      if (root) {
+        if (previous) root.style.scrollBehavior = previous;
+        else root.style.removeProperty("scroll-behavior");
+      }
+    }
+  }
+
   function focusSettingsPanel(tab) {
     const panel = $(`settings-panel-${tab}`);
     if (!panel) return;
     try {
-      panel.scrollIntoView({ block: "start", behavior: "instant" });
+      if (settingsMobile()) panel.scrollIntoView({ block: "start", behavior: "instant" });
       panel.focus({ preventScroll: true });
     } catch (_) {
       // Focus/scroll is an enhancement; the tab switch already happened.
@@ -2269,9 +2295,12 @@
 
   function quotaAllowanceText(source) {
     if (!source || !Array.isArray(source.cards) || !source.cards.length) return "—";
+    const cards = source.cards.filter((card) => card && typeof card === "object");
+    if (!cards.length) return "—";
+    const stale = source.stale === true || Boolean(source.error) || cards.some((card) => card.stale || card.error);
+    const mark = (value) => (stale ? t("quota.allowance_stale", { value }) : value);
     const values = [];
-    source.cards.forEach((card) => {
-      if (!card || typeof card !== "object") return;
+    cards.forEach((card) => {
       const windows = Array.isArray(card.windows) ? card.windows : [];
       windows.forEach((reading) => {
         if (!reading || typeof reading !== "object") return;
@@ -2284,10 +2313,9 @@
         if (remaining !== null && remaining >= 0 && remaining <= 100) values.push(remaining);
       });
     });
-    if (values.length) return t("quota.allowance_left", { percent: quotaNumberText(Math.min(...values)) });
-    const count = source.cards.filter((card) => card && typeof card === "object").length;
-    if (!count) return "—";
-    return count === 1 ? t("quota.allowance_source") : t("quota.allowance_sources", { count });
+    if (values.length) return mark(t("quota.allowance_left", { percent: quotaNumberText(Math.min(...values)) }));
+    const count = cards.length;
+    return mark(count === 1 ? t("quota.allowance_source") : t("quota.allowance_sources", { count }));
   }
 
   function renderQuotas(data) {
@@ -2688,6 +2716,9 @@
       setMessage("weixin", errorKey(error, "weixin.failed"), { error: true });
     } finally {
       clearBusy(button);
+      // clearBusy applies static i18n bindings; re-render the dynamic action
+      // label so it always matches the settled running/stopped state.
+      renderWeixin(state.weixin);
     }
   }
 
@@ -5838,7 +5869,11 @@
       item.type = "button";
       item.className = "run-history-item";
       item.dataset.runId = run.run_id;
-      if (state.selectedRunId === run.run_id) item.dataset.selected = "true";
+      const isSelected = state.selectedRunId === run.run_id;
+      if (isSelected) item.dataset.selected = "true";
+      item.setAttribute("aria-pressed", isSelected ? "true" : "false");
+      if (isSelected) item.setAttribute("aria-current", "true");
+      else item.removeAttribute("aria-current");
 
       const head = document.createElement("span");
       head.className = "run-history-head";
@@ -5867,6 +5902,14 @@
 
       list.appendChild(item);
     });
+  }
+
+  function focusRunHeading() {
+    const heading = $("latest-run-heading");
+    if (!heading) return;
+    heading.setAttribute("tabindex", "-1");
+    scrollToElementWithHeaderOffset(heading, 14);
+    try { heading.focus({ preventScroll: true }); } catch (_) {}
   }
 
   function renderRunHeading(run, selected) {
@@ -5987,6 +6030,9 @@
     if (state.selectedRun && state.selectedRun.run_id !== runID) state.selectedRun = null;
     state.selectedRunId = runID;
     renderAutomationView();
+    // The row can be well below the detail; bring its heading and Back action
+    // into view instead of leaving the owner looking at the old scroll position.
+    focusRunHeading();
   }
 
   /* ---------------------------------------------------------------- timers */

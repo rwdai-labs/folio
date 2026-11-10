@@ -54,7 +54,7 @@ const quotaSnapshot = (mode = 'percent') => {
   const window = mode === 'sources'
     ? { name: 'Weekly', used: null, remaining: null, resets_at: '', display: 'Read only', unlimited: false, text: true, amount: 0, limit: 0, unit: '', balance: null }
     : { name: 'Weekly', used: 42, remaining: 58, resets_at: new Date(now + 86400000).toISOString(), display: '', unlimited: false, text: false, amount: 0, limit: 0, unit: '', balance: null };
-  return {
+  const snapshot = {
     configured: true, source: 'magpie', fetched_at: new Date(now).toISOString(),
     stale: false, error: '', retry_after_seconds: 0,
     cards: [{
@@ -64,6 +64,11 @@ const quotaSnapshot = (mode = 'percent') => {
       balance: '$12.50', read_at: new Date(now).toISOString(), error: '', stale: false,
     }],
   };
+  if (mode === 'stale') {
+    snapshot.stale = true;
+    snapshot.cards[0].stale = true;
+  }
+  return snapshot;
 };
 // A 1x1 PNG: the console only accepts a server-rendered data URL here.
 const syntheticQR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -489,6 +494,7 @@ async function main() {
       assert.equal(await page.locator('#settings-advanced-card').isVisible(), false, 'Advanced actions live only in the Advanced tab');
       assert.equal(await page.locator('#settings-readiness').evaluate(node => node.open), true, 'desktop keeps the full readiness summary open');
       assert.equal(await page.locator('#setup-steps-details').evaluate(node => node.open), true, 'desktop keeps the full setup steps open');
+      assert.equal((await page.locator('#setup-steps-details .setup-steps a[href="#channels-section"] span').first().textContent()).trim(), language === 'zh' ? '3 · 渠道' : '3 · Channels', 'setup step 3 names the Channels tab');
       await openSettings('advanced');
       await visible(page, '#settings-advanced-card');
       assert.equal(await page.locator('#settings-advanced-heading').textContent(), language === 'zh' ? '高级' : 'Advanced');
@@ -589,6 +595,7 @@ async function main() {
       await openSettings('advanced');
       await visible(page, '#agent-settings');
       assert.equal(await page.locator('#advanced-settings').evaluate(node => node.open), true, 'main agent runtime is surfaced expanded');
+      assert.equal((await page.locator('label[for="agent-kind"]').textContent()).trim(), language === 'zh' ? '运行方式' : 'Runtime', 'agent runtime field label is language-correct');
       assert.equal(await page.locator('#agent-badge').getAttribute('data-state'), 'disabled');
       await page.locator('#agent-kind').selectOption('openai');
       await page.locator('#agent-provider').selectOption('deepseek');
@@ -617,6 +624,7 @@ async function main() {
       await page.locator('#weixin-confirm-button').click();
       await visible(page, '#weixin-toggle');
       await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'enabled');
+      assert.equal((await page.locator('#weixin-toggle .btn-label').textContent()).trim(), language === 'zh' ? '停用通道' : 'Disable channel', 'the settled action matches the running state');
       assert.equal(await page.locator('#weixin-qr-wrap').isVisible(), false);
       // A failed answer must reach the page as translated copy, not a raw class.
       await visible(page, '#weixin-health');
@@ -625,8 +633,11 @@ async function main() {
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-weixin-${language}.png`, fullPage: true });
       await page.locator('#weixin-toggle').click();
       await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'disabled');
+      assert.equal((await page.locator('#weixin-toggle .btn-label').textContent()).trim(), language === 'zh' ? '启用通道' : 'Enable channel', 'the settled action matches the stopped state');
+      assert.equal(await page.locator('#weixin-toggle').getAttribute('aria-busy'), null);
       await page.locator('#weixin-toggle').click();
       await page.waitForFunction(() => document.getElementById('weixin-badge').dataset.state === 'enabled');
+      assert.equal((await page.locator('#weixin-toggle .btn-label').textContent()).trim(), language === 'zh' ? '停用通道' : 'Disable channel');
       assert.equal(await page.locator('#setup-finish').isVisible(), false, 'the daily-use card stays in Connections');
       await openSettings('connections');
       await page.locator('#setup-finish').click();
@@ -647,9 +658,14 @@ async function main() {
       quotaMode = 'empty';
       await page.locator('#quotas-refresh').click();
       await page.waitForFunction(() => document.getElementById('work-status-allowance').textContent === '—');
+      quotaMode = 'stale';
+      await page.locator('#quotas-refresh').click();
+      await page.waitForFunction((pattern) => new RegExp(pattern).test(document.getElementById('work-status-allowance')?.textContent || ''), language === 'zh' ? '旧读数' : 'stale');
+      assert.match(await page.locator('#work-status-allowance').textContent(), language === 'zh' ? /剩余 58%.*旧读数/ : /58% left.*stale/, 'a stale reading is marked in the compact allowance');
       quotaMode = 'percent';
       await page.locator('#quotas-refresh').click();
-      await allowanceText(language === 'zh' ? /剩余 58%/ : /58% left/);
+      await page.waitForFunction((expected) => document.getElementById('work-status-allowance').textContent === expected, language === 'zh' ? '剩余 58%' : '58% left');
+      assert.equal(await page.locator('#work-status-allowance').textContent(), language === 'zh' ? '剩余 58%' : '58% left', 'the fresh reading clears the stale marker');
       const allowanceBox = await page.locator('#work-status-allowance').boundingBox();
       assert.ok(allowanceBox && allowanceBox.width > 0);
       assert.equal(await page.locator('#repository-section').isVisible(), false);
@@ -703,6 +719,17 @@ async function main() {
       await settingsTab('connections').click();
       await page.waitForFunction(() => location.hash === '#settings');
       assert.equal(await page.locator('#setup-finish').isVisible(), true, 'the daily-use card appears in Connections');
+      // Desktop tab activation does not scroll the tab strip under the header.
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await settingsTab('notifications').click();
+      await settleNavigation();
+      const desktopTabs = await page.evaluate(() => {
+        const tabs = document.getElementById('settings-tabs').getBoundingClientRect();
+        const header = document.querySelector('.site-header').getBoundingClientRect();
+        return { top: tabs.top, bottom: tabs.bottom, headerBottom: header.bottom, innerHeight };
+      });
+      assert.ok(desktopTabs.top >= desktopTabs.headerBottom - 1 && desktopTabs.bottom <= desktopTabs.innerHeight, 'desktop settings tabs stay visible after activation');
+      await settingsTab('connections').click();
       // Settings tabs share the roving keyboard behaviour.
       await settingsTab('connections').focus();
       await page.keyboard.press('ArrowRight');
@@ -913,14 +940,19 @@ async function main() {
       // the composer at the bottom instead of leaving a large empty block.
       const chatCardBox = await page.locator('#chat-view > .card').boundingBox();
       const chatLogBox = await page.locator('#chat-log').boundingBox();
+      const chatEmptyBox = await page.locator('#chat-empty').boundingBox();
       const chatFormBox = await page.locator('#chat-form').boundingBox();
       assert.ok(chatCardBox && chatCardBox.height > 500, `desktop assistant card uses available height: ${chatCardBox && chatCardBox.height}`);
-      assert.ok(chatLogBox && chatLogBox.height > 200, `desktop chat log flexes: ${chatLogBox && chatLogBox.height}`);
+      assert.ok(chatLogBox && chatLogBox.height < 12, `the empty log collapses: ${chatLogBox && chatLogBox.height}`);
+      assert.ok(chatEmptyBox && chatEmptyBox.height > 200, `the empty state uses the free space: ${chatEmptyBox && chatEmptyBox.height}`);
+      assert.ok(chatEmptyBox.y > chatCardBox.y + 20 && chatEmptyBox.y + chatEmptyBox.height < chatFormBox.y + 1, 'the empty state is centered above the anchored composer');
       assert.ok(chatFormBox && chatFormBox.y + chatFormBox.height > chatCardBox.y + chatCardBox.height - 40, 'the composer is anchored at the card bottom');
       await page.locator('#chat-input').fill('Create a synthetic report task');
       await page.locator('#chat-send').click();
       await visible(page, '#chat-log .chat-task-card');
       assert.equal(await page.locator('#chat-empty').isVisible(), false, 'the empty state hides after conversation content');
+      const chatLogAfter = await page.locator('#chat-log').boundingBox();
+      assert.ok(chatLogAfter && chatLogAfter.height > 200, `the chat log flexes after content: ${chatLogAfter && chatLogAfter.height}`);
       assert.equal(await page.locator('#chat-log img').count(), 0);
       await page.locator('[data-view="dashboard"]').click();
       await page.locator('[data-view="chat"]').click();
@@ -1311,13 +1343,31 @@ async function main() {
       assert.equal(await page.locator('#runs-show-more').isVisible(), false);
       // The detail heading names the selected historical run and preserves it.
       assert.equal((await page.locator('#latest-run-heading').textContent()).trim(), language === 'zh' ? '最近一次运行' : 'Latest run');
-      const selectedHistory = page.locator('#runs-list .run-history-item').nth(1);
+      const selectedHistory = page.locator('#runs-list .run-history-item').nth(18);
       const selectedSummary = (await selectedHistory.locator('.run-history-summary').textContent()).trim();
+      await selectedHistory.scrollIntoViewIfNeeded();
+      assert.ok((await page.evaluate(() => window.scrollY)) > 500, 'the selected row is below the fold before activation');
       await selectedHistory.click();
       await page.waitForFunction((summary) => (document.getElementById('latest-run')?.textContent || '').includes(summary), selectedSummary);
       await page.waitForFunction(() => /Selected run|已选运行/.test(document.getElementById('latest-run-heading')?.textContent || ''));
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'latest-run-heading', 'selecting a row focuses its detail heading');
+      const selectedGeometry = await page.evaluate(() => {
+        const header = document.querySelector('.site-header');
+        const heading = document.getElementById('latest-run-heading');
+        const back = document.getElementById('runs-back-latest');
+        const headerRect = header.getBoundingClientRect();
+        const headingRect = heading.getBoundingClientRect();
+        const backRect = back.getBoundingClientRect();
+        return { headerBottom: headerRect.bottom, headingTop: headingRect.top, headingBottom: headingRect.bottom, backTop: backRect.top, backBottom: backRect.bottom, innerHeight };
+      });
+      assert.ok(selectedGeometry.headingTop >= selectedGeometry.headerBottom - 1, `selected heading clears the sticky header: ${selectedGeometry.headingTop} vs ${selectedGeometry.headerBottom}`);
+      assert.ok(selectedGeometry.headingTop < selectedGeometry.innerHeight && selectedGeometry.headingBottom > 0, 'selected heading is in view');
+      assert.ok(selectedGeometry.backTop >= selectedGeometry.headerBottom - 1 && selectedGeometry.backBottom <= selectedGeometry.innerHeight, 'Back to latest stays in view');
       assert.equal(await page.locator('#runs-back-latest').isVisible(), true, 'Back to latest appears for a selected historical run');
       assert.equal(await page.locator('#runs-list .run-history-item[data-selected="true"]').count(), 1, 'selected run stays marked in history');
+      assert.equal(await page.locator('#runs-list .run-history-item[aria-pressed="true"]').count(), 1, 'the selected run is exposed as pressed');
+      assert.equal(await page.locator('#runs-list .run-history-item[aria-pressed="false"]').count(), 24, 'other runs are explicitly not pressed');
+      assert.equal(await page.locator('#runs-list .run-history-item[aria-current="true"]').count(), 1, 'the selected run is exposed as current');
       await page.locator('#automation-refresh').click();
       await page.waitForFunction(() => !document.getElementById('automation-refresh').disabled);
       assert.match(await page.locator('#latest-run-heading').textContent(), /Selected run|已选运行/, 'refresh preserves the selected run');
@@ -1483,6 +1533,12 @@ async function main() {
             await settleNavigation();
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile overflow in settings ${tab}`);
             assert.equal(await page.evaluate(() => document.activeElement.id), `settings-panel-${tab}`, `tab change focuses the ${tab} panel`);
+            const mobileTabs = await page.evaluate(() => {
+              const tabs = document.getElementById('settings-tabs').getBoundingClientRect();
+              const header = document.querySelector('.site-header').getBoundingClientRect();
+              return { top: tabs.top, bottom: tabs.bottom, headerBottom: header.bottom, innerHeight };
+            });
+            assert.ok(mobileTabs.top >= mobileTabs.headerBottom - 1 && mobileTabs.bottom <= mobileTabs.innerHeight, `settings tabs stay visible after activating ${tab}`);
             if (tab !== 'connections') {
               const panelTop = await page.locator(`#settings-panel-${tab}`).evaluate(node => node.getBoundingClientRect().top);
               assert.ok(panelTop >= 0 && panelTop < 200, `tab change scrolls the ${tab} panel into view: ${panelTop}`);

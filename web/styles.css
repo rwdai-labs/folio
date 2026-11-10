@@ -3134,3 +3134,24 @@ textarea {
   #logout-button { min-height: 44px; }
   .feedback-close { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
 }
+
+/* Empty assistant: collapse the empty log and center the empty card while the
+   composer stays anchored at the bottom of the viewport-sized card. */
+@media (min-width: 901px) {
+  #chat-view .chat-log:empty { flex: 0 0 auto; min-height: 0; max-height: none; }
+  #chat-view .chat-empty:not([hidden]) { flex: 1 1 auto; align-content: center; margin-top: 0; }
+}
+
+/* Phone settings keep the tab strip visible while the active panel scrolls.
+   Desktop tab activation only moves focus, so the strip never goes under the
+   sticky header. */
+@media (max-width: 720px) {
+  #settings-tabs {
+    position: sticky;
+    top: 56px;
+    z-index: 6;
+    background: var(--surface-2);
+    box-shadow: 0 10px 18px -18px rgba(35, 40, 32, .55);
+  }
+  .settings-panel { scroll-margin-top: 116px; }
+}

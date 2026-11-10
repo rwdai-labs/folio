@@ -122,11 +122,14 @@ Inherit `../AGENTS.md`.
   composer starts at two rows, grows to about eight rows/160px and keeps Send
   inline; the empty state offers three translated prompt chips that fill and
   focus the composer without sending, and it hides once the conversation has
-  content. Settings is grouped into Connections, Channels, Triggers and
-  Advanced tabs; show only the active group's cards, and make section deep links
-  select and focus their tab. The readiness summary and setup steps are open
+  content. On desktop an empty log collapses and the empty state centers above
+  the anchored composer. Settings is grouped into Connections, Channels, Triggers
+  and Advanced tabs; show only the active group's cards, and make section deep
+  links select and focus their tab. The readiness summary and setup steps are open
   disclosures on desktop; on phones they collapse and the setup checklist lives
-  inside Connections, with a tab change scrolling and focusing the active panel.
+  inside Connections. Only phones auto-scroll the active panel (with the tab strip
+  sticky below the header); desktop activation moves focus without scrolling the
+  strip under the header.
   The Advanced tab surfaces the main-agent runtime expanded (not under a legacy
   label) and keeps the raw action registry as a separate link. The runtime form
   supports OpenAI-compatible or command mode, provider preset,
@@ -145,7 +148,8 @@ Inherit `../AGENTS.md`.
   compact status bar (tokens, estimated cost, subscription allowance and
   selectable 7/30/90-day window) above detailed usage and quota readings. The
   allowance value is the tightest remaining percentage when a numeric reading
-  exists, otherwise a labelled source count, and `—` when unknown.
+  exists, otherwise a labelled source count, and `—` when unknown. Stale or
+  errored readings keep the value but append a translated stale marker.
   Activity Tasks groups queued/running records as current work, failed records as
   Needs attention, and done/canceled records as recently finished, with a
   separately labelled human-review snapshot in Needs attention.
@@ -158,7 +162,9 @@ Inherit `../AGENTS.md`.
   The Runs filter uses real groups (All, Report ready, Pushed, No changes,
   Failed / skipped) with counts that match the badges. A selected historical run
   is headed Selected run with its time and a Back to latest action, renders even
-  when no latest run exists, and survives refresh. History shows 20 rows on
+  when no latest run exists, and survives refresh. Selecting a row scrolls and
+  focuses that heading below the sticky header, and the row exposes its selected
+  state with `aria-pressed`/`aria-current`. History shows 20 rows on
   desktop and 8 on phones with same-size Show more windows and a sticky filter.
   The Tasks count reads `N open`; Runs and Review counts carry their own totals
   and accessible labels.
