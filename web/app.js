@@ -76,6 +76,7 @@
     modelActive: -1,
     modelCatalogSignature: "",
     selectedRunId: "",
+    selectedRunLoading: "",
     runStatusFilter: "all",
     runWindow: 20,
     lastState: null,
@@ -135,6 +136,7 @@
   };
 
   let busyButtons = [];
+  let runWindowMode = 20;
 
   /* ------------------------------------------------------------- transport */
 
@@ -344,6 +346,8 @@
     if (!pill) return;
     pill.dataset.state = online ? "online" : "offline";
     $("connection-label").textContent = t(online ? "status.online" : "status.offline");
+    const short = $("connection-label-short");
+    if (short) short.textContent = t(online ? "status.online_short" : "status.offline_short");
     pill.setAttribute("aria-label", t(online ? "status.online" : "status.offline"));
   }
 
@@ -939,6 +943,78 @@
     return tab === "runs" ? "#runs" : tab === "review" ? "#review" : "#activity";
   }
 
+  // Settings tabs are URL-addressable like Activity. Connections stays the
+  // canonical #settings route; the other tabs get a stable hash so a reload or
+  // Browser Back returns to the same group instead of the first tab.
+  const settingsHashForTab = {
+    connections: "#settings",
+    notifications: "#settings-notifications",
+    triggers: "#settings-triggers",
+    advanced: "#settings-advanced",
+  };
+  const settingsTabForHash = {
+    settings: "connections",
+    "settings-notifications": "notifications",
+    "settings-triggers": "triggers",
+    "settings-advanced": "advanced",
+  };
+
+  function settingsHash(tab) {
+    return settingsHashForTab[tab] || "#settings";
+  }
+
+  function runWindowLimit() {
+    return window.matchMedia && window.matchMedia("(max-width: 720px)").matches ? 8 : 20;
+  }
+
+  function settingsMobile() {
+    return Boolean(window.matchMedia && window.matchMedia("(max-width: 720px)").matches);
+  }
+
+  function syncSettingsDisclosures() {
+    // On phones the onboarding preamble must not push the active tab below the
+    // fold. Keep the summary visible and collapse the full steps until asked.
+    const mobile = settingsMobile();
+    const readiness = $("settings-readiness");
+    if (readiness) readiness.open = !mobile;
+    const steps = $("setup-steps-details");
+    if (steps) steps.open = !mobile;
+  }
+
+  function resetViewScroll() {
+    const root = document.documentElement;
+    const apply = () => {
+      // The page opts into smooth scrolling for anchors; an explicit view
+      // switch must land at the top immediately, not animate from the old page.
+      const previous = root ? root.style.scrollBehavior : "";
+      try {
+        if (root) root.style.scrollBehavior = "auto";
+        try { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); } catch (_) { window.scrollTo(0, 0); }
+        if (root) root.scrollTop = 0;
+        if (document.body) document.body.scrollTop = 0;
+      } finally {
+        if (root) {
+          if (previous) root.style.scrollBehavior = previous;
+          else root.style.removeProperty("scroll-behavior");
+        }
+      }
+    };
+    apply();
+    // Hiding a long view can clamp/restore scroll on the next layout pass.
+    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(apply);
+  }
+
+  function focusSettingsPanel(tab) {
+    const panel = $(`settings-panel-${tab}`);
+    if (!panel) return;
+    try {
+      panel.scrollIntoView({ block: "start", behavior: "instant" });
+      panel.focus({ preventScroll: true });
+    } catch (_) {
+      // Focus/scroll is an enhancement; the tab switch already happened.
+    }
+  }
+
   function setActivityTab(tab, options = {}) {
     if (!activityTabs.includes(tab)) tab = "tasks";
     state.activityTab = tab;
@@ -951,6 +1027,7 @@
       }
       if (panel) panel.hidden = name !== tab;
     });
+    if (tab === "runs" && options.resetWindow !== false) { state.runWindow = runWindowLimit(); runWindowMode = state.runWindow; }
     if (options.updateHash) {
       try { window.history.replaceState(null, "", activityHash(tab)); } catch (_) {}
     }
@@ -980,10 +1057,14 @@
       }
       if (panel) panel.hidden = name !== tab;
     });
+    if (options.updateHash) {
+      try { window.history.replaceState(null, "", settingsHash(tab)); } catch (_) {}
+    }
     if (options.openAdvancedDetails) {
       const details = $("advanced-settings");
       if (details) details.open = true;
     }
+    if (options.focusPanel) focusSettingsPanel(tab);
   }
 
   function focusSection(section) {
@@ -1007,9 +1088,20 @@
     const reviewRun = state.automation && state.automation.review_run;
     const findings = Array.isArray(reviewRun && reviewRun.needs_review) ? reviewRun.needs_review : [];
     const tasksReady = Boolean(state.tasks || state.automation);
-    $("activity-count-tasks").textContent = tasksReady ? String(pending) : "";
+    const tasksLabel = tasksReady ? t("activity.open_count", { count: pending }) : "";
+    $("activity-count-tasks").textContent = tasksLabel;
     $("activity-count-runs").textContent = state.automation ? String(runs.length) : "";
     $("activity-count-review").textContent = reviewRun ? String(findings.length) : "";
+    const describe = (id, key, count) => {
+      const button = $(id);
+      if (!button) return;
+      button.setAttribute("aria-label", t(key, { count }));
+    };
+    describe("activity-tab-tasks", "activity.tasks_aria", pending);
+    describe("activity-tab-runs", "activity.runs_aria", runs.length);
+    describe("activity-tab-review", "activity.review_aria", findings.length);
+    const badge = $("tasks-count");
+    if (badge) badge.textContent = t("activity.open_count", { count: pending });
   }
 
   function capability(name) {
@@ -1046,16 +1138,24 @@
     if (!state.authenticated) return;
     if ($("task-detail").open) $("task-detail").close();
     const fragment = window.location.hash.slice(1);
+    const previousView = state.view;
     let target = "";
     let activityTab = "";
     let settingsTab = "";
     if (views.includes(fragment)) {
       target = fragment;
       if (fragment === "activity") activityTab = "tasks";
-      if (fragment === "settings") settingsTab = "connections";
+      if (fragment === "settings") {
+        // Returning from the standalone action registry keeps the Advanced tab;
+        // a fresh visit still starts at Connections.
+        settingsTab = previousView === "actions" && state.settingsTab === "advanced" ? "advanced" : "connections";
+      }
     } else if (fragment === "runs" || fragment === "review" || fragment === "activity") {
       target = "activity";
       activityTab = fragment === "runs" ? "runs" : fragment === "review" ? "review" : "tasks";
+    } else if (Object.prototype.hasOwnProperty.call(settingsTabForHash, fragment)) {
+      target = "settings";
+      settingsTab = settingsTabForHash[fragment];
     } else if (Object.prototype.hasOwnProperty.call(sectionViews, fragment)) {
       target = sectionViews[fragment];
       if (target === "activity") activityTab = activityTabForSection[fragment] || "tasks";
@@ -1065,6 +1165,7 @@
     views.forEach((view) => { const node = $(`${view}-view`); if (node) node.hidden = view !== state.view; });
     if (state.view === "activity") setActivityTab(activityTab || "tasks", { refresh: state.viewInitialized });
     if (state.view === "settings") {
+      syncSettingsDisclosures();
       setSettingsTab(settingsTab || state.settingsTab || "connections", {
         openAdvancedDetails: fragment === "agent-settings" || fragment === "advanced-settings",
       });
@@ -1078,15 +1179,23 @@
     }
     if (state.view === "chat") loadChat();
     if (state.view === "actions") loadActions();
+    // Settings stays visible as the owning destination while the standalone
+    // action registry is open; it is reached only from Advanced.
+    const activeNavView = state.view === "actions" ? "settings" : state.view;
     document.querySelectorAll("[data-view]").forEach((link) => {
-      if (link.dataset.view === state.view) link.setAttribute("aria-current", "page");
+      if (link.dataset.view === activeNavView) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     });
-    if (focus) {
-      const section = Object.prototype.hasOwnProperty.call(sectionViews, fragment) ? $(fragment) : null;
-      if (section && focusSection(section)) {
-        // Deep links open the destination card and place focus on its heading.
-      } else if (state.view === "activity") {
+    // A section deep link should land on its card; every ordinary view switch
+    // starts at the top so a long previous page cannot leave #actions mid-form.
+    const deepSection = Object.prototype.hasOwnProperty.call(sectionViews, fragment) ? $(fragment) : null;
+    if (deepSection) {
+      focusSection(deepSection);
+    } else {
+      resetViewScroll();
+    }
+    if (focus && !deepSection) {
+      if (state.view === "activity") {
         $("activity-heading").focus({ preventScroll: true });
       } else if (state.view === "settings") {
         $("settings-heading").focus({ preventScroll: true });
@@ -2158,11 +2267,34 @@
     return { text: parts.join(" · "), state: stale ? "stale" : "" };
   }
 
+  function quotaAllowanceText(source) {
+    if (!source || !Array.isArray(source.cards) || !source.cards.length) return "—";
+    const values = [];
+    source.cards.forEach((card) => {
+      if (!card || typeof card !== "object") return;
+      const windows = Array.isArray(card.windows) ? card.windows : [];
+      windows.forEach((reading) => {
+        if (!reading || typeof reading !== "object") return;
+        if (reading.unlimited === true || reading.text === true) return;
+        let remaining = quotaNumeric(reading.remaining);
+        if (remaining === null) {
+          const used = quotaNumeric(reading.used);
+          if (used !== null && used >= 0 && used <= 100) remaining = 100 - used;
+        }
+        if (remaining !== null && remaining >= 0 && remaining <= 100) values.push(remaining);
+      });
+    });
+    if (values.length) return t("quota.allowance_left", { percent: quotaNumberText(Math.min(...values)) });
+    const count = source.cards.filter((card) => card && typeof card === "object").length;
+    if (!count) return "—";
+    return count === 1 ? t("quota.allowance_source") : t("quota.allowance_sources", { count });
+  }
+
   function renderQuotas(data) {
     if (data !== undefined) state.quotas = data || null;
     const source = state.quotas;
     const allowance = $("work-status-allowance");
-    if (allowance) allowance.textContent = source && Array.isArray(source.cards) && source.cards.length ? (source.stale || source.cards.some((card) => card.stale || card.error) ? t("quota.stale_badge") : String(source.cards.length)) : "—";
+    if (allowance) allowance.textContent = quotaAllowanceText(source);
     const note = $("quotas-note");
     const container = $("quotas-cards");
     if (container) {
@@ -3304,6 +3436,9 @@
       });
       const group = document.createElement("section");
       group.className = "catalog-group";
+      // At most three cards per row; the group itself shrinks to its content
+      // instead of leaving empty 1fr tracks across a wide dashboard.
+      group.style.setProperty("--catalog-columns", String(Math.min(3, entries.length)));
       const heading = document.createElement("h3");
       heading.textContent = translateKnown(`catalog.group.${name}`, name);
       group.appendChild(heading);
@@ -4120,6 +4255,18 @@
     title_long: "feedback.reason.title_long",
     context_invalid: "feedback.reason.context_invalid",
   };
+  // A server rejection names a validation reason, not a field. Point the owner
+  // at the control they can actually change instead of leaving focus behind.
+  const FEEDBACK_REASON_FIELDS = {
+    title_short: "feedback-title",
+    title_long: "feedback-title",
+    current_short: "feedback-current",
+    expected_short: "feedback-expected",
+    acceptance_short: "feedback-acceptance",
+    priority_invalid: "feedback-priority",
+    image_invalid: "feedback-capture-page",
+    too_large: "feedback-capture-page",
+  };
   const FEEDBACK_TOOL_IDS = { pen: "feedback-tool-pen", arrow: "feedback-tool-arrow", rect: "feedback-tool-rect" };
   const FEEDBACK_CONTEXT_LIMIT = 24;
   const FEEDBACK_CONTEXT_BYTES = 24 * 1024;
@@ -4648,11 +4795,21 @@
     panel.style.top = `${Math.min(Math.max(0, Number.parseFloat(panel.style.top) || 0), maxTop)}px`;
   }
 
+  function feedbackSheetMode() {
+    return Boolean(window.matchMedia && window.matchMedia("(max-width: 720px), (pointer: coarse)").matches);
+  }
+
   function feedbackWindowOpen(focus = false) {
     if (!state.authenticated) return;
     const panel = $("feedback-view");
     const launcher = $("feedback-launcher");
     if (!panel || !launcher) return;
+    if (feedbackSheetMode()) {
+      panel.style.left = "";
+      panel.style.top = "";
+      panel.style.right = "";
+      panel.style.bottom = "";
+    }
     panel.hidden = false;
     state.feedbackOpen = true;
     launcher.setAttribute("aria-expanded", "true");
@@ -4683,6 +4840,9 @@
   }
 
   function feedbackDragStart(event) {
+    // Phones use a docked bottom sheet; dragging the header there would let the
+    // owner pull the form away from the safe-area submit bar.
+    if (feedbackSheetMode()) return;
     if (event.button !== 0) return;
     if (event.target instanceof Element && event.target.closest("button")) return;
     const panel = $("feedback-view");
@@ -5132,6 +5292,22 @@
     }
   }
 
+  function feedbackFocusRejection(reason) {
+    const id = FEEDBACK_REASON_FIELDS[reason];
+    if (!id) return;
+    const node = $(id);
+    if (!node) return;
+    if (node.closest && node.closest("#feedback-more")) feedbackRevealAdvanced(id);
+    else {
+      try {
+        node.focus();
+        node.scrollIntoView({ block: "nearest" });
+      } catch (_) {
+        // The rejection message still explains the problem.
+      }
+    }
+  }
+
   function feedbackEnsureTitle(value) {
     const area = feedbackAreaForView(state.view);
     let title = feedbackTruncateText(value, 120);
@@ -5284,6 +5460,7 @@
       if (result && result.accepted === false) {
         const reason = result.feedback && typeof result.feedback.reason === "string" ? result.feedback.reason : "";
         setFeedbackNotice({ reason, error: true });
+        feedbackFocusRejection(reason);
         return;
       }
       setFeedbackNotice({ key: "feedback.accepted" });
@@ -5297,8 +5474,10 @@
         const detail = error && (error.payload || error.data) && typeof (error.payload || error.data) === "object" ? (error.payload || error.data) : {};
         const reason = typeof detail.reason === "string" ? detail.reason : "";
         const code = reason || (error && typeof error.code === "string" ? error.code : "");
-        if (FEEDBACK_REASONS[code]) setFeedbackNotice({ reason: code, error: true });
-        else setFeedbackNotice({ key: errorKey(error, "feedback.failed"), error: true });
+        if (FEEDBACK_REASONS[code]) {
+          setFeedbackNotice({ reason: code, error: true });
+          feedbackFocusRejection(code);
+        } else setFeedbackNotice({ key: errorKey(error, "feedback.failed"), error: true });
       }
     } finally {
       state.feedbackBusy = false;
@@ -5604,21 +5783,38 @@
     container.appendChild(list);
   }
 
+  const RUN_FILTERS = [
+    { id: "all", key: "automation.filter_all", matches: () => true },
+    { id: "reported", key: "automation.filter_reported", matches: (run) => run && (run.status === "reported" || run.status === "completed") },
+    { id: "pushed", key: "automation.filter_pushed", matches: (run) => Boolean(run && run.status === "pushed") },
+    { id: "no_changes", key: "automation.filter_no_changes", matches: (run) => Boolean(run && run.status === "no_changes") },
+    { id: "failed", key: "automation.filter_failed", matches: (run) => Boolean(run && (run.status === "failed" || run.status === "skipped")) },
+  ];
+
   function runFilterMatches(run, filter) {
-    if (filter === "reported") return run && (run.status === "reported" || run.status === "completed");
-    if (filter === "failed") return run && run.status === "failed";
-    return true;
+    const group = RUN_FILTERS.find((item) => item.id === filter) || RUN_FILTERS[0];
+    return group.matches(run);
+  }
+
+  function updateRunFilterCounts(runs) {
+    const select = $("run-status-filter");
+    if (!select) return;
+    RUN_FILTERS.forEach((group) => {
+      const option = Array.from(select.options).find((item) => item.dataset.runFilter === group.id);
+      if (!option) return;
+      const count = runs.filter((run) => group.matches(run)).length;
+      option.textContent = `${t(group.key)} (${count})`;
+    });
+    if (select.value !== state.runStatusFilter) select.value = state.runStatusFilter;
   }
 
   function renderRunHistory(runs) {
     const list = $("runs-list");
     if (!list) return;
-    const select = $("run-status-filter");
-    if (select && select.value !== state.runStatusFilter) select.value = state.runStatusFilter;
-    while (list.firstChild) list.removeChild(list.firstChild);
     const all = Array.isArray(runs) ? runs.slice() : [];
     const ordered = all.sort((a, b) => String((b && (b.finished_at || b.started_at)) || "")
       .localeCompare(String((a && (a.finished_at || a.started_at)) || "")));
+    updateRunFilterCounts(ordered);
     const filtered = ordered.filter((run) => runFilterMatches(run, state.runStatusFilter));
     const shown = filtered.slice(0, state.runWindow);
     const showMore = $("runs-show-more");
@@ -5629,6 +5825,7 @@
         ? t("automation.window", { shown: shown.length, total: filtered.length })
         : "";
     }
+    while (list.firstChild) list.removeChild(list.firstChild);
     if (!shown.length) {
       const empty = document.createElement("p");
       empty.className = "empty-state";
@@ -5672,6 +5869,16 @@
     });
   }
 
+  function renderRunHeading(run, selected) {
+    const heading = $("latest-run-heading");
+    const back = $("runs-back-latest");
+    if (heading) {
+      const time = run ? formatTime(run.finished_at || run.started_at) || run.finished_at || run.started_at || "—" : "—";
+      heading.textContent = selected ? t("automation.selected_run", { time }) : t("automation.latest");
+    }
+    if (back) back.hidden = !selected;
+  }
+
   function renderAutomationView() {
     const service = (state.lastState && state.lastState.service) || {};
     const enabled = Boolean(service.scheduler_enabled);
@@ -5700,14 +5907,54 @@
     const sidebarLast = $("fact-last-run");
     if (sidebarLast) sidebarLast.textContent = lastText;
 
-    const showingSelected = Boolean(latest && state.selectedRunId && latest.run_id !== state.selectedRunId);
-    if (!showingSelected) renderLatestRun(latest);
-    else if (state.selectedRun && state.selectedRun.run_id === state.selectedRunId) renderLatestRun(state.selectedRun);
+    // A selected historical run owns the detail panel even when there is no
+    // "latest" record at all; its heading says so and offers Back to latest.
+    const selectedId = state.selectedRunId;
+    const selectedHistorical = Boolean(selectedId && (!latest || latest.run_id !== selectedId));
+    if (!selectedHistorical) {
+      renderLatestRun(latest);
+      renderRunHeading(latest, false);
+    } else if (state.selectedRun && state.selectedRun.run_id === selectedId) {
+      renderLatestRun(state.selectedRun);
+      renderRunHeading(state.selectedRun, true);
+    } else if (latest && latest.run_id === selectedId) {
+      renderLatestRun(latest);
+      renderRunHeading(latest, false);
+    } else {
+      const container = $("latest-run");
+      if (container) {
+        while (container.firstChild) container.removeChild(container.firstChild);
+        const loading = document.createElement("p");
+        loading.className = "empty-state";
+        loading.textContent = t("automation.loading");
+        container.appendChild(loading);
+      }
+      renderRunHeading(null, true);
+      ensureSelectedRun();
+    }
     renderRunHistory(state.automation ? state.automation.runs : []);
     renderRaw("automation-output", { service: service, automation: state.automation });
     renderReview();
     renderTasks(state.tasks);
     updateActivityCounts();
+  }
+
+  async function ensureSelectedRun() {
+    const id = state.selectedRunId;
+    if (!id || state.selectedRunLoading === id) return;
+    const latest = state.automation && state.automation.latest && state.automation.latest.run_id ? state.automation.latest : null;
+    if (latest && latest.run_id === id) return;
+    state.selectedRunLoading = id;
+    try {
+      const detail = await api(`/api/automation/runs/${encodeURIComponent(id)}`);
+      if (state.selectedRunId !== id) return;
+      state.selectedRun = detail;
+      renderAutomationView();
+    } catch (error) {
+      if (error.code !== "authentication_required") setMessage("automation", errorKey(error, "automation.load_failed"), { error: true });
+    } finally {
+      if (state.selectedRunLoading === id) state.selectedRunLoading = "";
+    }
   }
 
   async function refreshAutomation(options = {}) {
@@ -5737,30 +5984,9 @@
 
   async function selectAutomationRun(runID) {
     if (!runID) return;
+    if (state.selectedRun && state.selectedRun.run_id !== runID) state.selectedRun = null;
     state.selectedRunId = runID;
-    const latest = state.automation && state.automation.latest && state.automation.latest.run_id ? state.automation.latest : null;
-    if (latest && latest.run_id === runID) {
-      renderLatestRun(latest);
-      renderRunHistory(state.automation ? state.automation.runs : []);
-      return;
-    }
-    const container = $("latest-run");
-    if (container) {
-      while (container.firstChild) container.removeChild(container.firstChild);
-      const loading = document.createElement("p");
-      loading.className = "empty-state";
-      loading.textContent = t("automation.loading");
-      container.appendChild(loading);
-    }
-    try {
-      const detail = await api(`/api/automation/runs/${encodeURIComponent(runID)}`);
-      if (state.selectedRunId !== runID) return;
-      state.selectedRun = detail;
-      renderLatestRun(detail);
-      renderRunHistory(state.automation ? state.automation.runs : []);
-    } catch (error) {
-      if (error.code !== "authentication_required") setMessage("automation", errorKey(error, "automation.load_failed"), { error: true });
-    }
+    renderAutomationView();
   }
 
   /* ---------------------------------------------------------------- timers */
@@ -5816,8 +6042,7 @@
   on("settings-tabs", "click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-settings-tab]") : null;
     if (!target) return;
-    setSettingsTab(target.dataset.settingsTab);
-    target.focus();
+    setSettingsTab(target.dataset.settingsTab, { updateHash: true, focusPanel: true });
   });
   on("settings-tabs", "keydown", (event) => {
     const current = event.target instanceof Element ? event.target.closest("[data-settings-tab]") : null;
@@ -5835,17 +6060,28 @@
     }
     if (!next) return;
     event.preventDefault();
-    setSettingsTab(next);
+    setSettingsTab(next, { updateHash: true });
     $(`settings-tab-${next}`).focus();
   });
   on("run-status-filter", "change", (event) => {
-    state.runStatusFilter = ["all", "reported", "failed"].includes(event.target.value) ? event.target.value : "all";
-    state.runWindow = 20;
+    state.runStatusFilter = ["all", "reported", "pushed", "no_changes", "failed"].includes(event.target.value) ? event.target.value : "all";
+    state.runWindow = runWindowLimit();
     renderRunHistory(state.automation ? state.automation.runs : []);
   });
   on("runs-show-more", "click", () => {
-    state.runWindow += 20;
+    state.runWindow += runWindowLimit();
     renderRunHistory(state.automation ? state.automation.runs : []);
+  });
+  on("runs-back-latest", "click", () => {
+    state.selectedRunId = "";
+    state.selectedRun = null;
+    state.selectedRunLoading = "";
+    renderAutomationView();
+    const heading = $("latest-run-heading");
+    if (heading) {
+      heading.setAttribute("tabindex", "-1");
+      heading.focus({ preventScroll: true });
+    }
   });
   on("dashboard-current-list", "click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-dashboard-task]") : null;
@@ -6133,7 +6369,18 @@
   on("weixin-push-toggle", "change", toggleWeixinPush);
   on("weixin-push-test", "click", testWeixinPush);
 
-  window.addEventListener("resize", feedbackClampWindow);
+  window.addEventListener("resize", () => {
+    feedbackClampWindow();
+    syncSettingsDisclosures();
+    const limit = runWindowLimit();
+    if (limit !== runWindowMode) {
+      runWindowMode = limit;
+      if (state.view === "activity" && state.activityTab === "runs") {
+        state.runWindow = limit;
+        renderRunHistory(state.automation ? state.automation.runs : []);
+      }
+    }
+  });
 
   on("bark-form", "submit", saveBark);
   on("bark-test", "click", testBark);
@@ -6161,6 +6408,10 @@
     renderHooks({ hooks: state.hooks });
     renderUsage(state.usage);
     renderQuotas(state.quotas);
+    // These badges carry saved state, not static copy. Re-render them instead
+    // of letting a data-i18n default replace the configured label.
+    renderModelServices(state.modelServices);
+    renderAgentConfig(state.agent);
     if (state.weixin) renderWeixin(state.weixin);
     renderTasks(state.tasks);
     if ($("task-detail").open) {
@@ -6291,6 +6542,7 @@
     t,
   };
 
+  runWindowMode = runWindowLimit();
   setActivityTab("tasks");
   setSettingsTab("connections");
   if (missingElements.length) {

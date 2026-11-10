@@ -22,9 +22,10 @@
         </span>
       </a>
       <div class="header-tools">
-        <span id="connection-state" class="status-pill" data-state="checking">
+        <span id="connection-state" class="status-pill" data-state="checking" role="status">
           <span class="status-dot" aria-hidden="true"></span>
           <span id="connection-label">Checking…</span>
+          <span id="connection-label-short" class="status-short"></span>
         </span>
         <div class="lang-switch" role="group" aria-label="Language" data-i18n-aria-label="lang.aria">
           <button type="button" class="lang-option" data-lang="zh" lang="zh-CN">中文</button>
@@ -322,10 +323,13 @@
 
               <section class="automation-panel" aria-labelledby="latest-run-heading">
                 <div class="section-subhead">
-                  <h3 id="latest-run-heading" data-i18n="automation.latest">Latest run</h3>
-                  <button id="automation-refresh" class="btn ghost small" type="button">
-                    <span class="btn-label" data-i18n="automation.refresh">Refresh runs</span>
-                  </button>
+                  <h3 id="latest-run-heading">Latest run</h3>
+                  <div class="section-subhead-actions">
+                    <button id="runs-back-latest" class="btn ghost small" type="button" hidden data-i18n="automation.back_latest">Back to latest</button>
+                    <button id="automation-refresh" class="btn ghost small" type="button">
+                      <span class="btn-label" data-i18n="automation.refresh">Refresh runs</span>
+                    </button>
+                  </div>
                 </div>
                 <div id="latest-run" class="run-detail" aria-live="polite"></div>
               </section>
@@ -338,9 +342,11 @@
                 <div class="run-filter-bar">
                   <label for="run-status-filter" data-i18n="automation.filter">Status</label>
                   <select id="run-status-filter">
-                    <option value="all" data-i18n="automation.filter_all">All</option>
-                    <option value="reported" data-i18n="automation.filter_reported">Reported</option>
-                    <option value="failed" data-i18n="automation.filter_failed">Failed</option>
+                    <option value="all" data-run-filter="all" data-i18n="automation.filter_all">All</option>
+                    <option value="reported" data-run-filter="reported" data-i18n="automation.filter_reported">Report ready</option>
+                    <option value="pushed" data-run-filter="pushed" data-i18n="automation.filter_pushed">Pushed</option>
+                    <option value="no_changes" data-run-filter="no_changes" data-i18n="automation.filter_no_changes">No changes</option>
+                    <option value="failed" data-run-filter="failed" data-i18n="automation.filter_failed">Failed / skipped</option>
                   </select>
                   <span id="runs-window-status" class="hint" role="status" aria-live="polite"></span>
                 </div>
@@ -509,7 +515,10 @@
           <header class="page-heading"><div><p class="eyebrow" data-i18n="actions.kicker">Runtime</p>
             <h1 id="actions-heading" tabindex="-1" data-i18n="actions.title">Actions</h1>
             <p class="lede" data-i18n="actions.lead">Edit the owner-defined action registry. Writes are validated, versioned and effective immediately.</p></div>
-            <button id="actions-refresh" class="btn ghost" type="button" data-i18n="common.refresh">Refresh</button></header>
+            <div class="page-heading-actions">
+              <a id="actions-back" class="btn ghost small" href="#settings-advanced" data-i18n="actions.back">Back to Advanced</a>
+              <button id="actions-refresh" class="btn ghost" type="button" data-i18n="common.refresh">Refresh</button>
+            </div></header>
           <section class="card">
             <div id="actions-list" class="actions-list" aria-live="polite"></div>
             <p id="actions-message" class="form-message" role="status" aria-live="polite"></p>
@@ -533,18 +542,17 @@
           <header class="page-heading"><div><p class="eyebrow" data-i18n="setup.kicker">Get started</p>
             <h1 id="settings-heading" tabindex="-1" data-i18n="nav.settings">Settings</h1>
             <p class="lede" data-i18n="setup.lead">Connect a repository and check your runner. Notifications and event triggers are optional.</p></div></header>
-          <div class="card capability-setup">
-            <h2 data-i18n="daily.title">Your daily assistant</h2>
-            <p><a href="#model-services-settings" data-i18n="daily.setup_chat">Assistant setup</a> · <span id="settings-chat-ready"></span></p>
-            <p><a href="#model-services-settings" data-i18n="daily.setup_report">Report model setup</a> · <span id="settings-report-ready"></span></p>
-            <p><a href="#repository-section" data-i18n="daily.setup_context">Repository and context setup</a> · <span id="settings-maintenance-ready"></span></p>
-          </div>
-          <nav class="setup-steps" aria-label="Setup steps" data-i18n-aria-label="setup.steps">
-            <a href="#repository-section"><span data-i18n="setup.repository">1 · GitHub and repository</span><strong id="setup-repository-state"></strong></a>
-            <a href="#model-services-settings"><span data-i18n="setup.runner">2 · Model runner</span><strong id="setup-runner-state"></strong></a>
-            <a href="#channels-section"><span data-i18n="setup.notifications">3 · Notifications</span><strong data-i18n="setup.optional">Optional</strong></a>
-            <a href="#hooks-section"><span data-i18n="setup.triggers">4 · Event triggers</span><strong data-i18n="setup.optional">Optional</strong></a>
-          </nav>
+          <details id="settings-readiness" class="card capability-setup" open>
+            <summary class="card-summary">
+              <span class="card-summary-title" data-i18n="daily.title">Your daily assistant</span>
+              <span class="card-summary-hint" data-i18n="setup.readiness_hint">Readiness and setup steps</span>
+            </summary>
+            <div class="capability-setup-body">
+              <p><a href="#model-services-settings" data-i18n="daily.setup_chat">Assistant setup</a> · <span id="settings-chat-ready"></span></p>
+              <p><a href="#model-services-settings" data-i18n="daily.setup_report">Report model setup</a> · <span id="settings-report-ready"></span></p>
+              <p><a href="#repository-section" data-i18n="daily.setup_context">Repository and context setup</a> · <span id="settings-maintenance-ready"></span></p>
+            </div>
+          </details>
           <div id="settings-tabs" class="tab-list" role="tablist" aria-label="Settings sections" data-i18n-aria-label="settings.tabs_aria">
             <button id="settings-tab-connections" class="tab" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-connections" tabindex="0" data-settings-tab="connections"><span data-i18n="settings.tab.connections">Connections</span></button>
             <button id="settings-tab-notifications" class="tab" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-notifications" tabindex="-1" data-settings-tab="notifications"><span data-i18n="settings.tab.notifications">Notifications</span></button>
@@ -602,7 +610,7 @@
             <p class="hint" data-i18n="setup.runner_hint">Runner installation and provider credentials are configured on the host. Availability does not verify provider login. The dashboard lets you select a runner and model; your first run checks the connection.</p>
           </section>
         <section id="model-services-settings" class="card" aria-labelledby="model-services-heading">
-           <header class="card-head"><div><p class="eyebrow" data-i18n="model_services.kicker">Connections</p><h2 id="model-services-heading" data-i18n="model_services.title">Model connections</h2></div><span id="model-services-badge" class="badge" data-state="unknown" data-i18n="model_services.loading">Loading…</span></header>
+           <header class="card-head"><div><p class="eyebrow" data-i18n="model_services.kicker">Connections</p><h2 id="model-services-heading" data-i18n="model_services.title">Model connections</h2></div><span id="model-services-badge" class="badge" data-state="unknown">Loading…</span></header>
            <p class="lede" data-i18n="model_services.lead">Name reusable HTTP connections and assign a model to each Folio task. Keys are write-only; blank keeps a saved key.</p>
            <form id="model-services-form" class="form" novalidate><div class="field"><label for="model-service-select" data-i18n="model_services.connection_name">Connection</label><select id="model-service-select"></select></div>
              <details><summary data-i18n="common.details">Technical details</summary><div class="field"><label for="model-service-id" data-i18n="model_services.connection_id">Connection ID</label><input id="model-service-id" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="local-assistant"></div></details>
@@ -614,6 +622,23 @@
              <div class="actions"><button id="model-services-save" class="btn primary" type="submit"><span class="btn-label" data-i18n="model_services.save">Save connections</span></button><button id="model-services-test" class="btn ghost" type="button" data-i18n="model_services.test">Test connection</button></div>
            </form><p id="model-services-message" class="form-message" role="status" aria-live="polite"></p><p id="model-services-test-result" class="hint"></p>
          </section>
+          <details id="setup-steps-details" class="card setup-steps-card" open>
+            <summary class="card-summary">
+              <span class="card-summary-title" data-i18n="setup.steps">Setup steps</span>
+              <span class="card-summary-hint" data-i18n="setup.steps_hint">Connection checklist</span>
+            </summary>
+            <nav class="setup-steps" aria-label="Setup steps" data-i18n-aria-label="setup.steps">
+              <a href="#repository-section"><span data-i18n="setup.repository">1 · GitHub and repository</span><strong id="setup-repository-state"></strong></a>
+              <a href="#model-services-settings"><span data-i18n="setup.runner">2 · Model runner</span><strong id="setup-runner-state"></strong></a>
+              <a href="#channels-section"><span data-i18n="setup.notifications">3 · Notifications</span><strong data-i18n="setup.optional">Optional</strong></a>
+              <a href="#hooks-section"><span data-i18n="setup.triggers">4 · Event triggers</span><strong data-i18n="setup.optional">Optional</strong></a>
+            </nav>
+          </details>
+          <section class="card setup-finish">
+            <h2 data-i18n="setup.finish_title">Ready for daily use</h2>
+            <p data-i18n="setup.finish_hint">You can add notifications and triggers later in Settings. Tasks and token usage live on the dashboard.</p>
+            <a id="setup-finish" class="btn primary" href="#dashboard" data-i18n="setup.finish">Go to dashboard</a>
+          </section>
           </div>
           <div id="settings-panel-notifications" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-notifications" tabindex="0" data-settings-group="notifications" hidden>
          <section id="channels-section" class="card" aria-labelledby="channels-heading">
@@ -843,14 +868,14 @@
            </header>
            <p class="hint" data-i18n="settings.advanced_actions_warning">Raw action JSON is owner configuration. Changes are validated, versioned, and apply immediately.</p>
          </section>
-         <details id="advanced-settings" class="advanced-settings"><summary data-i18n="settings.advanced">Advanced legacy runtime</summary>
+         <details id="advanced-settings" class="advanced-settings" open><summary data-i18n="settings.agent_summary">Main agent runtime</summary>
          <section id="agent-settings" class="card" aria-labelledby="agent-heading">
           <header class="card-head">
             <div>
               <p class="eyebrow" data-i18n="agent.kicker">Control plane</p>
               <h2 id="agent-heading" data-i18n="agent.title">Main agent runtime</h2>
             </div>
-            <span id="agent-badge" class="badge" data-state="disabled" data-i18n="agent.badge.unconfigured">Not configured</span>
+            <span id="agent-badge" class="badge" data-state="disabled">Not configured</span>
           </header>
           <p id="agent-status" class="lede"></p>
           <p id="agent-detail" class="hint"></p>
@@ -931,11 +956,6 @@
         </section>
           </details>
           </div>
-          <section class="card setup-finish">
-            <h2 data-i18n="setup.finish_title">Ready for daily use</h2>
-            <p data-i18n="setup.finish_hint">You can add notifications and triggers later in Settings. Tasks and token usage live on the dashboard.</p>
-            <a id="setup-finish" class="btn primary" href="#dashboard" data-i18n="setup.finish">Go to dashboard</a>
-          </section>
         </section>
       </div>
     </div>

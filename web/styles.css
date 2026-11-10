@@ -2585,7 +2585,7 @@ textarea {
 .catalog-dialog .catalog-fields { gap: 12px; }
 .catalog-dialog .catalog-action .actions { margin-top: 12px; }
 @media (max-width: 600px) {
-  .catalog-group { grid-template-columns: minmax(0, 1fr); }
+  .catalog-group { width: auto; grid-template-columns: minmax(0, 1fr); }
   .catalog-launcher .btn { width: 100%; }
   .catalog-dialog { width: calc(100vw - 16px); max-width: calc(100vw - 16px); max-height: 92dvh; }
   .catalog-dialog-head { padding: 14px 14px 10px; }
@@ -2998,4 +2998,139 @@ textarea {
 @media (max-width: 720px) {
   .tab-list { gap: 2px; padding: 3px; }
   .tab { padding: 5px 7px; font-size: .72rem; }
+}
+
+/* ------------------------------------------------ audit fixes: focus and size */
+
+/* Settings onboarding is a compact disclosure above the tabs. The full
+   readiness copy and checklist stay available on demand on phones; desktop
+   keeps both open so setup remains visible. */
+.card-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  list-style: none;
+}
+.card-summary::-webkit-details-marker { display: none; }
+.card-summary-title { font-size: 1.05rem; font-weight: 660; letter-spacing: -.01em; }
+.card-summary-hint { color: var(--muted); font-size: .74rem; }
+#settings-readiness .capability-setup-body { display: grid; gap: 6px; margin-top: 12px; }
+#settings-readiness:not([open]) { padding-bottom: 16px; }
+#setup-steps-details .setup-steps { margin-top: 12px; }
+#settings-readiness,
+#setup-steps-details { scroll-margin-top: 84px; }
+
+/* Quick actions stay a left-aligned, at-most-three-column grid. Groups with
+   one or two actions no longer distribute across the whole dashboard. */
+.catalog-group {
+  width: fit-content;
+  max-width: 100%;
+  grid-template-columns: repeat(var(--catalog-columns, 3), minmax(0, 320px));
+  justify-content: start;
+}
+.catalog-launcher { min-width: 0; }
+
+/* Section-subhead actions and the standalone action registry breadcrumb. */
+.section-subhead-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.page-heading-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#actions-back { white-space: nowrap; }
+#latest-run-heading[tabindex]:focus { outline: none; }
+
+/* The allowance value must never split its unit or trailing word. */
+.work-status-item strong {
+  overflow-wrap: normal;
+  word-break: keep-all;
+  white-space: nowrap;
+}
+
+/* Assistant fills the desktop viewport: the log flexes and the composer is
+   anchored at the bottom of the card instead of floating under a short log. */
+@media (min-width: 901px) {
+  #chat-view { min-height: calc(100dvh - 210px); grid-template-rows: auto minmax(0, 1fr); }
+  #chat-view > .card { display: flex; flex-direction: column; min-height: 0; }
+  #chat-view .chat-log { flex: 1 1 auto; min-height: 220px; max-height: none; }
+  #chat-view .chat-form { margin-top: auto; }
+}
+
+/* Mobile session pill keeps a short visible label instead of only a dot. */
+.status-short { display: none; }
+
+@media (max-width: 480px) {
+  #connection-label { display: none; }
+  #connection-label-short { display: inline; }
+}
+
+@media (max-width: 720px) {
+  .page-heading-actions { width: 100%; }
+  .page-heading-actions .btn { flex: 1 1 auto; }
+  .section-subhead-actions { width: 100%; justify-content: flex-start; }
+  .catalog-group { width: auto; grid-template-columns: minmax(0, 1fr); }
+  #settings-readiness,
+  #setup-steps-details { padding: 14px 16px; }
+  #settings-readiness .card-summary-hint,
+  #setup-steps-details .card-summary-hint { display: none; }
+  .settings-panel { scroll-margin-top: 68px; }
+
+  /* Activity Tasks: primary action owns a row; count and Pause sit below it. */
+  #tasks-section .card-head { flex-wrap: wrap; gap: 10px; }
+  #tasks-section .card-head-actions {
+    display: grid;
+    grid-template-columns: auto auto;
+    justify-content: start;
+    width: 100%;
+    gap: 8px;
+  }
+  #tasks-section .card-head-actions #run-now-button { grid-column: 1 / -1; width: 100%; }
+  #tasks-section .card-head-actions #tasks-count { justify-self: start; }
+  #tasks-section .card-head-actions #tasks-pause { justify-self: start; }
+  #tasks-count { white-space: nowrap; }
+
+  /* A bounded run history: eight compact rows, sticky filter, same-size page. */
+  .run-filter-bar {
+    position: sticky;
+    top: 56px;
+    z-index: 4;
+    margin: 0 0 8px;
+    padding: 7px 0;
+    background: var(--surface);
+  }
+  .run-filter-bar select { min-height: 44px; }
+  #runs-window-status { margin-left: auto; }
+  .run-history-item { min-height: 44px; padding: 6px 9px; gap: 1px; }
+  .run-history-summary { font-size: .78rem; line-height: 1.3; }
+  .run-history-meta { font-size: .64rem; line-height: 1.3; }
+  #runs-show-more { width: 100%; min-height: 44px; margin-top: 8px; }
+
+  /* Every listed compact control meets the 44px touch target. */
+  .lang-option { min-width: 44px; min-height: 44px; padding: 2px 8px; }
+  #logout-button { min-height: 44px; padding: 0 9px; }
+  .section-nav a { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  .tab { min-height: 44px; }
+  .btn { min-height: 44px; }
+  .btn.small { min-height: 44px; min-width: 44px; }
+  .feedback-close { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  #catalog-dialog-close { min-width: 44px; min-height: 44px; }
+  #feedback-submit { min-height: 44px; }
+
+  /* Feedback is a docked sheet on phones: no header drag and safe-area room. */
+  .feedback-window {
+    height: min(88dvh, 720px, calc(100dvh - 8px - env(safe-area-inset-bottom)));
+    max-height: calc(100dvh - 8px - env(safe-area-inset-bottom));
+  }
+  .feedback-window-head { cursor: default; touch-action: auto; }
+  .feedback-submit-bar { padding: 9px 12px calc(9px + env(safe-area-inset-bottom)); }
+}
+
+/* Coarse pointers get the same targets without changing the one-row header. */
+@media (pointer: coarse) {
+  .btn { min-height: 44px; }
+  .btn.small { min-height: 44px; min-width: 44px; }
+  .tab { min-height: 44px; }
+  .section-nav a { min-height: 44px; }
+  .lang-option { min-width: 44px; min-height: 44px; }
+  #logout-button { min-height: 44px; }
+  .feedback-close { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
 }
