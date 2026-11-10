@@ -37,7 +37,8 @@ volume. This repository contains only generic service code and Web assets.
    attempts and results; creation is not completion.
 3. Use **Assistant** for conversation. Open **Feedback** from the fixed launcher
    to report an improvement request about Folio itself. The screenshot-first
-   floating window can capture the current tab in one click, or accept a pasted,
+   floating window can capture the current tab in one click (on an HTTP LAN
+   address it falls back to a local page snapshot), or accept a pasted,
    dropped or selected PNG/JPEG; it attaches the current view and a bounded set
    of visible page elements automatically. Annotate with pen, arrow or rectangle
    tools, describe what happened and what you want, and open **More** only if

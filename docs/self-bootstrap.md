@@ -92,6 +92,10 @@ hidden elements. Uploaded files carry only the basic view/route metadata, not
 invented DOM elements. The context is capped at 24 KiB, stored only in the
 private feedback record, and summarized into the gate/plan prompt; the detail API
 exposes it to the authenticated owner while list summaries expose only a count.
+Screen capture uses the browser display-capture API when the page is a secure
+context; on an HTTP LAN address the same button renders a permission-free local
+DOM snapshot (same-origin CSS and the current viewport) and attaches the same
+metadata. The screenshot still never leaves the private feedback store.
 
 The screenshot is decoded and re-encoded as PNG to strip metadata, bounded by
 dimensions and byte size, and served only through an authenticated route. No
