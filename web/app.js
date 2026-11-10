@@ -96,6 +96,7 @@
     catalogLoaded: false,
     catalogError: false,
     catalogBusy: Object.create(null),
+    catalogOpenId: "",
     catalogResults: new Map(),
     catalogNotices: new Map(),
     feedbackBusy: false,
@@ -2878,20 +2879,23 @@
     return wrapper;
   }
 
-  function catalogActionCard(action) {
+  function catalogActionCard(action, options = {}) {
+    const showHeader = options.showHeader !== false;
     const article = document.createElement("article");
     article.className = "catalog-action";
     article.dataset.catalogAction = action.id;
 
-    const heading = document.createElement("h4");
-    heading.textContent = catalogLabel(action);
-    article.appendChild(heading);
-    const description = catalogDescription(action);
-    if (description) {
-      const text = document.createElement("p");
-      text.className = "hint";
-      text.textContent = description;
-      article.appendChild(text);
+    if (showHeader) {
+      const heading = document.createElement("h4");
+      heading.textContent = catalogLabel(action);
+      article.appendChild(heading);
+      const description = catalogDescription(action);
+      if (description) {
+        const text = document.createElement("p");
+        text.className = "hint";
+        text.textContent = description;
+        article.appendChild(text);
+      }
     }
     const blocked = catalogBlockedReasons(action);
 
@@ -2959,35 +2963,160 @@
     return article;
   }
 
+  let catalogOpener = null;
+  let catalogRestoreFocus = true;
+
+  function catalogRequirementNames(action) {
+    const requires = Array.isArray(action.requires)
+      ? action.requires
+      : typeof action.requires === "string" ? [action.requires] : [];
+    return requires
+      .filter((name) => typeof name === "string" && name.trim())
+      .map((name) => translateKnown(`catalog.capability.${name}`, name));
+  }
+
+  function catalogMetaText(action) {
+    const blocked = catalogBlockedReasons(action);
+    if (blocked.length) return blocked.join(" · ");
+    const parts = [];
+    if (typeof action.priority === "string" && action.priority.trim()) {
+      parts.push(t("catalog.priority", { priority: action.priority.trim() }));
+    }
+    const requires = catalogRequirementNames(action);
+    if (requires.length) parts.push(t("catalog.requires", { name: requires.join(", ") }));
+    return parts.join(" · ");
+  }
+
+  function catalogLauncher(action) {
+    const article = document.createElement("article");
+    article.className = "catalog-launcher";
+    article.dataset.catalogLauncher = action.id;
+
+    const heading = document.createElement("h4");
+    heading.textContent = catalogLabel(action);
+    article.appendChild(heading);
+    const description = catalogDescription(action);
+    if (description) {
+      const text = document.createElement("p");
+      text.className = "hint";
+      text.textContent = description;
+      article.appendChild(text);
+    }
+    const meta = document.createElement("p");
+    meta.className = "hint catalog-meta";
+    meta.dataset.catalogMeta = action.id;
+    const metaText = catalogMetaText(action);
+    meta.textContent = metaText;
+    meta.hidden = !metaText;
+    article.appendChild(meta);
+
+    const blocked = catalogBlockedReasons(action);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn primary";
+    button.dataset.catalogLaunch = action.id;
+    button.disabled = blocked.length > 0 || Boolean(state.catalogBusy[action.id]);
+    const label = document.createElement("span");
+    label.className = "btn-label";
+    label.textContent = t("catalog.open");
+    button.appendChild(label);
+    actions.appendChild(button);
+    article.appendChild(actions);
+    return article;
+  }
+
+  function captureCatalogDraft() {
+    const dialog = $("catalog-dialog");
+    if (!dialog || !dialog.open || !state.catalogOpenId) return null;
+    const article = dialog.querySelector("[data-catalog-action]");
+    if (!article) return null;
+    const values = {};
+    let focusedField = "";
+    article.querySelectorAll("[data-catalog-field]").forEach((control) => {
+      values[control.dataset.catalogField] = control.type === "checkbox" ? control.checked : control.value;
+      if (document.activeElement === control) focusedField = control.dataset.catalogField;
+    });
+    return { id: article.dataset.catalogAction, values, focusedField, scrollTop: dialog.scrollTop };
+  }
+
+  function renderCatalogDialog(action, draft) {
+    const dialog = $("catalog-dialog");
+    const title = $("catalog-dialog-title");
+    const description = $("catalog-dialog-description");
+    const body = $("catalog-dialog-body");
+    if (!dialog || !title || !description || !body) return;
+    title.textContent = catalogLabel(action);
+    const copy = catalogDescription(action);
+    description.textContent = copy;
+    description.hidden = !copy;
+    body.replaceChildren(catalogActionCard(action, { showHeader: false }));
+    if (draft && draft.id === action.id) {
+      const article = body.querySelector("[data-catalog-action]");
+      if (article) {
+        article.querySelectorAll("[data-catalog-field]").forEach((control) => {
+          const name = control.dataset.catalogField;
+          if (!Object.prototype.hasOwnProperty.call(draft.values, name)) return;
+          if (control.type === "checkbox") control.checked = Boolean(draft.values[name]);
+          else control.value = String(draft.values[name]);
+        });
+        if (draft.focusedField) {
+          const control = Array.from(article.querySelectorAll("[data-catalog-field]"))
+            .find((item) => item.dataset.catalogField === draft.focusedField);
+          if (control) control.focus({ preventScroll: true });
+        }
+      }
+      dialog.scrollTop = draft.scrollTop || 0;
+    }
+  }
+
+  function openCatalogAction(id, opener) {
+    const action = (Array.isArray(state.catalog) ? state.catalog : []).find((item) => item && item.id === id);
+    if (!action || state.catalogBusy[id] || catalogBlockedReasons(action).length) return;
+    const dialog = $("catalog-dialog");
+    if (!dialog) return;
+    catalogRestoreFocus = true;
+    catalogOpener = opener || null;
+    state.catalogOpenId = id;
+    renderCatalogDialog(action, null);
+    if (!dialog.open) dialog.showModal();
+    const field = dialog.querySelector("[data-catalog-field]");
+    const target = field || dialog.querySelector("button[type=submit]") || $("catalog-dialog-close");
+    if (target) target.focus({ preventScroll: true });
+  }
+
+  function closeCatalogDialog(restoreFocus = true) {
+    catalogRestoreFocus = restoreFocus;
+    const dialog = $("catalog-dialog");
+    if (dialog && dialog.open) dialog.close();
+  }
+
   function renderCatalog() {
     const list = $("catalog-list");
     const hint = $("catalog-hint");
     if (!list || !hint) return;
-    const drafts = new Map();
-    let focused = null;
-    document.querySelectorAll("[data-catalog-action]").forEach((article) => {
-      const values = {};
-      article.querySelectorAll("[data-catalog-field]").forEach((control) => {
-        values[control.dataset.catalogField] = control.type === "checkbox" ? control.checked : control.value;
-        if (document.activeElement === control) focused = { action: article.dataset.catalogAction, field: control.dataset.catalogField };
-      });
-      drafts.set(article.dataset.catalogAction, values);
-    });
+    const draft = captureCatalogDraft();
+    const active = document.activeElement;
+    const focusedLaunch = active instanceof HTMLElement && active.dataset.catalogLaunch ? active.dataset.catalogLaunch : "";
     list.replaceChildren();
     if (state.catalogError) {
       hint.hidden = false;
       hint.textContent = t("catalog.unavailable");
+      if (state.catalogOpenId) closeCatalogDialog(false);
       return;
     }
     if (!state.catalogLoaded) {
       hint.hidden = false;
       hint.textContent = t("catalog.loading");
+      if (state.catalogOpenId) closeCatalogDialog(false);
       return;
     }
     const actions = Array.isArray(state.catalog) ? state.catalog : [];
     if (!actions.length) {
       hint.hidden = false;
       hint.textContent = t("catalog.empty");
+      if (state.catalogOpenId) closeCatalogDialog(false);
       return;
     }
     hint.hidden = true;
@@ -3009,53 +3138,50 @@
       const heading = document.createElement("h3");
       heading.textContent = translateKnown(`catalog.group.${name}`, name);
       group.appendChild(heading);
-      entries.forEach(({ action }) => {
-        const card = catalogActionCard(action);
-        const draft = drafts.get(action.id);
-        if (draft) {
-          card.querySelectorAll("[data-catalog-field]").forEach((control) => {
-            const name = control.dataset.catalogField;
-            if (!Object.prototype.hasOwnProperty.call(draft, name)) return;
-            if (control.type === "checkbox") control.checked = Boolean(draft[name]);
-            else control.value = String(draft[name]);
-          });
-        }
-        group.appendChild(card);
-      });
+      entries.forEach(({ action }) => group.appendChild(catalogLauncher(action)));
       list.appendChild(group);
     });
-    if (focused) {
-      const control = Array.from(list.querySelectorAll("[data-catalog-field]")).find((item) =>
-        item.closest("[data-catalog-action]")?.dataset.catalogAction === focused.action && item.dataset.catalogField === focused.field);
-      if (control) control.focus({ preventScroll: true });
+    if (state.catalogOpenId) {
+      const action = actions.find((item) => item && item.id === state.catalogOpenId);
+      if (action) {
+        renderCatalogDialog(action, draft);
+      } else {
+        closeCatalogDialog(false);
+      }
+    } else if ($("catalog-dialog").open) {
+      closeCatalogDialog(false);
+    }
+    if (focusedLaunch) {
+      const button = Array.from(list.querySelectorAll("[data-catalog-launch]"))
+        .find((item) => item.dataset.catalogLaunch === focusedLaunch);
+      if (button) button.focus({ preventScroll: true });
     }
   }
 
   function updateCatalogAvailability() {
     const actions = Array.isArray(state.catalog) ? state.catalog : [];
-    document.querySelectorAll("[data-catalog-action]").forEach((article) => {
-      const action = actions.find((item) => item && item.id === article.dataset.catalogAction);
+    document.querySelectorAll("[data-catalog-launch]").forEach((button) => {
+      const action = actions.find((item) => item && item.id === button.dataset.catalogLaunch);
       if (!action) return;
       const blocked = catalogBlockedReasons(action);
-      const fieldset = article.querySelector("fieldset.catalog-fields");
-      if (fieldset) fieldset.disabled = blocked.length > 0;
-      const submit = article.querySelector("button[type=submit]");
-      if (submit) submit.disabled = blocked.length > 0 || Boolean(state.catalogBusy[action.id]);
-      let reason = article.querySelector("[data-catalog-requirement]");
-      if (blocked.length) {
-        if (!reason) {
-          reason = document.createElement("p");
-          reason.className = "hint catalog-requirement";
-          reason.dataset.catalogRequirement = "true";
-          const form = article.querySelector("form");
-          if (form) article.insertBefore(reason, form.nextSibling);
-          else article.appendChild(reason);
-        }
-        reason.textContent = blocked.join(" · ");
-      } else if (reason) {
-        reason.remove();
+      button.disabled = blocked.length > 0 || Boolean(state.catalogBusy[action.id]);
+      const article = button.closest("[data-catalog-launcher]");
+      const meta = article ? article.querySelector("[data-catalog-meta]") : null;
+      if (meta) {
+        const text = catalogMetaText(action);
+        meta.textContent = text;
+        meta.hidden = !text;
       }
     });
+    const dialog = $("catalog-dialog");
+    if (dialog && dialog.open && state.catalogOpenId) {
+      const action = actions.find((item) => item && item.id === state.catalogOpenId);
+      if (!action) {
+        closeCatalogDialog(false);
+        return;
+      }
+      renderCatalogDialog(action, captureCatalogDraft());
+    }
   }
 
   async function loadCatalog() {
@@ -3592,9 +3718,30 @@
 
   /* ------------------------------------------------------------- assistant */
 
+  function resizeChatInput() {
+    const input = $("chat-input");
+    if (!input) return;
+    const max = 160;
+    input.style.height = "auto";
+    const next = Math.min(input.scrollHeight, max);
+    input.style.height = `${next}px`;
+    input.style.overflowY = input.scrollHeight > max ? "auto" : "hidden";
+  }
+
+  function fillChatComposer(text) {
+    const input = $("chat-input");
+    if (!input) return;
+    input.value = text;
+    resizeChatInput();
+    input.focus({ preventScroll: true });
+    const end = input.value.length;
+    if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
+  }
+
   function prefillChat(text, runId = "") {
     state.reportRunId = runId;
     $("chat-input").value = text;
+    resizeChatInput();
     $("chat-followup").hidden = !runId;
     $("chat-followup").textContent = runId ? t("daily.followup_id", { id: runId }) : "";
     window.location.hash = "chat";
@@ -3619,13 +3766,9 @@
     const log = $("chat-log");
     if (!log) return;
     while (log.firstChild) log.removeChild(log.firstChild);
-    if (!state.chat.length) {
-      const empty = document.createElement("p");
-      empty.className = "hint";
-      empty.textContent = t("chat.empty");
-      log.appendChild(empty);
-      if (!state.chatTasks.length) return;
-    }
+    const empty = $("chat-empty");
+    if (empty) empty.hidden = state.chat.length > 0 || state.chatTasks.length > 0;
+    if (!state.chat.length && !state.chatTasks.length) return;
     state.chat.forEach((message) => {
       if (!message || (message.role !== "user" && message.role !== "assistant")) return;
       const bubble = document.createElement("div");
@@ -3713,6 +3856,7 @@
     state.chatLoadGeneration += 1;
     appendChatMessage("user", text);
     if (input) input.value = "";
+    resizeChatInput();
     state.chatBusy = true;
     const button = $("chat-send");
     setBusy(button, "chat.sending");
@@ -5581,15 +5725,54 @@
     prefillChat(t("daily.followup_prompt", { id: button.dataset.reportFollowup }), button.dataset.reportFollowup);
   }));
   on("chat-form", "submit", sendChat);
-  on("catalog-list", "submit", runCatalogAction);
+  on("chat-input", "input", resizeChatInput);
+  on("chat-suggestions", "click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button[data-chat-prompt]") : null;
+    if (target) fillChatComposer((target.textContent || "").trim());
+  });
+  on("catalog-dialog-body", "submit", runCatalogAction);
   const inspectChatTask = async (event) => {
     const button = event.target instanceof Element ? event.target.closest("button[data-chat-task]") : null;
     if (!button || !button.dataset.chatTask) return;
+    if ($("catalog-dialog").open) closeCatalogDialog(false);
     await refreshTasks();
     if (state.authenticated) inspectTask(button.dataset.chatTask);
   };
   on("chat-log", "click", inspectChatTask);
-  on("catalog-list", "click", inspectChatTask);
+  on("catalog-list", "click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button[data-catalog-launch]") : null;
+    if (target) openCatalogAction(target.dataset.catalogLaunch, target);
+  });
+  on("catalog-dialog-body", "click", inspectChatTask);
+  on("catalog-dialog-close", "click", () => closeCatalogDialog(true));
+  on("catalog-dialog", "click", (event) => {
+    if (event.target !== event.currentTarget) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) {
+      closeCatalogDialog(true);
+    }
+  });
+  on("catalog-dialog", "close", () => {
+    const id = state.catalogOpenId;
+    const opener = catalogOpener;
+    const restore = catalogRestoreFocus;
+    catalogRestoreFocus = true;
+    state.catalogOpenId = "";
+    catalogOpener = null;
+    const body = $("catalog-dialog-body");
+    if (body) body.replaceChildren();
+    const title = $("catalog-dialog-title");
+    if (title) title.textContent = "";
+    const description = $("catalog-dialog-description");
+    if (description) description.textContent = "";
+    if (!restore || !state.authenticated) return;
+    let target = opener && opener.isConnected ? opener : null;
+    if (!target) {
+      target = Array.from(document.querySelectorAll("[data-catalog-launch]"))
+        .find((button) => button.dataset.catalogLaunch === id) || null;
+    }
+    if (target) target.focus({ preventScroll: true });
+  });
   on("feedback-created", "click", inspectChatTask);
   on("feedback-launcher", "click", feedbackWindowToggle);
   on("feedback-close", "click", () => feedbackWindowClose());
@@ -5766,12 +5949,15 @@
   // instead of leaving a picker on screen after the owner logs out.
   function leaveSession() {
     if ($("task-detail").open) $("task-detail").close();
+    if ($("catalog-dialog").open) closeCatalogDialog(false);
     state.viewInitialized = false;
     state.sessionEpoch += 1;
     state.chatLoadGeneration += 1;
     if (state.chatController) state.chatController.abort();
     state.chat = []; state.chatTasks = []; state.chatBusy = false; state.reportRunId = ""; state.reportResults.clear();
     $("chat-log").replaceChildren(); $("chat-input").value = "";
+    resizeChatInput();
+    renderChat();
     $("chat-followup").hidden = true;
     $("task-detail-body").replaceChildren();
     $("runs-list").replaceChildren(); $("tasks-list").replaceChildren();
@@ -5780,6 +5966,8 @@
     state.catalogLoaded = false;
     state.catalogError = false;
     state.catalogBusy = Object.create(null);
+    state.catalogOpenId = "";
+    catalogOpener = null;
     state.catalogResults.clear();
     state.catalogNotices.clear();
     $("catalog-list").replaceChildren();

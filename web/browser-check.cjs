@@ -332,6 +332,8 @@ async function main() {
             tasks.push(task); body = task;
           } else body = taskListing();
         }
+        else if (endpoint === '/api/actions') body = { actions: [], http_hosts: [] };
+        else if (endpoint === '/api/actions/versions') body = { versions: [] };
         else if (/^\/api\/actions\/[^/]+\/run$/.test(endpoint)) {
           const id = endpoint.split('/')[3];
           const payload = req.postDataJSON();
@@ -410,11 +412,33 @@ async function main() {
         await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
       });
       const origin = `http://127.0.0.1:${server.address().port}`;
+      const openCatalog = async (id) => {
+        await page.locator(`button[data-catalog-launch="${id}"]`).click();
+        await visible(page, '#catalog-dialog');
+        await page.waitForFunction((actionId) => document.querySelector('#catalog-dialog [data-catalog-action]')?.dataset.catalogAction === actionId, id);
+        return page.locator(`#catalog-dialog [data-catalog-action="${id}"]`);
+      };
+      const closeCatalog = async () => {
+        if (!(await page.locator('#catalog-dialog').evaluate(dialog => dialog.open))) return;
+        await page.locator('#catalog-dialog-close').click();
+        await page.waitForFunction(() => !document.getElementById('catalog-dialog').open);
+      };
+      const focusedCatalogLauncher = () => page.evaluate(() => document.activeElement?.dataset?.catalogLaunch || '');
       await page.goto(origin);
       await visible(page, '#login-view');
       await page.locator('#login-username').fill('owner');
       await page.locator('#password').fill('synthetic-password');
       await page.locator('#login-submit').click();
+      await visible(page, '#settings-view');
+      assert.equal(await page.locator('[data-view="actions"]').count(), 0, 'Actions is not exposed in daily navigation');
+      await visible(page, '#settings-advanced-card');
+      assert.equal(await page.locator('#settings-advanced-heading').textContent(), language === 'zh' ? '高级' : 'Advanced');
+      assert.match(await page.locator('#settings-advanced-card .hint').textContent(), language === 'zh' ? /所有者配置/ : /owner configuration/i);
+      assert.equal(await page.locator('#settings-advanced-actions').getAttribute('href'), '#actions');
+      await page.locator('#settings-advanced-actions').click();
+      await visible(page, '#actions-view');
+      assert.equal(await page.locator('#actions-heading').textContent(), language === 'zh' ? '动作' : 'Actions');
+      await page.locator('[data-view="settings"]').click();
       await visible(page, '#settings-view');
       assert.equal(await page.locator('#run-now-button').isDisabled(), true);
       await visible(page, '#repo-picker-slot button');
@@ -517,16 +541,24 @@ async function main() {
       assert.equal(paused, true);
       await page.locator('#tasks-pause').click();
       assert.equal(paused, false);
-      // A restored configured session starts on the generic, server-driven catalog.
+      // A restored configured session starts on the generic, server-driven quick actions.
       await page.goto(origin);
       await visible(page, '#dashboard-view');
-      await visible(page, '#catalog-list .catalog-action >> nth=0');
-      assert.equal(await page.locator('#catalog-heading').textContent(), language === 'zh' ? '可用操作' : 'Actions');
+      await visible(page, '#catalog-list .catalog-launcher >> nth=0');
+      assert.equal(await page.locator('#catalog-heading').textContent(), language === 'zh' ? '快捷操作' : 'Quick actions');
       assert.equal(await page.locator('#catalog-list .catalog-group h3').first().textContent(), language === 'zh' ? '日常' : 'Daily');
       assert.equal(await page.locator('#daily-ask').count(), 0, 'hardcoded daily controls are gone');
-      const reportAction = page.locator('[data-catalog-action="report"]');
-      assert.equal(await reportAction.locator('h4').textContent(), language === 'zh' ? '创建后台报告' : 'Create background report');
-      const reportInput = reportAction.locator('textarea');
+      assert.equal(await page.locator('#catalog-list .catalog-action').count(), 0, 'the dashboard does not render action forms');
+      assert.equal(await page.locator('#catalog-list textarea').count(), 0, 'the dashboard starts without blank form fields');
+      assert.equal(await page.locator('#catalog-dialog').isVisible(), false);
+      const reportLauncher = page.locator('[data-catalog-launcher="report"]');
+      assert.equal(await reportLauncher.locator('h4').textContent(), language === 'zh' ? '创建后台报告' : 'Create background report');
+      assert.match(await reportLauncher.locator('.catalog-meta').textContent(), language === 'zh' ? /优先级 P2/ : /Priority P2/);
+      assert.match(await reportLauncher.locator('.catalog-meta').textContent(), language === 'zh' ? /报告模型/ : /report model/);
+      let reportAction = await openCatalog('report');
+      assert.equal(await page.locator('#catalog-dialog-title').textContent(), language === 'zh' ? '创建后台报告' : 'Create background report');
+      assert.equal(await page.evaluate(() => document.activeElement?.dataset?.catalogField), 'request', 'opening focuses the first action field');
+      let reportInput = reportAction.locator('textarea');
       assert.equal(await reportInput.getAttribute('maxlength'), '4000');
       assert.equal(await reportAction.locator('select[data-catalog-field="priority"]').inputValue(), 'P2');
       await reportAction.locator('button[type="submit"]').click();
@@ -537,15 +569,29 @@ async function main() {
       assert.equal(catalogRequests.length, 0, 'whitespace does not count as a required field');
       await reportInput.fill('Summarize synthetic context <script>alert(1)</script>');
       await reportAction.locator('button[type="submit"]').click();
-      await visible(page, '[data-catalog-action="report"] [data-chat-task]');
+      await visible(page, '#catalog-dialog [data-catalog-action="report"] [data-chat-task]');
       assert.equal(catalogRequests[0].id, 'report');
       assert.equal(catalogRequests[0].fields.request, 'Summarize synthetic context <script>alert(1)</script>');
       assert.equal(catalogRequests[0].fields.priority, 'P2');
       assert.match(await reportAction.locator('[data-catalog-message]').textContent(), language === 'zh' ? /尚未完成/ : /not completed/);
-      assert.equal(await page.locator('[data-catalog-action="report"] script').count(), 0, 'catalog copy is text, not HTML');
+      assert.equal(await page.locator('#catalog-dialog [data-catalog-action="report"] script').count(), 0, 'catalog copy is text, not HTML');
+      await closeCatalog();
+      assert.equal(await focusedCatalogLauncher(), 'report', 'closing the dialog returns focus to its launcher');
+      // Escape and a backdrop click close the same native dialog and restore focus.
+      reportAction = await openCatalog('report');
+      await visible(page, '#catalog-dialog [data-catalog-action="report"] [data-chat-task]');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.getElementById('catalog-dialog').open);
+      assert.equal(await focusedCatalogLauncher(), 'report', 'Escape closes the dialog and restores launcher focus');
+      reportAction = await openCatalog('report');
+      await page.mouse.click(4, 4);
+      await page.waitForFunction(() => !document.getElementById('catalog-dialog').open);
+      assert.equal(await focusedCatalogLauncher(), 'report', 'clicking the backdrop closes the dialog and restores focus');
       // The configured priority survives form.reset() so a second submit keeps P2.
+      reportAction = await openCatalog('report');
+      reportInput = reportAction.locator('textarea');
       await page.waitForFunction(() => {
-        const button = document.querySelector('[data-catalog-action="report"] button[type="submit"]');
+        const button = document.querySelector('#catalog-dialog [data-catalog-action="report"] button[type="submit"]');
         return button && !button.disabled;
       });
       assert.equal(await reportAction.locator('select[data-catalog-field="priority"]').inputValue(), 'P2');
@@ -556,23 +602,26 @@ async function main() {
       assert.equal(catalogRequests.length, 2);
       assert.equal(catalogRequests[1].id, 'report');
       assert.equal(catalogRequests[1].fields.priority, 'P2');
+      await closeCatalog();
       // Optional select fields stay out of the request; booleans are explicit.
-      const maintenanceAction = page.locator('[data-catalog-action="maintenance"]');
+      let maintenanceAction = await openCatalog('maintenance');
       assert.equal(await maintenanceAction.locator('input[data-catalog-field="note"]').getAttribute('maxlength'), '120');
       await maintenanceAction.locator('input[data-catalog-field="note"]').fill('Synthetic maintenance note');
       await maintenanceAction.locator('button[type="submit"]').click();
-      await visible(page, '[data-catalog-action="maintenance"] [data-chat-task]');
+      await visible(page, '#catalog-dialog [data-catalog-action="maintenance"] [data-chat-task]');
       assert.equal(catalogRequests[2].id, 'maintenance');
       assert.equal(catalogRequests[2].fields.note, 'Synthetic maintenance note');
       assert.equal(Object.prototype.hasOwnProperty.call(catalogRequests[2].fields, 'scope'), false);
       assert.equal(catalogRequests[2].fields.dry_run, false);
+      await closeCatalog();
       // Object.prototype names are valid action ids and must not look busy.
-      const constructorAction = page.locator('[data-catalog-action="constructor"]');
+      let constructorAction = await openCatalog('constructor');
       assert.equal(await constructorAction.locator('button[type="submit"]').isDisabled(), false, 'prototype property names do not look busy');
       const constructorResponse = page.waitForResponse((response) => response.url().endsWith('/api/actions/constructor/run') && response.request().method() === 'POST');
       await constructorAction.locator('button[type="submit"]').click();
       await constructorResponse;
       assert.equal(catalogRequests[3].id, 'constructor');
+      await closeCatalog();
       tasks = tasks.filter(task => task.id !== 'maintenance-task' && task.id !== 'constructor-task');
       await page.evaluate(() => window.folio.refreshTasks());
       // Report result, fallback and follow-up still use the one task dialog.
@@ -581,11 +630,13 @@ async function main() {
       tasks.find(task => task.id === 'report-task').run_id = reportID;
       await page.evaluate(() => window.folio.refreshTasks());
       resultError = true;
-      await page.locator('[data-catalog-action="report"] [data-chat-task]').click();
+      let reportDialog = await openCatalog('report');
+      await reportDialog.locator('[data-chat-task]').click();
       await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes(document.documentElement.lang.startsWith('zh') ? '报告正文暂不可用' : 'Report result unavailable'));
       await page.locator('#task-detail-close').click();
       resultError = false;
-      await page.locator('[data-catalog-action="report"] [data-chat-task]').click();
+      reportDialog = await openCatalog('report');
+      await reportDialog.locator('[data-chat-task]').click();
       await visible(page, '#task-detail-body .run-report');
       await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes('A readable result'));
       for (const scheme of ['light', 'dark']) {
@@ -604,7 +655,8 @@ async function main() {
       tasks.find(task => task.id === 'report-task').run_id = run.run_id;
       await page.locator('[data-view="dashboard"]').click();
       await page.evaluate(() => window.folio.refreshTasks());
-      await page.locator('[data-catalog-action="report"] [data-chat-task]').click();
+      reportDialog = await openCatalog('report');
+      await reportDialog.locator('[data-chat-task]').click();
       await visible(page, '#task-detail-body .report-provenance');
       assert.match(await page.locator('#task-detail-body .report-provenance').textContent(), language === 'zh' ? /部分历史快照/ : /Partial historical snapshot/);
       await page.locator('#task-detail-close').click();
@@ -616,23 +668,45 @@ async function main() {
       capabilities = { assistant: { available: true, reason: 'configured', verification: 'unknown' }, report: { available: true, reason: 'configured' }, maintenance: { available: false, reason: 'repository_unavailable' }, context: { available: false, reason: 'repository_unavailable' } };
       await page.goto(origin);
       await visible(page, '#dashboard-view');
-      await visible(page, '#catalog-list .catalog-action >> nth=0');
-      assert.equal(await page.locator('[data-catalog-action="maintenance"] button[type="submit"]').isDisabled(), true);
-      assert.equal(await page.locator('[data-catalog-action="report"] button[type="submit"]').isDisabled(), false);
-      assert.match(await page.locator('[data-catalog-action="maintenance"] [data-catalog-requirement]').textContent(), language === 'zh' ? /连接并授权/ : /Connect and authorize/);
-      assert.equal(await page.locator('[data-catalog-action="workshop"] button[type="submit"]').isDisabled(), true, 'workshop is unavailable in this phase');
-      assert.match(await page.locator('[data-catalog-action="workshop"] [data-catalog-requirement]').textContent(), language === 'zh' ? /workshop/ : /workshop/);
+      await visible(page, '#catalog-list .catalog-launcher >> nth=0');
+      assert.equal(await page.locator('button[data-catalog-launch="maintenance"]').isDisabled(), true);
+      assert.equal(await page.locator('button[data-catalog-launch="report"]').isDisabled(), false);
+      assert.match(await page.locator('[data-catalog-launcher="maintenance"] .catalog-meta').textContent(), language === 'zh' ? /连接并授权/ : /Connect and authorize/);
+      assert.equal(await page.locator('button[data-catalog-launch="workshop"]').isDisabled(), true, 'workshop is unavailable in this phase');
+      assert.match(await page.locator('[data-catalog-launcher="workshop"] .catalog-meta').textContent(), /workshop/);
       await page.locator('[data-view="chat"]').click();
       await visible(page, '#chat-view');
+      assert.equal(await page.locator('#chat-heading').textContent(), language === 'zh' ? '助手' : 'Assistant');
+      assert.equal(await page.locator('#chat-input').getAttribute('rows'), '2');
+      assert.equal(await page.locator('#chat-input').getAttribute('maxlength'), '16000');
       assert.equal(await page.locator('#chat-input').inputValue(), '', 'chat starts without a hardcoded task prompt');
       assert.match(await page.locator('#chat-source-hint').textContent(), language === 'zh' ? /尚未连接/ : /No context/);
+      assert.equal(await page.locator('#chat-empty').isVisible(), true);
+      assert.equal(await page.locator('#chat-suggestions button').count(), 3);
+      assert.equal((await page.locator('#chat-suggestions button').first().textContent()).trim(), language === 'zh' ? '总结最新报告' : 'Summarize the latest report');
+      assert.equal(chatRequests.length, 0);
+      await page.locator('#chat-suggestions button').first().click();
+      assert.equal(chatRequests.length, 0, 'a suggestion fills the composer without sending');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'chat-input', 'a suggestion focuses the composer');
+      assert.equal((await page.locator('#chat-input').inputValue()).trim(), language === 'zh' ? '总结最新报告' : 'Summarize the latest report');
+      const initialChatHeight = await page.locator('#chat-input').evaluate(input => input.getBoundingClientRect().height);
+      await page.locator('#chat-input').fill(Array.from({ length: 12 }, (_, index) => 'Synthetic line ' + index).join('\n'));
+      const grownChatHeight = await page.locator('#chat-input').evaluate(input => input.getBoundingClientRect().height);
+      assert.ok(grownChatHeight > initialChatHeight + 8, 'the composer auto-grows');
+      assert.ok(grownChatHeight <= 161, `the composer stays within 160px: ${grownChatHeight}`);
+      const chatInputBox = await page.locator('#chat-input').boundingBox();
+      const chatSendBox = await page.locator('#chat-send').boundingBox();
+      assert.ok(chatSendBox.x > chatInputBox.x + chatInputBox.width / 2, 'Send sits inline at the right');
+      assert.ok(chatSendBox.width < chatInputBox.width / 2, 'Send is not a full-width bar');
       await page.locator('#chat-input').fill('Create a synthetic report task');
       await page.locator('#chat-send').click();
       await visible(page, '#chat-log .chat-task-card');
+      assert.equal(await page.locator('#chat-empty').isVisible(), false, 'the empty state hides after conversation content');
       assert.equal(await page.locator('#chat-log img').count(), 0);
       await page.locator('[data-view="dashboard"]').click();
       await page.locator('[data-view="chat"]').click();
       await visible(page, '#chat-log .chat-task-card');
+      assert.equal(await page.locator('#chat-empty').isVisible(), false, 'the empty state stays hidden with restored history');
       assert.equal(await page.locator('#chat-log img').count(), 0, 'restored task history stays safe');
       await page.locator('#chat-log [data-chat-task]').click();
       await visible(page, '#task-detail');
@@ -641,15 +715,16 @@ async function main() {
       connected = savedConnected; authorized = savedAuthorized; capabilities = false; runnerInstalled = true;
       await page.goto(origin);
       await visible(page, '#dashboard-view');
-      await visible(page, '#catalog-list .catalog-action >> nth=0');
-      assert.equal(await page.locator('[data-catalog-action="report"] button[type="submit"]').isDisabled(), false);
-      assert.equal(await page.locator('[data-catalog-action="maintenance"] button[type="submit"]').isDisabled(), false);
+      await visible(page, '#catalog-list .catalog-launcher >> nth=0');
+      assert.equal(await page.locator('button[data-catalog-launch="report"]').isDisabled(), false);
+      assert.equal(await page.locator('button[data-catalog-launch="maintenance"]').isDisabled(), false);
       // A missing or 404 catalog shows a generic hint and never resurrects daily cards.
       catalogUnavailable = true;
       await page.goto(origin);
       await visible(page, '#dashboard-view');
-      await page.waitForFunction(() => document.querySelectorAll('#catalog-list .catalog-action').length === 0);
+      await page.waitForFunction(() => document.querySelectorAll('#catalog-list .catalog-launcher').length === 0);
       assert.match(await page.locator('#catalog-hint').textContent(), language === 'zh' ? /操作目录暂不可用/ : /action catalog is unavailable/i);
+      assert.equal(await page.locator('#catalog-list .catalog-action').count(), 0);
       assert.equal(await page.locator('#daily-ask').count(), 0);
       catalogUnavailable = false;
       capabilities = null; tasks = []; historyTasks = []; runnerInstalled = true; connected = savedConnected; authorized = savedAuthorized;
@@ -961,6 +1036,12 @@ async function main() {
         await page.locator(`[data-view="${view}"]`).click();
         await visible(page, `#${view}-view`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile overflow in ${view}`);
+        if (view === 'dashboard') {
+          await openCatalog('report');
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile overflow in catalog dialog');
+          await closeCatalog();
+          assert.equal(await focusedCatalogLauncher(), 'report', 'mobile dialog close returns focus');
+        }
         if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-${view}-mobile-${language}.png`, fullPage: true });
       }
       await page.locator('#feedback-launcher').click();
@@ -989,8 +1070,10 @@ async function main() {
       assert.equal(typeof releaseHistory, 'function');
       assert.equal(typeof releaseResult, 'function');
       await page.locator('#task-detail-close').click();
-      await page.locator('#logout-button').click();
+      await openCatalog('report');
+      await page.locator('#logout-button').evaluate(button => button.click());
       await visible(page, '#login-view');
+      assert.equal(await page.locator('#catalog-dialog').isVisible(), false, 'logout closes the private action dialog');
       await page.locator('#login-username').fill('owner');
       await page.locator('#password').fill('synthetic-password');
       await page.locator('#login-submit').click();
@@ -1045,7 +1128,7 @@ async function main() {
       assert.equal(await page.locator('#feedback-created').textContent(), '');
       assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, capability readiness, catalog submit/validation/disabled/fallback, chat task events/history, report result/retry/follow-up, screenshot-first feedback capture/context/fallback/accept/reject, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/suggestions, chat task events/history, report result/retry/follow-up, screenshot-first feedback capture/context/fallback/accept/reject, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

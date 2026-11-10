@@ -17,8 +17,10 @@ Inherit `../AGENTS.md`.
   separate: a saved checkout with missing credentials needs authorization, and
   must not show a green connected badge.
   A configured deployment token does not prove live repository access.
-- Daily navigation is dashboard (catalog, tasks and usage), assistant chat,
-  actions, run history, owner review, and settings; feedback is a fixed launcher
+- Daily navigation is dashboard (quick actions, tasks and usage), assistant chat,
+  run history, owner review, and settings; the raw action registry is reachable
+  only from Settings' compact Advanced card (`#actions`), not the sidebar.
+  Feedback is a fixed launcher
   and movable floating window available alongside those views. `/api/state.capabilities` independently
   describes `assistant`, `report`, `maintenance`, and `context` with `available`,
   fixed `reason`, and `verification`. Availability means configured readiness,
@@ -30,7 +32,12 @@ Inherit `../AGENTS.md`.
   integrations never block the dashboard. Runner availability is not provider credential verification.
 - The dashboard action card is driven by `GET /api/catalog` and grouped by
   `presentation.group` (or `group`, default `actions`), preserving catalog order.
-  Render server `label`/`description`/field metadata as safe text; when present,
+  Render compact quick-action launchers (server label, description, priority or
+  requires hint) without inline forms; one launcher opens the shared native
+  `<dialog id="catalog-dialog">`, which contains that action's form. Reuse
+  `catalogActionCard`/`catalogFieldNode` in the dialog; keep Escape, backdrop and
+  Close safe, return focus to the opening launcher, and close the dialog on
+  logout. Render server `label`/`description`/field metadata as safe text; when present,
   resolve `label_key`, `description_key` and `submit_label_key` with
   `translateKnown`. Support text, textarea, select and boolean fields, including
   required, max_length, options and placeholder; omit an optional empty select
@@ -94,9 +101,14 @@ Inherit `../AGENTS.md`.
   Use session epochs for asynchronous history/results so logout and a later login
   cannot restore old responses. Render report Markdown as readable safe text;
   never infer completion from task acceptance.
-- The assistant view renders only server text/tool events as text nodes. Keep
-  the SSE reader bounded, show unavailable/error states, and never put raw model
-  output or tool arguments into the page as HTML. Settings includes the
+- The assistant view is titled Assistant in navigation, heading and chat labels
+  while the API/route stays `chat`. It renders only server text/tool events as
+  text nodes. Keep the SSE reader bounded, show unavailable/error states, and
+  never put raw model output or tool arguments into the page as HTML. The
+  composer starts at two rows, grows to about eight rows/160px and keeps Send
+  inline; the empty state offers three translated prompt chips that fill and
+  focus the composer without sending, and it hides once the conversation has
+  content. Settings includes the
   main-agent runtime form: OpenAI-compatible or command mode, provider preset,
   base URL, model, write-only API key and timeout. Never prefill the key from a
   response; show key presence only. The actions view edits one owner action as
@@ -194,8 +206,10 @@ search/priority filters, attempt drawer and keyboard return, pause/resume,
 review snapshots and safe links, recheck success/failure, subscription-quota
 cards and refresh, usage errors/recovery, both languages, mobile overflow,
 state-load failure, capability-specific readiness without repository/Codex,
-catalog submit/field validation/disabled requirements/404 fallback, structured
-task cards and chat, run-ID report results and follow-up, screenshot-first
+quick-action launcher/dialog submit, field validation, disabled requirements,
+close focus and 404 fallback; assistant title, growing composer and prompt
+suggestions; structured task cards and chat, run-ID report results and
+follow-up, screenshot-first
 feedback with no element-selection mode, compact two-field/collapsed-advanced
 layout and sticky submit, draggable header and draft-preserving close, denied
 capture fallback, current-page capture with element context, uploaded-file

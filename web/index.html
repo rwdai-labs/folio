@@ -85,7 +85,6 @@
         <nav class="section-nav" aria-label="Sections" data-i18n-aria-label="nav.aria">
           <a href="#dashboard" data-view="dashboard" data-i18n="nav.dashboard">Dashboard</a>
           <a href="#chat" data-view="chat" data-i18n="nav.chat">Assistant</a>
-          <a href="#actions" data-view="actions" data-i18n="nav.actions">Actions</a>
           <a href="#runs" data-view="runs" data-i18n="nav.runs">Run history</a>
           <a href="#review" data-view="review" data-i18n="nav.review">Owner review</a>
           <a href="#settings" data-view="settings" data-i18n="nav.settings">Settings</a>
@@ -106,9 +105,14 @@
             <p id="dashboard-repository" class="hint"></p></div>
             <a class="btn ghost" href="#runs" data-i18n="dashboard.results">View results</a>
           </header>
-          <section class="card" aria-labelledby="catalog-heading">
-            <h2 id="catalog-heading" data-i18n="catalog.title">Actions</h2>
-            <p class="lede" data-i18n="catalog.lead">Owner-defined actions from the server catalog. Submitting accepts work into the queue; it does not mean the work is complete.</p>
+          <section class="card catalog-card" aria-labelledby="catalog-heading">
+            <header class="card-head">
+              <div>
+                <p class="eyebrow" data-i18n="catalog.kicker">Work</p>
+                <h2 id="catalog-heading" data-i18n="catalog.title">Quick actions</h2>
+              </div>
+            </header>
+            <p class="lede" data-i18n="catalog.lead">Choose a quick action to open its form. Submitting accepts work into the queue; it does not mean the work is complete.</p>
             <p id="catalog-hint" class="hint" hidden></p>
             <div id="catalog-list" class="catalog-list" aria-live="polite"></div>
           </section>
@@ -339,18 +343,29 @@
         </section>
         <section id="chat-view" class="page-view" aria-labelledby="chat-heading" hidden>
           <header class="page-heading"><div><p class="eyebrow" data-i18n="chat.kicker">Assistant</p>
-            <h1 id="chat-heading" tabindex="-1" data-i18n="chat.title">Chat</h1>
+            <h1 id="chat-heading" tabindex="-1" data-i18n="chat.title">Assistant</h1>
             <p class="lede" data-i18n="chat.lead">Ask the main agent to inspect or change Folio configuration.</p></div></header>
           <section class="card">
             <div id="chat-log" class="chat-log" aria-live="polite"></div>
+            <div id="chat-empty" class="chat-empty">
+              <p id="chat-empty-title" class="chat-empty-title" data-i18n="chat.empty">No messages yet. Ask about your context, a report, or a task.</p>
+              <p class="hint" data-i18n="chat.suggestions_lead">Try a prompt to get started.</p>
+              <div id="chat-suggestions" class="chat-suggestions" role="group" aria-label="Prompt suggestions" data-i18n-aria-label="chat.suggestions_label">
+                <button type="button" class="chat-chip" data-chat-prompt="report" data-i18n="chat.suggestion.report">Summarize the latest report</button>
+                <button type="button" class="chat-chip" data-chat-prompt="context" data-i18n="chat.suggestion.context">What context is available?</button>
+                <button type="button" class="chat-chip" data-chat-prompt="task" data-i18n="chat.suggestion.task">Create a task to organize context</button>
+              </div>
+            </div>
             <p id="chat-config-hint" class="hint" hidden><a href="#agent-settings" data-i18n="chat.configure">Configure the main agent runtime in Settings.</a></p>
             <p id="chat-source-hint" class="hint"></p>
             <p id="chat-followup" class="notice" hidden></p>
             <p id="chat-message" class="form-message" role="status" aria-live="polite"></p>
             <form id="chat-form" class="chat-form">
-              <label class="hint" for="chat-input" data-i18n="chat.input">Message</label>
-              <textarea id="chat-input" rows="3" maxlength="16000" required></textarea>
-              <button id="chat-send" class="btn primary" type="submit" data-i18n="chat.send">Send</button>
+              <label class="sr-only" for="chat-input" data-i18n="chat.input">Message</label>
+              <div class="chat-composer">
+                <textarea id="chat-input" rows="2" maxlength="16000" required></textarea>
+                <button id="chat-send" class="btn primary chat-send" type="submit"><span class="btn-label" data-i18n="chat.send">Send</span></button>
+              </div>
             </form>
           </section>
         </section>
@@ -551,6 +566,16 @@
              <details class="model-overrides"><summary data-i18n="model_services.overrides">Report task overrides</summary><p class="hint" data-i18n="model_services.overrides_hint">Optional per-task bindings. Empty rows are not saved.</p><div id="model-overrides-list"></div><datalist id="model-task-kind-options"></datalist><datalist id="model-service-model-options"></datalist><button id="model-override-add" class="btn ghost small" type="button" data-i18n="model_services.override_add">Add task override</button></details>
              <div class="actions"><button id="model-services-save" class="btn primary" type="submit"><span class="btn-label" data-i18n="model_services.save">Save connections</span></button><button id="model-services-test" class="btn ghost" type="button" data-i18n="model_services.test">Test connection</button></div>
            </form><p id="model-services-message" class="form-message" role="status" aria-live="polite"></p><p id="model-services-test-result" class="hint"></p>
+         </section>
+         <section id="settings-advanced-card" class="card settings-advanced-card" aria-labelledby="settings-advanced-heading">
+           <header class="card-head">
+             <div>
+               <p class="eyebrow" data-i18n="settings.advanced_kicker">Owner configuration</p>
+               <h2 id="settings-advanced-heading" data-i18n="settings.advanced_title">Advanced</h2>
+             </div>
+             <a id="settings-advanced-actions" class="btn ghost small" href="#actions" data-i18n="settings.advanced_actions">Open action registry</a>
+           </header>
+           <p class="hint" data-i18n="settings.advanced_actions_warning">Raw action JSON is owner configuration. Changes are validated, versioned, and apply immediately.</p>
          </section>
          <details id="advanced-settings" class="advanced-settings"><summary data-i18n="settings.advanced">Advanced legacy runtime</summary>
          <section id="agent-settings" class="card" aria-labelledby="agent-heading">
@@ -861,6 +886,18 @@
       </div>
     </div>
   </main>
+
+  <dialog id="catalog-dialog" class="catalog-dialog" aria-labelledby="catalog-dialog-title" aria-describedby="catalog-dialog-description">
+    <header class="catalog-dialog-head">
+      <div class="catalog-dialog-title">
+        <p class="eyebrow" data-i18n="catalog.dialog_kicker">Quick action</p>
+        <h2 id="catalog-dialog-title" tabindex="-1"></h2>
+      </div>
+      <button id="catalog-dialog-close" class="btn ghost small" type="button" data-i18n="common.close">Close</button>
+    </header>
+    <p id="catalog-dialog-description" class="hint"></p>
+    <div id="catalog-dialog-body" class="catalog-dialog-body"></div>
+  </dialog>
 
   <dialog id="task-detail" class="task-drawer" aria-labelledby="task-detail-heading">
     <header class="page-heading"><h2 id="task-detail-heading" data-i18n="board.detail">Run details</h2>
