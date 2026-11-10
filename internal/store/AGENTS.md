@@ -9,7 +9,7 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
 | `tasks.go`, `kinds.go`, `hooks.go`, `actions.go`, `events.go`, `routes.go`, `action_config.go`, `action_pipeline.go` | Durable queue, data-defined actions, internal action plans, signed events, event routes and the runtime action registry/pipeline |
 | `action_catalog.go` | Owner-facing catalog and validated action launch contract; never executes steps inline |
-| `feedback.go` | Private feedback inbox, deterministic validation, image normalization and the report sufficiency gate |
+| `feedback.go` | Private feedback inbox, deterministic validation, image normalization, bounded page context and the report sufficiency gate |
 | `agent.go`, `agent_config.go`, `agent_openai.go`, `agent_tools.go` | Main-agent runtime boundary, validated owner configuration, OpenAI-compatible and command adapters, bounded sessions, owner/observer tool grants and agent run audit |
 | `model_services.go`, `model_execution.go` | Reusable model connections, task bindings, secret files, bounded catalog tests and tool-free report calls |
 | `report.go`, `report_result.go`, `readiness.go`, `usage.go`, `channels.go`, `models.go`, `quota.go`, `pricing.go` | Reports and bounded result reads, capability readiness, usage and estimated cost, notifications, runner catalogs, the optional quota snapshot and the cached model price catalog |
@@ -44,7 +44,22 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   PNG/JPEG by content, reject dimensions outside 64..4096 or over 8MP, decode
   fully, strip metadata by re-encoding PNG, and bound image input/output to 8 MiB;
   the HTTP host gives the multipart envelope a separate bounded 1 MiB allowance
-  above that image cap. When a report binding exists, call the trusted
+  above that image cap. Optional browser page context is a typed
+  `FeedbackContext`: a strict <=24 KiB UTF-8 JSON object with a fixed view enum
+  (`dashboard`/`assistant`/`actions`/`runs`/`review`/`settings`/`feedback`/`other`),
+  optional route (<=200 runes), theme (`light`/`dark`) and language (`en`/`zh`),
+  viewport width/height 1..10000 and dpr 0.5..4, and at most 24 elements whose
+  tag is <=32, id/role/name <=120, text/selector <=240, section <=160 runes and
+  rect values are 0..100000. Reject duplicate keys, trailing data, unknown
+  fields, wrong types and every out-of-bounds value with the fixed
+  `context_invalid` reason; trim/normalize values and write no record on
+  failure. Context has no raw HTML, input values, passwords or arbitrary DOM and
+  is persisted only inside feedback.json, separate from screenshot.png. Detail
+  exposes the sanitized schema; list summaries expose `element_count` only, and
+  records without context stay readable. Invalid context never reaches a model:
+  both gate and plan prompts append a bounded textual projection of view, route,
+  viewport and at most 8 elements within the existing 4000-rune prompt bound.
+  When a report binding exists, call the trusted
   tool-free adapter with a strict JSON-only sufficiency prompt (30s, <=512
   output), extract the first balanced object, reject extra/missing/wrong-typed
   fields, accept ready=true only with reason `ok`, map unknown reasons to

@@ -397,3 +397,398 @@ func TestFeedbackPlanRequiresDedicatedFeedbackSource(t *testing.T) {
 	}
 	t.Fatalf("feedback plan task %s was dropped on reload", id)
 }
+
+func syntheticPageContextFixture() FeedbackContext {
+	return FeedbackContext{
+		View: "dashboard", Route: "/#dashboard", Theme: "light", Language: "en",
+		Viewport: FeedbackViewport{Width: 1440, Height: 900, DPR: 1},
+		Elements: []FeedbackElement{
+			{
+				Index: 1, Tag: "button", ID: "retry-task", Role: "button",
+				Name: "Retry", Text: "Retry", Selector: "#retry-task",
+				Section: "Task card", Rect: FeedbackRect{X: 100, Y: 200, Width: 80, Height: 32},
+			},
+			{
+				Index: 2, Tag: "span", ID: "task-status", Role: "status",
+				Name: "Task status", Text: "Running", Selector: "#task-status",
+				Section: "Task card", Rect: FeedbackRect{X: 100, Y: 240, Width: 120, Height: 20},
+			},
+		},
+	}
+}
+
+func encodePageContextFixture(t *testing.T, context FeedbackContext) string {
+	t.Helper()
+	raw, err := json.Marshal(context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func pageContextRequestValues(context string) map[string]any {
+	input := validFeedbackInput()
+	values := map[string]any{
+		"title": input.Title, "area": input.Area, "current": input.Current,
+		"expected": input.Expected, "acceptance": input.Acceptance, "priority": input.Priority,
+	}
+	if context != "" {
+		values["context"] = context
+	}
+	return values
+}
+
+func TestFeedbackContextPersistencePublicAndList(t *testing.T) {
+	store := newTestStore(t)
+	context := syntheticPageContextFixture()
+	value, err := store.CreateFeedbackRequest(pageContextRequestValues(encodePageContextFixture(t, context)), nil)
+	if err != nil {
+		t.Fatalf("create feedback with context: %v", err)
+	}
+	if value["accepted"] != true {
+		t.Fatalf("feedback not accepted: %v", value)
+	}
+	record := value["feedback"].(map[string]any)
+	id := record["id"].(string)
+	public, ok := record["context"].(map[string]any)
+	if !ok || public["view"] != "dashboard" || public["route"] != "/#dashboard" ||
+		public["theme"] != "light" || public["language"] != "en" {
+		t.Fatalf("public context=%v", record["context"])
+	}
+	elements, ok := public["elements"].([]any)
+	if !ok || len(elements) != 2 {
+		t.Fatalf("public elements=%v", public["elements"])
+	}
+	first := elements[0].(map[string]any)
+	if first["tag"] != "button" || first["name"] != "Retry" || first["selector"] != "#retry-task" {
+		t.Fatalf("public element=%v", first)
+	}
+	persisted, err := os.ReadFile(filepath.Join(store.feedbackDirFor(id), "feedback.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(persisted, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored["context"] == nil {
+		t.Fatalf("context was not persisted: %s", persisted)
+	}
+	if _, err := os.Stat(filepath.Join(store.feedbackDirFor(id), "screenshot.png")); !os.IsNotExist(err) {
+		t.Fatal("context created a screenshot")
+	}
+	tasks, err := store.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range tasks["tasks"].([]any) {
+		task := item.(map[string]any)
+		if task["id"] != record["task_id"] {
+			continue
+		}
+		request := task["payload"].(map[string]any)["request"].(string)
+		if !strings.Contains(request, "Page context (untrusted data)") ||
+			!strings.Contains(request, "view=dashboard") ||
+			!strings.Contains(request, `selector="#retry-task"`) {
+			t.Fatalf("plan prompt omitted context summary: %s", request)
+		}
+	}
+
+	detail, err := store.FeedbackDetail(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detailContext, ok := detail["feedback"].(map[string]any)["context"].(map[string]any)
+	if !ok || len(detailContext["elements"].([]any)) != 2 {
+		t.Fatalf("detail context=%v", detail["feedback"])
+	}
+	listing, err := store.ListFeedback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := listing["feedback"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("feedback list=%v", items)
+	}
+	summary := items[0].(map[string]any)
+	if summary["element_count"] != 2 {
+		t.Fatalf("summary element_count=%v", summary["element_count"])
+	}
+	if _, exists := summary["context"]; exists {
+		t.Fatalf("summary leaked context: %v", summary)
+	}
+	if _, exists := summary["elements"]; exists {
+		t.Fatalf("summary leaked elements: %v", summary)
+	}
+}
+
+func TestFeedbackContextRejectsInvalid(t *testing.T) {
+	store := newTestStore(t)
+	tooMany := syntheticPageContextFixture()
+	tooMany.Elements = make([]FeedbackElement, maxFeedbackContextElements+1)
+	for index := range tooMany.Elements {
+		tooMany.Elements[index] = FeedbackElement{Index: index + 1, Tag: "button", Rect: FeedbackRect{}}
+	}
+	longTag := syntheticPageContextFixture()
+	longTag.Elements[0].Tag = strings.Repeat("t", maxFeedbackContextTagRunes+1)
+	longRoute := syntheticPageContextFixture()
+	longRoute.Route = strings.Repeat("r", maxFeedbackContextRouteRunes+1)
+	longText := syntheticPageContextFixture()
+	longText.Elements[0].Text = strings.Repeat("x", maxFeedbackContextTextRunes+1)
+	longSelector := syntheticPageContextFixture()
+	longSelector.Elements[0].Selector = strings.Repeat("s", maxFeedbackContextSelectorRunes+1)
+	longSection := syntheticPageContextFixture()
+	longSection.Elements[0].Section = strings.Repeat("q", maxFeedbackContextSectionRunes+1)
+	invalidRect := syntheticPageContextFixture()
+	invalidRect.Elements[0].Rect.X = maxFeedbackContextRectValue + 1
+	invalidViewport := syntheticPageContextFixture()
+	invalidViewport.Viewport.Width = 0
+	invalidDPR := syntheticPageContextFixture()
+	invalidDPR.Viewport.DPR = maxFeedbackViewportDPR + 0.5
+	invalidView := syntheticPageContextFixture()
+	invalidView.View = "home"
+	invalidTheme := syntheticPageContextFixture()
+	invalidTheme.Theme = "sepia"
+	invalidLanguage := syntheticPageContextFixture()
+	invalidLanguage.Language = "fr"
+	cases := []struct {
+		name    string
+		context string
+	}{
+		{"unknown key", `{"view":"dashboard","viewport":{"width":1440,"height":900,"dpr":1},"html":"<div>"}`},
+		{"duplicate key", `{"view":"dashboard","view":"assistant","viewport":{"width":1440,"height":900,"dpr":1}}`},
+		{"nested duplicate key", `{"view":"dashboard","viewport":{"width":1440,"width":900,"height":900,"dpr":1}}`},
+		{"trailing data", encodePageContextFixture(t, syntheticPageContextFixture()) + ` {}`},
+		{"invalid json", `{"view":"dashboard",`},
+		{"not an object", `["dashboard"]`},
+		{"wrong viewport type", `{"view":"dashboard","viewport":{"width":"1440","height":900,"dpr":1}}`},
+		{"oversized json", strings.Repeat(" ", maxFeedbackContextBytes+1)},
+		{"too many elements", encodePageContextFixture(t, tooMany)},
+		{"tag too long", encodePageContextFixture(t, longTag)},
+		{"route too long", encodePageContextFixture(t, longRoute)},
+		{"text too long", encodePageContextFixture(t, longText)},
+		{"selector too long", encodePageContextFixture(t, longSelector)},
+		{"section too long", encodePageContextFixture(t, longSection)},
+		{"rect out of bounds", encodePageContextFixture(t, invalidRect)},
+		{"viewport out of bounds", encodePageContextFixture(t, invalidViewport)},
+		{"dpr out of bounds", encodePageContextFixture(t, invalidDPR)},
+		{"unknown view", encodePageContextFixture(t, invalidView)},
+		{"unknown theme", encodePageContextFixture(t, invalidTheme)},
+		{"unknown language", encodePageContextFixture(t, invalidLanguage)},
+		{"empty", ""},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			values := pageContextRequestValues(test.context)
+			if test.name == "empty" {
+				values["context"] = ""
+			}
+			_, err := store.CreateFeedbackRequest(values, nil)
+			if err == nil || err.Error() != "context_invalid" {
+				t.Fatalf("err=%v want context_invalid", err)
+			}
+		})
+	}
+	direct := validFeedbackInput()
+	directContext := syntheticPageContextFixture()
+	directContext.Elements = tooMany.Elements
+	direct.Context = &directContext
+	if _, err := store.CreateFeedback(direct, nil); err == nil || err.Error() != "context_invalid" {
+		t.Fatalf("direct invalid context err=%v", err)
+	}
+	oversizedName := validFeedbackInput()
+	oversizedContext := syntheticPageContextFixture()
+	oversizedContext.Elements = make([]FeedbackElement, maxFeedbackContextElements)
+	for index := range oversizedContext.Elements {
+		oversizedContext.Elements[index] = FeedbackElement{
+			Index: index + 1, Tag: strings.Repeat("t", maxFeedbackContextTagRunes),
+			ID: strings.Repeat("i", maxFeedbackContextIDRunes), Role: strings.Repeat("r", maxFeedbackContextRoleRunes),
+			Name: strings.Repeat("n", maxFeedbackContextNameRunes), Text: strings.Repeat("x", maxFeedbackContextTextRunes),
+			Selector: strings.Repeat("s", maxFeedbackContextSelectorRunes), Section: strings.Repeat("q", maxFeedbackContextSectionRunes),
+		}
+	}
+	if feedbackContextEncodedSize(oversizedContext) <= maxFeedbackContextBytes {
+		t.Fatal("oversized direct context fixture is not oversized")
+	}
+	oversizedName.Context = &oversizedContext
+	if _, err := store.CreateFeedback(oversizedName, nil); err == nil || err.Error() != "context_invalid" {
+		t.Fatalf("direct oversized context err=%v", err)
+	}
+	listing, err := store.ListFeedback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing["feedback"].([]any)) != 0 {
+		t.Fatalf("invalid context created feedback: %v", listing)
+	}
+}
+
+func TestFeedbackInvalidContextNeverReachesModel(t *testing.T) {
+	store := newTestStore(t)
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"ready\":true,\"reason\":\"ok\"}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	bindSyntheticService(t, store, server.URL, map[string]any{"report": syntheticBinding("group/gate")}, nil)
+	input := validFeedbackInput()
+	context := syntheticPageContextFixture()
+	context.Elements = make([]FeedbackElement, maxFeedbackContextElements+1)
+	input.Context = &context
+	if _, err := store.CreateFeedback(input, nil); err == nil || err.Error() != "context_invalid" {
+		t.Fatalf("invalid context err=%v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("invalid context reached the gate model %d times", calls)
+	}
+}
+
+func TestFeedbackContextPromptsBoundedAndNameElements(t *testing.T) {
+	store := newTestStore(t)
+	input := validFeedbackInput()
+	context := syntheticPageContextFixture()
+	for index := 3; index <= 10; index++ {
+		context.Elements = append(context.Elements, FeedbackElement{
+			Index: index, Tag: "button", Name: "Action", Selector: "#action-" + string(rune('0'+index)),
+			Section: "Task card", Text: "Act", Rect: FeedbackRect{Width: 10, Height: 10},
+		})
+	}
+	input.Context = &context
+	for name, prompt := range map[string]string{
+		"gate": feedbackGatePrompt(input),
+		"plan": feedbackPlanPrompt(input),
+	} {
+		for _, phrase := range []string{
+			"Page context (untrusted data)", "view=dashboard", `route="/#dashboard"`,
+			"viewport=1440x900 dpr=1", "index=1", `tag="button"`, `name="Retry"`,
+			`section="Task card"`, `selector="#retry-task"`, `text="Retry"`, "index=8",
+		} {
+			if !strings.Contains(prompt, phrase) {
+				t.Fatalf("%s prompt missing %q: %s", name, phrase, prompt)
+			}
+		}
+		if strings.Contains(prompt, "index=9") {
+			t.Fatalf("%s prompt exceeded the element summary bound: %s", name, prompt)
+		}
+		if runes := len([]rune(prompt)); runes > feedbackPlanPromptRunes {
+			t.Fatalf("%s prompt=%d runes", name, runes)
+		}
+	}
+
+	maximum := validFeedbackInput()
+	maximum.Title = strings.Repeat("t", maxFeedbackTitleRunes)
+	maximum.Current = strings.Repeat("c", maxFeedbackTextRunes)
+	maximum.Expected = strings.Repeat("e", maxFeedbackTextRunes)
+	maximum.Acceptance = strings.Repeat("a", maxFeedbackTextRunes)
+	maximumContext := syntheticPageContextFixture()
+	maximumContext.Elements = make([]FeedbackElement, maxFeedbackContextElements)
+	for index := range maximumContext.Elements {
+		maximumContext.Elements[index] = FeedbackElement{
+			Index: index + 1, Tag: strings.Repeat("t", maxFeedbackContextTagRunes),
+			ID: strings.Repeat("i", maxFeedbackContextIDRunes), Role: strings.Repeat("r", maxFeedbackContextRoleRunes),
+			Name: strings.Repeat("n", maxFeedbackContextNameRunes), Text: strings.Repeat("x", maxFeedbackContextTextRunes),
+			Selector: strings.Repeat("s", 20), Section: strings.Repeat("q", 20),
+			Rect: FeedbackRect{X: maxFeedbackContextRectValue, Y: maxFeedbackContextRectValue, Width: maxFeedbackContextRectValue, Height: maxFeedbackContextRectValue},
+		}
+	}
+	if size := feedbackContextEncodedSize(maximumContext); size > maxFeedbackContextBytes {
+		t.Fatalf("maximum test context=%d bytes", size)
+	}
+	maximum.Context = &maximumContext
+	value, err := store.CreateFeedback(maximum, nil)
+	if err != nil || value["accepted"] != true {
+		t.Fatalf("maximum context value=%v err=%v", value, err)
+	}
+	for name, prompt := range map[string]string{
+		"gate": feedbackGatePrompt(maximum),
+		"plan": feedbackPlanPrompt(maximum),
+	} {
+		if runes := len([]rune(prompt)); runes > feedbackPlanPromptRunes {
+			t.Fatalf("maximum %s prompt=%d runes", name, runes)
+		}
+		if !strings.Contains(prompt, "Page context (untrusted data): view=dashboard") {
+			t.Fatalf("maximum %s prompt omitted the context header", name)
+		}
+	}
+}
+
+func TestFeedbackLegacyRecordWithoutContextRemainsReadable(t *testing.T) {
+	store := newTestStore(t)
+	id := "f-aaaaaaaaaaaa"
+	dir := store.feedbackDirFor(id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := map[string]any{
+		"id": id, "title": "Legacy synthetic feedback", "area": "dashboard",
+		"current": "The legacy synthetic page has no context.", "expected": "The legacy synthetic page remains readable.",
+		"acceptance": "A synthetic test reads the old record.", "priority": "P1",
+		"status": "accepted", "has_image": false, "created_at": "2026-01-01T00:00:00Z",
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "feedback.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.FeedbackDetail(id)
+	if err != nil {
+		t.Fatalf("legacy detail: %v", err)
+	}
+	if _, exists := detail["feedback"].(map[string]any)["context"]; exists {
+		t.Fatalf("legacy detail invented context: %v", detail)
+	}
+	listing, err := store.ListFeedback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := listing["feedback"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["element_count"] != 0 {
+		t.Fatalf("legacy summary=%v", items)
+	}
+}
+
+func TestFeedbackGatePromptIncludesContext(t *testing.T) {
+	store := newTestStore(t)
+	prompt := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		for _, message := range payload.Messages {
+			if strings.Contains(message.Content, "Page context") {
+				prompt = message.Content
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{
+				"message":       map[string]any{"content": `{"ready":true,"reason":"ok"}`},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	bindSyntheticService(t, store, server.URL, map[string]any{"report": syntheticBinding("group/gate")}, nil)
+	input := validFeedbackInput()
+	context := syntheticPageContextFixture()
+	input.Context = &context
+	value, err := store.CreateFeedback(input, nil)
+	if err != nil || value["accepted"] != true {
+		t.Fatalf("gate with context value=%v err=%v", value, err)
+	}
+	for _, phrase := range []string{"Page context (untrusted data)", "view=dashboard", "route=\"/#dashboard\"", "viewport=1440x900", "index=1", "name=\"Retry\"", "selector=\"#retry-task\""} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("gate prompt missing %q: %s", phrase, prompt)
+		}
+	}
+	if len([]rune(prompt)) > feedbackPlanPromptRunes {
+		t.Fatalf("gate prompt=%d runes", len([]rune(prompt)))
+	}
+}

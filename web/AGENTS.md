@@ -42,23 +42,48 @@ Inherit `../AGENTS.md`.
   reason only. If the catalog is missing or returns 404, show one generic hint and
   never resurrect hardcoded report/maintenance cards. No action-specific IDs or
   labels belong in the shell.
-- Feedback is a movable floating window available from every authenticated view,
-  opened by the fixed launcher and closed without discarding the draft. Drag only
-  by the header, keep the window inside the viewport on pointer/resize, and keep
-  Escape/Close focus behaviour. POST multipart FormData with `title`, `area`,
-  `current`, `expected`, `acceptance`, `priority` and an optional PNG/JPEG
-  `image`, with the session CSRF header. Show an accepted task card or the
-  rejection reason without clearing drafted fields; translate known
-  `feedback.reason.<code>` values and show an unknown code as text. Capture by
-  file picker, paste and drag/drop; read images as data URLs because CSP permits
-  only `self` and `data:` (never `blob:` or `createObjectURL`). Annotate on a
-  canvas with pen, arrow and rectangle tools, color, line width, undo and clear;
-  map pointer coordinates through devicePixelRatio and capture pointers for
-  touch. Export with `canvas.toBlob("image/png")` at the image's natural
-  dimensions, not the fitted preview, and keep it within 64..4096 pixels per
-  side and 8 MP. Validate required fields and the 8 MiB image limit client-side.
-  Clear images, canvas and fields on logout or session expiry and never persist
-  screenshots in browser storage. No external libraries or build step.
+- Feedback is a screenshot-first movable floating window available from every
+  authenticated view, opened by the fixed launcher and closed without discarding
+  the draft. Drag only by the header, keep the window inside the viewport on
+  pointer/resize, and keep Escape/Close focus behaviour. The compact panel has a
+  prominent dropzone with the primary `截取当前页面` action plus paste/drop/choose
+  file, a preview/annotation canvas, only two visible textareas (`发生了什么？`
+  and `你希望怎样？`), and a collapsed `更多` disclosure for title, priority and
+  acceptance. The area is derived from the active view, never chosen separately.
+  Keep submit sticky/visible without scrolling; on mobile the window is a
+  full-width sheet. There is no separate element-selection mode.
+- Current-page capture uses `navigator.mediaDevices.getDisplayMedia` with
+  `preferCurrentTab: true` (the browser may still show a picker), hides the
+  feedback panel and launcher, draws one frame at its native resolution (bounded
+  to the existing 4096px/8MP image limits), stops all tracks, restores the
+  panel, and feeds a PNG through the existing FileReader/canvas pipeline. Never
+  use `blob:` or object URLs; CSP permits only `self` and `data:`. If capture is
+  unsupported or denied, show a translated non-blocking error and keep
+  paste/drop/file selection available. No external libraries or build step.
+- Immediately before a page capture, collect at most 24 visible semantic
+  elements outside the feedback UI (buttons, links, non-password inputs,
+  textareas, selects, headings, cards/sections) with tag, id, role, accessible
+  name, clamped visible text, stable selector (`id`, `data-testid`,
+  `data-action`, `data-view`, then a bounded CSS path), nearest section/card
+  heading and non-negative viewport-relative rect. Never collect input values,
+  passwords, raw HTML or hidden elements. POST multipart FormData with `title`,
+  `area`, `current`, `expected`, `acceptance`, `priority`, an optional PNG/JPEG
+  `image`, and `context` when an image is present. `context` is a JSON string
+  shaped as `{view,route,theme,language,viewport:{width,height,dpr},elements:[...]}`,
+  where `view` is a feedback area, bounded by 24 KiB. Uploaded/pasted files send
+  only the base view/route/theme/language/viewport fields with no elements.
+  Show an expandable `已附带 N 个页面元素 / 当前视图：...` evidence summary after
+  capture; it is context only and never becomes a selection UI or drawn boxes.
+  Clear context when the image is removed or replaced and on logout/expiry.
+- On submit derive a title from the first context element or the current text
+  (at least 4 characters), derive the area from the active view, derive
+  acceptance when empty, and default priority to P2. All remain editable under
+  `更多`. Show an accepted task card or the rejection reason without clearing
+  drafted fields (including derived values); translate known
+  `feedback.reason.<code>` values and show an unknown code as text. Validate
+  required fields and the 8 MiB image limit client-side. Clear images, canvas,
+  fields and context on logout or session expiry and never persist screenshots
+  in browser storage.
 - Structured `task.created` SSE events carry `task_id`, `title`, and `status`;
   session history's top-level `tasks` restores durable task cards. Cards open
   the existing task dialog. Results use authenticated
@@ -170,8 +195,12 @@ review snapshots and safe links, recheck success/failure, subscription-quota
 cards and refresh, usage errors/recovery, both languages, mobile overflow,
 state-load failure, capability-specific readiness without repository/Codex,
 catalog submit/field validation/disabled requirements/404 fallback, structured
-task cards and chat, run-ID report results and follow-up, feedback floating
-launcher/drag/draft-preserving close, image/canvas export, accepted and rejected
-submissions with preserved drafts, and session expiry cleanup. Set
+task cards and chat, run-ID report results and follow-up, screenshot-first
+feedback with no element-selection mode, compact two-field/collapsed-advanced
+layout and sticky submit, draggable header and draft-preserving close, denied
+capture fallback, current-page capture with element context, uploaded-file
+context without elements, image/canvas export, accepted and rejected submissions
+with preserved drafts, mobile sheet layout, and session expiry cleanup. The mock
+multipart parser exposes the parsed `context` JSON. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed
 provider authorization and external manual review still need runtime acceptance.

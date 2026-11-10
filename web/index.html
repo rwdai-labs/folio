@@ -364,53 +364,26 @@
             <button id="feedback-close" class="feedback-close" type="button" aria-label="Close feedback" data-i18n-aria-label="feedback.close">×</button>
           </header>
           <div class="feedback-window-body">
-            <p class="lede" data-i18n="feedback.lead">Report a concrete problem or improvement. Drag this window aside, then paste or drop a screenshot. Screenshots stay in this page until you submit and are never saved in browser storage.</p>
             <form id="feedback-form" class="form feedback-form" novalidate>
-              <div class="field">
-                <label for="feedback-title" data-i18n="feedback.title_label">Title</label>
-                <input id="feedback-title" type="text" maxlength="120" autocomplete="off" required>
-              </div>
-              <div class="field">
-                <label for="feedback-area" data-i18n="feedback.area">Area</label>
-                <select id="feedback-area">
-                  <option value="dashboard" data-i18n="feedback.area.dashboard">Dashboard</option>
-                  <option value="assistant" data-i18n="feedback.area.assistant">Assistant</option>
-                  <option value="actions" data-i18n="feedback.area.actions">Actions</option>
-                  <option value="runs" data-i18n="feedback.area.runs">Run history</option>
-                  <option value="review" data-i18n="feedback.area.review">Owner review</option>
-                  <option value="settings" data-i18n="feedback.area.settings">Settings</option>
-                  <option value="feedback" data-i18n="feedback.area.feedback">Feedback</option>
-                  <option value="other" data-i18n="feedback.area.other">Other</option>
-                </select>
-              </div>
-              <div class="field">
-                <label for="feedback-current" data-i18n="feedback.current">What happens now?</label>
-                <textarea id="feedback-current" rows="3" maxlength="1000" required></textarea>
-              </div>
-              <div class="field">
-                <label for="feedback-expected" data-i18n="feedback.expected">What should happen instead?</label>
-                <textarea id="feedback-expected" rows="3" maxlength="1000" required></textarea>
-              </div>
-              <div class="field">
-                <label for="feedback-acceptance" data-i18n="feedback.acceptance">How will we know it is fixed?</label>
-                <textarea id="feedback-acceptance" rows="2" maxlength="1000" required></textarea>
-              </div>
-              <div class="field">
-                <label for="feedback-priority" data-i18n="feedback.priority">Priority</label>
-                <select id="feedback-priority">
-                  <option value="P1" data-i18n="feedback.priority.p1">P1 · Blocks a core flow</option>
-                  <option value="P2" selected data-i18n="feedback.priority.p2">P2 · Important but workable</option>
-                </select>
-              </div>
-              <fieldset class="feedback-image-field">
-                <legend data-i18n="feedback.image">Screenshot (optional)</legend>
-                <p class="hint" data-i18n="feedback.image_hint">PNG or JPEG, up to 8 MB. Paste with Ctrl+V, drop a file here, or choose one.</p>
-                <div id="feedback-dropzone" class="feedback-dropzone" tabindex="0" role="button" aria-label="Add a screenshot" data-i18n-aria-label="feedback.image_add">
-                  <input id="feedback-image" type="file" accept="image/png,image/jpeg" hidden>
-                  <p id="feedback-image-state" class="hint" data-i18n="feedback.image_none">No image selected</p>
-                  <button id="feedback-choose-image" class="btn ghost small" type="button" data-i18n="feedback.choose_image">Choose image</button>
+              <div class="feedback-scroll">
+                <p class="lede feedback-lede" data-i18n="feedback.lead">Capture this page, then describe what happened. The current view and a small set of visible page elements are attached automatically.</p>
+                <div class="feedback-capture-panel">
+                  <div id="feedback-dropzone" class="feedback-dropzone" role="group" aria-label="Add a screenshot" data-i18n-aria-label="feedback.image_add">
+                    <input id="feedback-image" type="file" accept="image/png,image/jpeg" hidden>
+                    <div class="feedback-dropzone-copy">
+                      <strong data-i18n="feedback.capture_title">Capture this page</strong>
+                      <p class="hint" data-i18n="feedback.capture_hint">Allow the browser to share the current tab. You can also paste, drop, or choose a PNG or JPEG.</p>
+                    </div>
+                    <div class="feedback-dropzone-actions">
+                      <button id="feedback-capture-page" class="btn primary" type="button">
+                        <span class="btn-label" data-i18n="feedback.capture">Capture current page</span>
+                      </button>
+                      <button id="feedback-choose-image" class="btn ghost small" type="button" data-i18n="feedback.choose_image">Choose file</button>
+                    </div>
+                  </div>
+                  <p id="feedback-image-state" class="hint" data-i18n="feedback.image_none">No screenshot attached</p>
+                  <p id="feedback-image-error" class="form-message" role="status" aria-live="polite"></p>
                 </div>
-                <p id="feedback-image-error" class="form-message" role="status" aria-live="polite"></p>
                 <div id="feedback-editor" class="feedback-editor" hidden>
                   <div id="feedback-tools" class="feedback-tools" role="toolbar" aria-label="Screenshot tools" data-i18n-aria-label="feedback.tools">
                     <button id="feedback-tool-pen" class="btn ghost small" type="button" aria-pressed="true" data-feedback-tool="pen" data-i18n="feedback.tool.pen">Pen</button>
@@ -426,15 +399,51 @@
                     <canvas id="feedback-canvas" tabindex="0" aria-label="Screenshot annotation canvas" data-i18n-aria-label="feedback.canvas"></canvas>
                   </div>
                 </div>
-              </fieldset>
-              <div class="actions">
+                <div id="feedback-context" class="feedback-context" hidden>
+                  <p id="feedback-context-summary" class="hint"></p>
+                  <details id="feedback-context-details" hidden>
+                    <summary data-i18n="feedback.context_details">View elements and selectors</summary>
+                    <ul id="feedback-context-list" class="feedback-context-list"></ul>
+                  </details>
+                </div>
+                <div class="field">
+                  <label for="feedback-current" data-i18n="feedback.current">What happened?</label>
+                  <textarea id="feedback-current" rows="2" maxlength="1000" required></textarea>
+                </div>
+                <div class="field">
+                  <label for="feedback-expected" data-i18n="feedback.expected">What do you want?</label>
+                  <textarea id="feedback-expected" rows="2" maxlength="1000" required></textarea>
+                </div>
+                <details id="feedback-more" class="feedback-more">
+                  <summary data-i18n="feedback.more">More</summary>
+                  <div class="feedback-more-body">
+                    <div class="field">
+                      <label for="feedback-title" data-i18n="feedback.title_label">Title</label>
+                      <input id="feedback-title" type="text" maxlength="120" autocomplete="off" required>
+                    </div>
+                    <div class="field">
+                      <label for="feedback-priority" data-i18n="feedback.priority">Priority</label>
+                      <select id="feedback-priority">
+                        <option value="P1" data-i18n="feedback.priority.p1">P1 · Blocks a core flow</option>
+                        <option value="P2" selected data-i18n="feedback.priority.p2">P2 · Important but workable</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="feedback-acceptance" data-i18n="feedback.acceptance">How will we know it is fixed?</label>
+                      <textarea id="feedback-acceptance" rows="2" maxlength="1000" required></textarea>
+                    </div>
+                  </div>
+                </details>
+                <input id="feedback-area" type="hidden" value="dashboard">
+                <div id="feedback-created"></div>
+              </div>
+              <div class="feedback-submit-bar">
+                <p id="feedback-message" class="form-message" role="status" aria-live="polite"></p>
                 <button id="feedback-submit" class="btn primary" type="submit">
                   <span class="btn-label" data-i18n="feedback.submit">Send feedback</span>
                 </button>
               </div>
             </form>
-            <p id="feedback-message" class="form-message" role="status" aria-live="polite"></p>
-            <div id="feedback-created"></div>
           </div>
         </aside>
         <button id="feedback-launcher" class="feedback-launcher" type="button" aria-controls="feedback-view" aria-expanded="false">

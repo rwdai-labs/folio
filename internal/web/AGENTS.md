@@ -78,7 +78,17 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   recorded gate rejection. Records may carry bounded normalized `gate_usage`
   counters from the gate call, never raw gate text. Malformed input returns 400
   `feedback_invalid`, with a fixed `reason` such as `title_short`/`image_invalid`
-  when available. Image responses are ID-only PNG bytes with `no-store`,
+  when available. An optional multipart `context` field carries the store's
+  bounded page-context JSON (<=24 KiB UTF-8 object; no HTML, input values or
+  arbitrary DOM). The store strictly decodes it and maps invalid, duplicate,
+  unknown-key or oversized JSON to 400 `feedback_invalid` with reason
+  `context_invalid`; authenticated detail includes the sanitized context, list
+  summaries expose only `element_count`, and submissions without context remain
+  valid. Context bounds (<=24 elements, fixed view enum, route <=200 runes,
+  viewport 1..10000 with dpr 0.5..4, bounded element labels/selector/section and
+  rect values 0..100000) live in store validation. Only validated context is
+  summarized into the bounded gate/plan prompt.
+  Image responses are ID-only PNG bytes with `no-store`,
   `nosniff` and inline disposition; only `has_image` records serve them. Never
   accept caller paths. Acceptance creates the reserved `feedback-plan` task with
   the dedicated `feedback` store source; manual, agent, hook, event and pipeline

@@ -4,10 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"folio/internal/store"
 )
 
 func TestHTTPActionCatalogAndRun(t *testing.T) {
@@ -236,4 +242,127 @@ func (c *testClient) multipartGet(t *testing.T, path string) (int, http.Header, 
 	var result map[string]any
 	_ = json.Unmarshal(raw.Bytes(), &result)
 	return response.StatusCode, response.Header, raw.Bytes(), result
+}
+
+func TestHTTPFeedbackContextMultipartDetailListAndRejection(t *testing.T) {
+	data, tools := t.TempDir(), t.TempDir()
+	backend, err := store.New(data, tools, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passwordFile := filepath.Join(data, "synthetic-password")
+	if err := os.WriteFile(passwordFile, []byte("correct horse"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := New(backend, Options{DataDir: data, PasswordFile: passwordFile, AssetsDir: tools, TrustedHosts: []string{"127.0.0.1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.auth.db.Close()
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := &testClient{server: server}
+	client.login(t, "correct horse")
+
+	contextJSON := `{"view":"dashboard","route":"/#dashboard","theme":"light","language":"en","viewport":{"width":1440,"height":900,"dpr":1},"elements":[{"index":1,"tag":"button","id":"retry-task","role":"button","name":"Retry","text":"Retry","selector":"#retry-task","section":"Task card","rect":{"x":100,"y":200,"width":80,"height":32}}]}`
+	fields := validFeedbackFields()
+	fields["context"] = contextJSON
+	status, _, _, result := client.multipartRequest(t, "/api/feedback", fields, nil, true, server.URL)
+	if status != http.StatusCreated || result["accepted"] != true {
+		t.Fatalf("context feedback status=%d result=%v", status, result)
+	}
+	record := result["feedback"].(map[string]any)
+	id := record["id"].(string)
+	contextValue, ok := record["context"].(map[string]any)
+	if !ok || contextValue["view"] != "dashboard" || contextValue["route"] != "/#dashboard" {
+		t.Fatalf("created context=%v", record["context"])
+	}
+	elements := contextValue["elements"].([]any)
+	if len(elements) != 1 || elements[0].(map[string]any)["selector"] != "#retry-task" {
+		t.Fatalf("created elements=%v", elements)
+	}
+
+	status, _, detail := client.request(t, http.MethodGet, "/api/feedback/"+id, nil, "")
+	if status != http.StatusOK || detail["feedback"].(map[string]any)["context"].(map[string]any)["viewport"].(map[string]any)["width"] != float64(1440) {
+		t.Fatalf("detail status=%d result=%v", status, detail)
+	}
+	status, _, listing := client.request(t, http.MethodGet, "/api/feedback", nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("list status=%d result=%v", status, listing)
+	}
+	item := findFeedbackSummaryByID(t, listing, id)
+	if item["element_count"] != float64(1) {
+		t.Fatalf("summary element_count=%v", item["element_count"])
+	}
+	if _, exists := item["context"]; exists {
+		t.Fatalf("summary leaked context: %v", item)
+	}
+	if _, exists := item["elements"]; exists {
+		t.Fatalf("summary leaked elements: %v", item)
+	}
+
+	noContext := validFeedbackFields()
+	status, _, _, result = client.multipartRequest(t, "/api/feedback", noContext, nil, true, server.URL)
+	if status != http.StatusCreated {
+		t.Fatalf("no-context status=%d result=%v", status, result)
+	}
+	noContextID := result["feedback"].(map[string]any)["id"].(string)
+	status, _, detail = client.request(t, http.MethodGet, "/api/feedback/"+noContextID, nil, "")
+	if status != http.StatusOK {
+		t.Fatalf("no-context detail status=%d result=%v", status, detail)
+	}
+	if _, exists := detail["feedback"].(map[string]any)["context"]; exists {
+		t.Fatalf("no-context detail invented context: %v", detail)
+	}
+	status, _, listing = client.request(t, http.MethodGet, "/api/feedback", nil, "")
+	if status != http.StatusOK || findFeedbackSummaryByID(t, listing, noContextID)["element_count"] != float64(0) {
+		t.Fatalf("no-context list status=%d result=%v", status, listing)
+	}
+
+	tooManyElements := `{"view":"dashboard","viewport":{"width":1440,"height":900,"dpr":1},"elements":[`
+	for index := 0; index < 25; index++ {
+		if index > 0 {
+			tooManyElements += ","
+		}
+		tooManyElements += fmt.Sprintf(`{"index":%d,"tag":"button","rect":{"x":0,"y":0,"width":1,"height":1}}`, index+1)
+	}
+	tooManyElements += `]}`
+	invalid := []struct {
+		name    string
+		context string
+	}{
+		{"unknown key", `{"view":"dashboard","viewport":{"width":1440,"height":900,"dpr":1},"html":"<div>"}`},
+		{"duplicate key", `{"view":"dashboard","view":"assistant","viewport":{"width":1440,"height":900,"dpr":1}}`},
+		{"too many elements", tooManyElements},
+		{"invalid json", `{"view":"dashboard",`},
+		{"unknown view", `{"view":"home","viewport":{"width":1440,"height":900,"dpr":1}}`},
+		{"oversized", strings.Repeat(" ", 24*1024+1)},
+		{"empty", ""},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			fields := validFeedbackFields()
+			fields["context"] = test.context
+			status, _, _, result := client.multipartRequest(t, "/api/feedback", fields, nil, true, server.URL)
+			if status != http.StatusBadRequest || result["error"] != "feedback_invalid" || result["reason"] != "context_invalid" {
+				t.Fatalf("status=%d result=%v", status, result)
+			}
+		})
+	}
+	status, _, listing = client.request(t, http.MethodGet, "/api/feedback", nil, "")
+	if status != http.StatusOK || len(listing["feedback"].([]any)) != 2 {
+		t.Fatalf("rejected context created feedback: %d %v", status, listing)
+	}
+}
+
+func findFeedbackSummaryByID(t *testing.T, listing map[string]any, id string) map[string]any {
+	t.Helper()
+	for _, item := range listing["feedback"].([]any) {
+		summary := item.(map[string]any)
+		if summary["id"] == id {
+			return summary
+		}
+	}
+	t.Fatalf("feedback %s not listed: %v", id, listing)
+	return nil
 }

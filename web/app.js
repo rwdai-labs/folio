@@ -106,7 +106,7 @@
       cssWidth: 0, cssHeight: 0, dpr: 1,
       strokes: [], current: null, drawing: false, pointerId: null,
       tool: "pen", color: "#d64545", width: 3,
-      imageError: "",
+      imageError: "", context: null, capturing: false,
     },
   };
 
@@ -948,6 +948,13 @@
     const target = views.includes(fragment) ? fragment : sectionViews[fragment];
     state.view = target || (setupReady() ? "dashboard" : "settings");
     views.forEach((view) => { $(`${view}-view`).hidden = view !== state.view; });
+    if (state.feedbackOpen) {
+      const areaNode = $("feedback-area");
+      if (areaNode) areaNode.value = feedbackAreaForView(state.view);
+      if (state.feedback.context && feedbackContextCount(state.feedback.context) === 0) {
+        setFeedbackContext(feedbackBaseContext());
+      }
+    }
     if (state.view === "chat") loadChat();
     if (state.view === "actions") loadActions();
     document.querySelectorAll("[data-view]").forEach((link) => {
@@ -3798,10 +3805,518 @@
     priority_invalid: "feedback.reason.priority_invalid",
     invalid: "feedback.reason.invalid",
     title_long: "feedback.reason.title_long",
+    context_invalid: "feedback.reason.context_invalid",
   };
   const FEEDBACK_TOOL_IDS = { pen: "feedback-tool-pen", arrow: "feedback-tool-arrow", rect: "feedback-tool-rect" };
+  const FEEDBACK_CONTEXT_LIMIT = 24;
+  const FEEDBACK_CONTEXT_BYTES = 24 * 1024;
+  const FEEDBACK_CONTEXT_SELECTOR = [
+    "button", "a[href]", "input:not([type=password])", "textarea", "select",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "[role=button]", "[role=link]", "[role=heading]", "[role=textbox]",
+    "[role=combobox]", "[role=checkbox]", "[role=tab]",
+    "article", "section", ".card", "[data-testid]", "[data-action]", "[data-view]",
+  ].join(",");
+  const FEEDBACK_VIEW_AREAS = Object.freeze({
+    dashboard: "dashboard", chat: "assistant", actions: "actions", runs: "runs",
+    review: "review", settings: "settings", feedback: "feedback",
+  });
 
   let feedbackDrag = null;
+
+  function feedbackAreaForView(view) {
+    return Object.prototype.hasOwnProperty.call(FEEDBACK_VIEW_AREAS, view) ? FEEDBACK_VIEW_AREAS[view] : "other";
+  }
+
+  function feedbackAreaLabel(area) {
+    return translateKnown(`feedback.area.${area}`, area);
+  }
+
+  function feedbackTruncateText(value, limit) {
+    if (value === null || value === undefined) return "";
+    const text = String(value).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+    const characters = Array.from(text);
+    return characters.length > limit ? characters.slice(0, limit).join("").trimEnd() : text;
+  }
+
+  function feedbackByteLength(value) {
+    try {
+      if (typeof TextEncoder === "function") return new TextEncoder().encode(value).length;
+    } catch (_) {
+      // Fall through to the URI encoded length.
+    }
+    try {
+      return encodeURIComponent(value).replace(/%[0-9A-F]{2}/gi, "x").length;
+    } catch (_) {
+      return value.length;
+    }
+  }
+
+  function feedbackClampNumber(value, min, max, fallback) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, number));
+  }
+
+  function feedbackCurrentLanguage() {
+    const value = document.documentElement.lang || (hasI18n() ? window.FolioI18n.lang : "en");
+    return /^zh/i.test(String(value)) ? "zh" : "en";
+  }
+
+  function feedbackCurrentTheme() {
+    try {
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    } catch (_) {
+      return "light";
+    }
+  }
+
+  function feedbackCurrentRoute() {
+    const hash = typeof window.location.hash === "string" ? window.location.hash : "";
+    return feedbackTruncateText(hash || `#${state.view || "dashboard"}`, 200);
+  }
+
+  function feedbackViewport() {
+    return {
+      width: Math.round(feedbackClampNumber(window.innerWidth, 1, 10000, 1)),
+      height: Math.round(feedbackClampNumber(window.innerHeight, 1, 10000, 1)),
+      dpr: Math.round(feedbackClampNumber(window.devicePixelRatio, 0.5, 4, 1) * 100) / 100,
+    };
+  }
+
+  function feedbackBaseContext() {
+    return {
+      view: feedbackAreaForView(state.view),
+      route: feedbackCurrentRoute(),
+      theme: feedbackCurrentTheme(),
+      language: feedbackCurrentLanguage(),
+      viewport: feedbackViewport(),
+    };
+  }
+
+  function feedbackCssEscape(value) {
+    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`);
+  }
+
+  function feedbackCssAttributeEscape(value) {
+    return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+
+  function feedbackImplicitRole(node) {
+    const explicit = (node.getAttribute("role") || "").trim().split(/\s+/)[0];
+    if (explicit) return feedbackTruncateText(explicit, 120);
+    const tag = node.tagName.toLowerCase();
+    if (tag === "button") return "button";
+    if (tag === "a") return node.hasAttribute("href") ? "link" : "";
+    if (tag === "textarea") return "textbox";
+    if (tag === "select") return node.multiple ? "listbox" : "combobox";
+    if (tag === "summary") return "button";
+    if (/^h[1-6]$/.test(tag)) return "heading";
+    if (tag === "article") return "article";
+    if (tag === "section") return "region";
+    if (tag === "nav") return "navigation";
+    if (tag === "main") return "main";
+    if (tag === "aside") return "complementary";
+    if (tag === "form") return "form";
+    if (tag === "input") {
+      const type = (node.getAttribute("type") || "text").toLowerCase();
+      if (type === "checkbox") return "checkbox";
+      if (type === "radio") return "radio";
+      if (type === "range") return "slider";
+      if (type === "number") return "spinbutton";
+      if (type === "search") return "searchbox";
+      if (type === "button" || type === "submit" || type === "reset") return "button";
+      return "textbox";
+    }
+    return "";
+  }
+
+  function feedbackElementName(node) {
+    const aria = node.getAttribute("aria-label");
+    if (aria) return feedbackTruncateText(aria, 120);
+    const labelledBy = node.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const text = labelledBy.split(/\s+/).map((id) => document.getElementById(id)).filter(Boolean)
+        .map((label) => label.textContent || "").join(" ");
+      if (text.trim()) return feedbackTruncateText(text, 120);
+    }
+    if (node.labels && node.labels.length) {
+      const text = Array.from(node.labels).map((label) => label.textContent || "").join(" ");
+      if (text.trim()) return feedbackTruncateText(text, 120);
+    }
+    const title = node.getAttribute("title");
+    if (title) return feedbackTruncateText(title, 120);
+    const placeholder = node.getAttribute("placeholder");
+    if (placeholder) return feedbackTruncateText(placeholder, 120);
+    const tag = node.tagName.toLowerCase();
+    if (tag === "section" || tag === "article" || node.classList.contains("card")) {
+      const heading = node.querySelector("h1, h2, h3, h4, h5, h6, [role=heading]");
+      if (heading) return feedbackTruncateText(heading.textContent, 120);
+    }
+    if (tag === "input" || tag === "select" || tag === "textarea") return "";
+    return feedbackTruncateText(node.textContent, 120);
+  }
+
+  function feedbackElementText(node) {
+    const tag = node.tagName.toLowerCase();
+    if (tag === "input" || tag === "select" || tag === "textarea") return "";
+    const text = typeof node.innerText === "string" ? node.innerText : node.textContent;
+    return feedbackTruncateText(text, 240);
+  }
+
+  function feedbackElementSelector(node) {
+    const id = feedbackTruncateText(node.id, 120);
+    if (id) {
+      const selector = `#${feedbackCssEscape(id)}`;
+      if (selector.length <= 240) return selector;
+    }
+    for (const attribute of ["data-testid", "data-action", "data-view"]) {
+      const value = node.getAttribute(attribute);
+      if (!value) continue;
+      const selector = `[${attribute}="${feedbackCssAttributeEscape(feedbackTruncateText(value, 120))}"]`;
+      if (selector.length <= 240) return selector;
+    }
+    const parts = [];
+    let current = node;
+    for (let depth = 0; current && current.nodeType === 1 && depth < 6; depth += 1) {
+      const tag = current.tagName.toLowerCase();
+      let part = tag;
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+      }
+      parts.unshift(part);
+      if (current === document.body || current === document.documentElement) break;
+      current = parent;
+    }
+    let selector = parts.join(" > ");
+    if (selector.length > 240) selector = parts.slice(-2).join(" > ");
+    return selector;
+  }
+
+  function feedbackElementSection(node) {
+    let current = node.parentElement;
+    for (let depth = 0; current && current !== document.body && depth < 8; depth += 1) {
+      let isContainer = false;
+      try {
+        isContainer = current.matches("section, article, .card, [role=region], [role=group]");
+      } catch (_) {
+        isContainer = false;
+      }
+      if (isContainer) {
+        const headings = current.querySelectorAll("h1, h2, h3, h4, h5, h6, [role=heading]");
+        for (const heading of headings) {
+          if (heading === node) continue;
+          const text = feedbackTruncateText(heading.textContent, 160);
+          if (text) return text;
+        }
+      }
+      current = current.parentElement;
+    }
+    return "";
+  }
+
+  function feedbackElementVisible(node) {
+    if (!(node instanceof Element)) return false;
+    if (node.closest("[hidden], [aria-hidden=true]")) return false;
+    if (typeof node.checkVisibility === "function") {
+      try {
+        if (!node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+      } catch (_) {
+        // Fall back to the computed style and rect checks below.
+      }
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === "none" || style.visibility !== "visible" || Number(style.opacity) === 0) return false;
+    const rect = node.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) return false;
+    return true;
+  }
+
+  function feedbackCollectElements() {
+    const panel = $("feedback-view");
+    const launcher = $("feedback-launcher");
+    const elements = [];
+    document.querySelectorAll(FEEDBACK_CONTEXT_SELECTOR).forEach((node) => {
+      if (elements.length >= FEEDBACK_CONTEXT_LIMIT) return;
+      if (!(node instanceof Element)) return;
+      if (panel && (node === panel || panel.contains(node))) return;
+      if (launcher && (node === launcher || launcher.contains(node))) return;
+      if (node.tagName === "INPUT") {
+        const type = (node.getAttribute("type") || "text").toLowerCase();
+        if (type === "password" || type === "hidden") return;
+      }
+      if (!feedbackElementVisible(node)) return;
+      const rect = node.getBoundingClientRect();
+      const width = Math.round(feedbackClampNumber(rect.width, 0, 100000, 0));
+      const height = Math.round(feedbackClampNumber(rect.height, 0, 100000, 0));
+      if (width < 2 || height < 2) return;
+      elements.push({
+        index: elements.length,
+        tag: node.tagName.toLowerCase(),
+        id: feedbackTruncateText(node.id, 120),
+        role: feedbackImplicitRole(node),
+        name: feedbackElementName(node),
+        text: feedbackElementText(node),
+        selector: feedbackElementSelector(node),
+        section: feedbackElementSection(node),
+        rect: {
+          x: Math.round(feedbackClampNumber(rect.left, 0, 100000, 0)),
+          y: Math.round(feedbackClampNumber(rect.top, 0, 100000, 0)),
+          width,
+          height,
+        },
+      });
+    });
+    return elements;
+  }
+
+  function feedbackBuildContext(includeElements) {
+    const context = feedbackBaseContext();
+    if (includeElements) {
+      const elements = feedbackCollectElements();
+      if (elements.length) context.elements = elements;
+    }
+    return context;
+  }
+
+  function feedbackContextCount(context) {
+    return context && Array.isArray(context.elements) ? context.elements.length : 0;
+  }
+
+  function feedbackSanitizeElement(element, index) {
+    const rect = element && element.rect && typeof element.rect === "object" ? element.rect : {};
+    return {
+      index: Math.round(feedbackClampNumber(element && element.index, 0, 100000, index)),
+      tag: feedbackTruncateText(element && element.tag, 32).toLowerCase(),
+      id: feedbackTruncateText(element && element.id, 120),
+      role: feedbackTruncateText(element && element.role, 120),
+      name: feedbackTruncateText(element && element.name, 120),
+      text: feedbackTruncateText(element && element.text, 240),
+      selector: feedbackTruncateText(element && element.selector, 240),
+      section: feedbackTruncateText(element && element.section, 160),
+      rect: {
+        x: Math.round(feedbackClampNumber(rect.x, 0, 100000, 0)),
+        y: Math.round(feedbackClampNumber(rect.y, 0, 100000, 0)),
+        width: Math.round(feedbackClampNumber(rect.width, 0, 100000, 0)),
+        height: Math.round(feedbackClampNumber(rect.height, 0, 100000, 0)),
+      },
+    };
+  }
+
+  function feedbackContextJSON(context) {
+    const viewport = context && context.viewport && typeof context.viewport === "object" ? context.viewport : feedbackViewport();
+    const output = {
+      view: context && FEEDBACK_AREAS.includes(context.view) ? context.view : feedbackAreaForView(state.view),
+      route: feedbackTruncateText(context && context.route, 200) || feedbackCurrentRoute(),
+      theme: context && (context.theme === "light" || context.theme === "dark") ? context.theme : feedbackCurrentTheme(),
+      language: context && (context.language === "en" || context.language === "zh") ? context.language : feedbackCurrentLanguage(),
+      viewport: {
+        width: Math.round(feedbackClampNumber(viewport.width, 1, 10000, 1)),
+        height: Math.round(feedbackClampNumber(viewport.height, 1, 10000, 1)),
+        dpr: Math.round(feedbackClampNumber(viewport.dpr, 0.5, 4, 1) * 100) / 100,
+      },
+    };
+    if (context && Array.isArray(context.elements) && context.elements.length) {
+      output.elements = context.elements.slice(0, FEEDBACK_CONTEXT_LIMIT)
+        .map((element, index) => feedbackSanitizeElement(element, index));
+      while (output.elements.length && feedbackByteLength(JSON.stringify(output)) > FEEDBACK_CONTEXT_BYTES) {
+        output.elements.pop();
+      }
+      if (!output.elements.length) delete output.elements;
+    }
+    return JSON.stringify(output);
+  }
+
+  function feedbackElementLabel(element) {
+    const label = feedbackTruncateText(element && (element.name || element.text || element.tag), 80);
+    return label || t("feedback.context_element");
+  }
+
+  function renderFeedbackContext() {
+    const container = $("feedback-context");
+    if (!container) return;
+    const summary = $("feedback-context-summary");
+    const details = $("feedback-context-details");
+    const list = $("feedback-context-list");
+    const context = state.feedback.context;
+    if (!context) {
+      container.hidden = true;
+      if (summary) summary.textContent = "";
+      if (details) details.hidden = true;
+      if (list) list.replaceChildren();
+      return;
+    }
+    const count = feedbackContextCount(context);
+    const view = feedbackAreaLabel(context.view);
+    container.hidden = false;
+    if (summary) {
+      summary.textContent = count
+        ? t("feedback.context_summary", { count, view })
+        : t("feedback.context_file", { view });
+    }
+    if (details) details.hidden = count === 0;
+    if (!list) return;
+    list.replaceChildren();
+    if (!count) return;
+    context.elements.forEach((element) => {
+      const item = document.createElement("li");
+      const label = document.createElement("strong");
+      label.textContent = feedbackElementLabel(element);
+      const selector = document.createElement("code");
+      selector.textContent = element.selector || element.tag || "";
+      item.append(label, selector);
+      list.append(item);
+    });
+  }
+
+  function setFeedbackContext(context) {
+    state.feedback.context = context || null;
+    const details = $("feedback-context-details");
+    if (details) details.open = false;
+    renderFeedbackContext();
+  }
+
+  function feedbackCaptureErrorKey(error) {
+    const name = error && typeof error.name === "string" ? error.name : "";
+    if (name === "NotAllowedError" || name === "SecurityError" || name === "AbortError") return "feedback.capture_denied";
+    if (name === "NotSupportedError" || name === "TypeError" || name === "NotFoundError") return "feedback.capture_unsupported";
+    return "feedback.capture_failed";
+  }
+
+  async function captureFeedbackPage() {
+    if (!state.authenticated || state.feedbackBusy || state.feedback.capturing) return;
+    const media = navigator.mediaDevices;
+    if (!media || typeof media.getDisplayMedia !== "function") {
+      setFeedbackImageError("feedback.capture_unsupported");
+      return;
+    }
+    const panel = $("feedback-view");
+    const launcher = $("feedback-launcher");
+    const button = $("feedback-capture-page");
+    const context = feedbackBuildContext(true);
+    let stream = null;
+    let video = null;
+    state.feedback.capturing = true;
+    setFeedbackImageError("");
+    setBusy(button, "feedback.capturing");
+    // Hide the floating feedback UI before asking for the current tab. The
+    // context above is collected while the page is still visible and excludes
+    // this panel and launcher explicitly.
+    if (panel) panel.style.visibility = "hidden";
+    if (launcher) launcher.style.visibility = "hidden";
+    try {
+      stream = await media.getDisplayMedia({
+        video: { frameRate: { ideal: 1, max: 2 } },
+        audio: false,
+        preferCurrentTab: true,
+      });
+      video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.setAttribute("aria-hidden", "true");
+      video.style.cssText = "position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+      video.srcObject = stream;
+      document.body.appendChild(video);
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        const fail = () => {
+          if (settled) return;
+          settled = true;
+          reject(new Error("video"));
+        };
+        const timer = window.setTimeout(fail, 5000);
+        const start = () => {
+          window.clearTimeout(timer);
+          Promise.resolve(video.play()).then(finish, fail);
+        };
+        if (video.readyState >= 1) start();
+        else video.addEventListener("loadedmetadata", start, { once: true });
+        video.addEventListener("error", fail, { once: true });
+      });
+      await new Promise((resolve) => {
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          resolve();
+        };
+        if (typeof video.requestVideoFrameCallback === "function") {
+          try {
+            video.requestVideoFrameCallback(finish);
+          } catch (_) {
+            // The timeout below still captures the current frame.
+          }
+          window.setTimeout(finish, 800);
+        } else {
+          window.setTimeout(finish, 180);
+        }
+      });
+      const naturalWidth = video.videoWidth || 0;
+      const naturalHeight = video.videoHeight || 0;
+      if (!naturalWidth || !naturalHeight) throw new Error("empty");
+      // Keep the native frame unless it exceeds the existing 4096px / 8MP
+      // client boundary; typical pages are captured one-for-one.
+      const scale = Math.min(1, 4096 / naturalWidth, 4096 / naturalHeight,
+        Math.sqrt(8_000_000 / (naturalWidth * naturalHeight)));
+      const width = Math.max(1, Math.floor(naturalWidth * scale));
+      const height = Math.max(1, Math.floor(naturalHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const drawing = canvas.getContext("2d");
+      if (!drawing) throw new Error("canvas");
+      drawing.drawImage(video, 0, 0, width, height);
+      const blob = await new Promise((resolve, reject) => {
+        try {
+          canvas.toBlob((value) => (value ? resolve(value) : reject(new Error("empty"))), "image/png");
+        } catch (error) {
+          reject(error);
+        }
+      });
+      let file;
+      try {
+        file = new File([blob], "current-page.png", { type: "image/png" });
+      } catch (_) {
+        file = blob;
+      }
+      if (!state.authenticated) return;
+      feedbackSelectFile(file, context);
+    } catch (error) {
+      if (state.authenticated) setFeedbackImageError(feedbackCaptureErrorKey(error));
+    } finally {
+      if (video) {
+        try {
+          video.pause();
+        } catch (_) {
+          // A detached video may already be paused.
+        }
+        video.srcObject = null;
+        video.remove();
+      }
+      if (stream) {
+        stream.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch (_) {
+            // Track cleanup is best effort.
+          }
+        });
+      }
+      if (panel) panel.style.visibility = "";
+      if (launcher) launcher.style.visibility = "";
+      state.feedback.capturing = false;
+      clearBusy(button);
+    }
+  }
 
   function feedbackClampWindow() {
     const panel = $("feedback-view");
@@ -3821,6 +4336,11 @@
     panel.hidden = false;
     state.feedbackOpen = true;
     launcher.setAttribute("aria-expanded", "true");
+    const areaNode = $("feedback-area");
+    if (areaNode) areaNode.value = feedbackAreaForView(state.view);
+    if (state.feedback.context && feedbackContextCount(state.feedback.context) === 0) {
+      setFeedbackContext(feedbackBaseContext());
+    }
     feedbackClampWindow();
     if (focus) $("feedback-heading").focus();
   }
@@ -3964,11 +4484,15 @@
     feedback.drawing = false;
     feedback.pointerId = null;
     feedback.imageError = "";
+    feedback.context = null;
     clearFeedbackCanvas();
     const input = $("feedback-image");
     if (input) input.value = "";
+    const details = $("feedback-context-details");
+    if (details) details.open = false;
     renderFeedbackImageState();
     renderFeedbackImageError();
+    renderFeedbackContext();
   }
 
   function resetFeedbackFields() {
@@ -3976,8 +4500,11 @@
       const node = $(id);
       if (node) node.value = "";
     });
-    if ($("feedback-area")) $("feedback-area").value = "dashboard";
+    const areaNode = $("feedback-area");
+    if (areaNode) areaNode.value = feedbackAreaForView(state.view);
     if ($("feedback-priority")) $("feedback-priority").value = "P2";
+    const more = $("feedback-more");
+    if (more) more.open = false;
     setFeedbackImageError("");
   }
 
@@ -3988,6 +4515,7 @@
 
   function resetFeedbackSession() {
     state.feedbackBusy = false;
+    state.feedback.capturing = false;
     state.feedbackNotice = null;
     feedbackWindowClose(false);
     resetFeedbackDraft();
@@ -4078,7 +4606,7 @@
     const naturalWidth = image.naturalWidth || image.width || 1;
     const naturalHeight = image.naturalHeight || image.height || 1;
     const available = Math.max(1, Math.min(760, (wrap && wrap.clientWidth) || 760));
-    const scale = Math.min(available / naturalWidth, 560 / naturalHeight, 1);
+    const scale = Math.min(available / naturalWidth, 210 / naturalHeight, 1);
     const cssWidth = Math.max(1, Math.round(naturalWidth * scale));
     const cssHeight = Math.max(1, Math.round(naturalHeight * scale));
     const dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -4096,7 +4624,7 @@
     redrawFeedback();
   }
 
-  function feedbackSelectFile(file) {
+  function feedbackSelectFile(file, capturedContext) {
     if (!file) return;
     const type = typeof file.type === "string" ? file.type : "";
     if (type !== "image/png" && type !== "image/jpeg") {
@@ -4111,6 +4639,7 @@
     }
     clearFeedbackImage();
     setFeedbackImageError("");
+    setFeedbackContext(capturedContext || feedbackBuildContext(false));
     const feedback = state.feedback;
     const generation = ++feedback.loadGeneration;
     const reader = new FileReader();
@@ -4118,6 +4647,7 @@
       if (generation !== feedback.loadGeneration || !state.authenticated) return;
       const dataURL = typeof reader.result === "string" ? reader.result : "";
       if (!/^data:image\/(png|jpeg);base64,/.test(dataURL)) {
+        clearFeedbackImage();
         setFeedbackImageError("feedback.image_invalid");
         return;
       }
@@ -4139,20 +4669,20 @@
       };
       image.onerror = () => {
         if (generation !== feedback.loadGeneration) return;
-        feedback.image = null;
-        feedback.imageName = "";
+        clearFeedbackImage();
         setFeedbackImageError("feedback.image_invalid");
-        renderFeedbackImageState();
       };
       image.src = dataURL;
     };
     reader.onerror = () => {
       if (generation !== feedback.loadGeneration) return;
+      clearFeedbackImage();
       setFeedbackImageError("feedback.image_invalid");
     };
     try {
       reader.readAsDataURL(file);
     } catch (_) {
+      clearFeedbackImage();
       setFeedbackImageError("feedback.image_invalid");
     }
   }
@@ -4269,9 +4799,81 @@
     });
   }
 
+  function feedbackRevealAdvanced(focusId) {
+    const more = $("feedback-more");
+    if (more) more.open = true;
+    const node = focusId ? $(focusId) : null;
+    if (!node) return;
+    try {
+      node.focus();
+      node.scrollIntoView({ block: "nearest" });
+    } catch (_) {
+      // Focusing the field is an enhancement; validation has already rendered.
+    }
+  }
+
+  function feedbackEnsureTitle(value) {
+    const area = feedbackAreaForView(state.view);
+    let title = feedbackTruncateText(value, 120);
+    if (Array.from(title).length < 4) {
+      const view = feedbackAreaLabel(area);
+      title = title ? `${title} · ${view}` : t("feedback.default_title", { view });
+      title = feedbackTruncateText(title, 120);
+    }
+    return title || t("feedback.default_title", { view: feedbackAreaLabel(area) });
+  }
+
+  function feedbackDeriveTitle(context) {
+    const node = $("feedback-title");
+    const existing = feedbackEnsureTitle(node ? node.value : "");
+    const hasExisting = Boolean(node && node.value.trim());
+    if (hasExisting) {
+      node.value = existing;
+      return existing;
+    }
+    let candidate = "";
+    const elements = context && Array.isArray(context.elements) ? context.elements : [];
+    for (const element of elements) {
+      const name = feedbackTruncateText(element && element.name, 120);
+      if (Array.from(name).length >= 4) {
+        candidate = name;
+        break;
+      }
+      const text = feedbackTruncateText(element && element.text, 120);
+      if (Array.from(text).length >= 4) {
+        candidate = text;
+        break;
+      }
+    }
+    if (!candidate) {
+      const current = $("feedback-current") ? $("feedback-current").value.trim() : "";
+      const lines = current.split(/\r?\n/).map((line) => feedbackTruncateText(line, 120)).filter(Boolean);
+      candidate = lines.find((line) => Array.from(line).length >= 4) || feedbackTruncateText(current, 120);
+    }
+    if (!candidate) {
+      const expected = $("feedback-expected") ? $("feedback-expected").value.trim() : "";
+      candidate = feedbackTruncateText(expected, 120);
+    }
+    const title = feedbackEnsureTitle(candidate);
+    if (node) node.value = title;
+    return title;
+  }
+
+  function feedbackDeriveAcceptance(title, area) {
+    const node = $("feedback-acceptance");
+    const existing = node ? node.value.trim() : "";
+    if (existing) return feedbackTruncateText(existing, 1000);
+    const value = feedbackTruncateText(t("feedback.acceptance_derived", {
+      title: feedbackTruncateText(title, 80),
+      view: feedbackAreaLabel(area),
+    }), 1000);
+    if (node) node.value = value;
+    return value;
+  }
+
   async function submitFeedback(event) {
     event.preventDefault();
-    if (state.feedbackBusy) return;
+    if (state.feedbackBusy || state.feedback.capturing) return;
     const created = $("feedback-created");
     if (created) created.replaceChildren();
     const titleNode = $("feedback-title");
@@ -4280,14 +4882,24 @@
     const expectedNode = $("feedback-expected");
     const acceptanceNode = $("feedback-acceptance");
     const priorityNode = $("feedback-priority");
-    const title = titleNode ? titleNode.value.trim() : "";
+    const area = feedbackAreaForView(state.view);
+    if (areaNode) areaNode.value = area;
+    const titleContext = state.feedback.context || feedbackBuildContext(false);
+    const title = feedbackDeriveTitle(titleContext);
     const current = currentNode ? currentNode.value.trim() : "";
     const expected = expectedNode ? expectedNode.value.trim() : "";
-    const acceptance = acceptanceNode ? acceptanceNode.value.trim() : "";
-    const area = areaNode ? areaNode.value : "";
-    const priority = priorityNode ? priorityNode.value : "";
+    const acceptance = feedbackDeriveAcceptance(title, area);
+    let priority = priorityNode ? priorityNode.value : "P2";
+    if (priority !== "P1" && priority !== "P2") {
+      priority = "P2";
+      if (priorityNode) priorityNode.value = priority;
+    }
+    if (Array.from(title).length < 4 || Array.from(title).length > 120) {
+      setFeedbackNotice({ key: "feedback.title_required", error: true });
+      feedbackRevealAdvanced("feedback-title");
+      return;
+    }
     const required = [
-      [titleNode, title, 120],
       [currentNode, current, 1000],
       [expectedNode, expected, 1000],
       [acceptanceNode, acceptance, 1000],
@@ -4304,7 +4916,7 @@
         return;
       }
     }
-    if (!FEEDBACK_AREAS.includes(area) || (priority !== "P1" && priority !== "P2")) {
+    if (!FEEDBACK_AREAS.includes(area)) {
       setFeedbackNotice({ key: "feedback.invalid", error: true });
       return;
     }
@@ -4339,7 +4951,13 @@
     data.append("expected", expected);
     data.append("acceptance", acceptance);
     data.append("priority", priority);
-    if (imageBlob) data.append("image", imageBlob, "feedback.png");
+    if (imageBlob) {
+      data.append("image", imageBlob, "feedback.png");
+      const context = state.feedback.context && feedbackContextCount(state.feedback.context)
+        ? state.feedback.context
+        : feedbackBaseContext();
+      data.append("context", feedbackContextJSON(context));
+    }
     try {
       const result = await api("/api/feedback", { method: "POST", formData: data });
       if (!state.authenticated || epoch !== state.sessionEpoch) return;
@@ -4387,7 +5005,7 @@
   }
 
   function feedbackPaste(event) {
-    if (!state.authenticated || state.view !== "feedback") return;
+    if (!state.authenticated || !state.feedbackOpen) return;
     const items = event.clipboardData && event.clipboardData.items ? Array.from(event.clipboardData.items) : [];
     const image = items.find((item) => item && (item.type === "image/png" || item.type === "image/jpeg"));
     if (!image) return;
@@ -4986,15 +5604,11 @@
   on("feedback-drag-handle", "pointercancel", feedbackDragEnd);
   on("feedback-form", "submit", submitFeedback);
   on("feedback-image", "change", feedbackFileInputChanged);
+  on("feedback-capture-page", "click", captureFeedbackPage);
   on("feedback-choose-image", "click", feedbackChooseImage);
   on("feedback-dropzone", "click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("button, input") : null;
     if (!target) feedbackChooseImage();
-  });
-  on("feedback-dropzone", "keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    feedbackChooseImage();
   });
   on("feedback-dropzone", "dragover", (event) => {
     event.preventDefault();
@@ -5112,6 +5726,7 @@
     renderCatalog();
     renderFeedbackImageState();
     renderFeedbackImageError();
+    renderFeedbackContext();
     renderFeedbackNotice();
     rerenderBusyLabels();
   });

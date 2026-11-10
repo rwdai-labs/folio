@@ -94,10 +94,11 @@ function syntheticPNG(width = 64, height = 64) {
 }
 function parseMultipart(buffer, contentType) {
   const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || '');
-  if (!match) return { fields: {}, image: null };
+  if (!match) return { fields: {}, image: null, context: null };
   const boundary = Buffer.from('--' + (match[1] || match[2]));
   const fields = {};
   let image = null;
+  let context = null;
   let index = buffer.indexOf(boundary);
   while (index >= 0) {
     const start = index + boundary.length;
@@ -113,11 +114,17 @@ function parseMultipart(buffer, contentType) {
     const name = /name="([^"]+)"/.exec(headers);
     if (name) {
       if (/filename="/.test(headers)) image = data;
-      else fields[name[1]] = data.toString('utf8');
+      else {
+        const value = data.toString('utf8');
+        fields[name[1]] = value;
+        if (name[1] === 'context') {
+          try { context = JSON.parse(value); } catch (_) { context = null; }
+        }
+      }
     }
     index = next;
   }
-  return { fields, image };
+  return { fields, image, context };
 }
 const syntheticCatalog = () => [
   {
@@ -195,6 +202,56 @@ async function main() {
     for (const language of ['zh', 'en']) {
       const context = await browser.newContext({ locale: language === 'zh' ? 'zh-CN' : 'en-US', viewport: { width: 1440, height: 1000 } });
       const page = await context.newPage();
+      // Deterministic display capture: one visible frame from a canvas-backed
+      // MediaStream. The app must request the current tab, hide the panel while
+      // the stream is open, and stop the track after taking its frame.
+      await context.addInitScript(() => {
+        window.__folioCaptureDenied = false;
+        window.__folioCaptureOptions = null;
+        window.__folioCaptureVisibility = null;
+        let media = navigator.mediaDevices;
+        if (!media) {
+          media = {};
+          try { Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: media }); } catch (_) {}
+        }
+        media.getDisplayMedia = async (options) => {
+          window.__folioCaptureOptions = options;
+          const panel = document.getElementById('feedback-view');
+          window.__folioCaptureVisibility = panel ? getComputedStyle(panel).visibility : 'missing';
+          if (window.__folioCaptureDenied) throw new DOMException('denied', 'NotAllowedError');
+          const canvas = document.createElement('canvas');
+          canvas.width = 800;
+          canvas.height = 600;
+          const drawing = canvas.getContext('2d');
+          let tick = 0;
+          const draw = () => {
+            tick += 1;
+            drawing.fillStyle = '#f3efe6';
+            drawing.fillRect(0, 0, 800, 600);
+            drawing.fillStyle = '#1d6b57';
+            drawing.font = 'bold 44px sans-serif';
+            drawing.fillText('Folio synthetic capture', 48, 96);
+            drawing.fillStyle = '#39433a';
+            drawing.font = '24px sans-serif';
+            drawing.fillText('Current page frame ' + tick, 48, 144);
+            drawing.fillStyle = '#e6f0ea';
+            drawing.fillRect(48, 190, 700, 170);
+            drawing.strokeStyle = '#145242';
+            drawing.lineWidth = 2;
+            drawing.strokeRect(48, 190, 700, 170);
+            drawing.fillStyle = '#1f261f';
+            drawing.font = '20px sans-serif';
+            drawing.fillText('Synthetic controls and headings', 72, 238);
+          };
+          draw();
+          if (typeof canvas.captureStream !== 'function') throw new DOMException('unsupported', 'NotSupportedError');
+          const stream = canvas.captureStream(5);
+          const timer = setInterval(draw, 100);
+          const track = stream.getVideoTracks()[0];
+          if (track && typeof track.addEventListener === 'function') track.addEventListener('ended', () => clearInterval(timer), { once: true });
+          return stream;
+        };
+      });
       const errors = [];
       page.on('pageerror', e => errors.push(e.message));
       page.on('console', e => { if (e.type() === 'warning' && e.text().includes('missing elements')) errors.push(e.text()); });
@@ -598,14 +655,44 @@ async function main() {
       capabilities = null; tasks = []; historyTasks = []; runnerInstalled = true; connected = savedConnected; authorized = savedAuthorized;
       await page.goto(origin);
       await visible(page, '#dashboard-view');
-      // Feedback captures a synthetic PNG, annotates it on canvas, exports PNG and
-      // keeps the draft when the server rejects it. The panel floats over every
-      // view and can be dragged away from the area being captured.
+      // Feedback is screenshot-first: one capture primary path, no element
+      // selection mode, two visible textareas and collapsed advanced fields.
       assert.equal(await page.locator('#feedback-view').isVisible(), false);
       await page.locator('#feedback-launcher').click();
       await visible(page, '#feedback-view');
       assert.equal(await page.locator('#feedback-launcher').getAttribute('aria-expanded'), 'true');
+      const feedbackButtons = await page.locator('#feedback-view button').evaluateAll(buttons => buttons.map(button => (button.textContent || '').trim()));
+      assert.equal(feedbackButtons.some(text => /element mode|select an element|select element|选择元素|元素模式/i.test(text)), false, 'no separate element-selection mode');
+      assert.equal(await page.locator('#feedback-view [data-feedback-element-mode]').count(), 0);
+      assert.match(await page.locator('#feedback-capture-page').getAttribute('class'), /primary/);
+      assert.match(await page.locator('#feedback-choose-image').getAttribute('class'), /ghost/);
+      assert.match(await page.locator('#feedback-dropzone .hint').textContent(), language === 'zh' ? /粘贴|拖入/ : /paste|drop/i);
+      assert.equal(await page.locator('#feedback-form textarea:visible').count(), 2, 'only two primary textareas are visible');
+      assert.equal(await page.locator('#feedback-more').evaluate(node => node.open), false, 'advanced fields start collapsed');
+      assert.equal(await page.locator('#feedback-title').isVisible(), false);
+      assert.equal(await page.locator('#feedback-priority').isVisible(), false);
+      assert.equal(await page.locator('#feedback-acceptance').isVisible(), false);
+      assert.equal((await page.locator('label[for="feedback-current"]').textContent()).trim(), language === 'zh' ? '发生了什么？' : 'What happened?');
+      assert.equal((await page.locator('label[for="feedback-expected"]').textContent()).trim(), language === 'zh' ? '你希望怎样？' : 'What do you want?');
+      assert.equal(await page.locator('#feedback-area').getAttribute('type'), 'hidden', 'area is derived from the active view');
+      assert.equal(await page.locator('#feedback-area').inputValue(), 'dashboard');
+      assert.equal(await page.locator('#feedback-dropzone').evaluate(node => node.getBoundingClientRect().height >= 90), true, 'screenshot dropzone is prominent');
       const panelBefore = await page.locator('#feedback-view').boundingBox();
+      assert.ok(panelBefore.width >= 390 && panelBefore.width <= 440, `compact desktop width: ${panelBefore.width}`);
+      assert.ok(panelBefore.height >= 560 && panelBefore.height <= 620, `compact desktop height: ${panelBefore.height}`);
+      const submitVisible = async () => page.locator('#feedback-submit').evaluate((button) => {
+        const panel = document.getElementById('feedback-view');
+        const rect = button.getBoundingClientRect();
+        const outer = panel.getBoundingClientRect();
+        return rect.top >= outer.top && rect.bottom <= outer.bottom + 1 && rect.left >= outer.left && rect.right <= outer.right + 1;
+      });
+      assert.equal(await submitVisible(), true, 'submit is visible without scrolling');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'feedback-heading', 'opening focuses the heading');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#feedback-view').isVisible(), false, 'Escape closes the panel');
+      assert.equal(await page.evaluate(() => document.activeElement.id), 'feedback-launcher', 'closing restores launcher focus');
+      await page.locator('#feedback-launcher').click();
+      await visible(page, '#feedback-view');
       const handle = await page.locator('#feedback-drag-handle').boundingBox();
       await page.mouse.move(handle.x + 48, handle.y + 18);
       await page.mouse.down();
@@ -613,16 +700,40 @@ async function main() {
       await page.mouse.up();
       const panelAfter = await page.locator('#feedback-view').boundingBox();
       assert.ok(Math.abs(panelAfter.x - panelBefore.x) > 20 || Math.abs(panelAfter.y - panelBefore.y) > 20, 'feedback window is draggable');
-      await page.locator('#feedback-image').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: syntheticPNG() });
+      assert.equal(await submitVisible(), true, 'submit remains visible after dragging');
+      // Denied screen capture is a translated, non-blocking fallback: the file
+      // path stays available and the panel is restored.
+      await page.evaluate(() => { window.__folioCaptureDenied = true; });
+      await page.locator('#feedback-capture-page').click();
+      await page.waitForFunction(() => document.getElementById('feedback-image-error').dataset.error === 'true');
+      assert.match(await page.locator('#feedback-image-error').textContent(), language === 'zh' ? /取消截屏/ : /cancelled/i);
+      assert.equal(await page.locator('#feedback-view').isVisible(), true);
+      assert.equal(await page.locator('#feedback-choose-image').isVisible(), true);
+      assert.equal(await page.locator('#feedback-dropzone').isVisible(), true);
+      await page.evaluate(() => { window.__folioCaptureDenied = false; });
+      // Successful capture hides the panel while getDisplayMedia runs, stores
+      // one native-resolution frame, attaches element context and restores it.
+      await page.locator('#feedback-capture-page').click();
       await visible(page, '#feedback-editor');
       await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
-      assert.match(await page.locator('#feedback-image-state').textContent(), /synthetic\.png/);
-      await page.locator('#feedback-remove-image').click();
-      await page.waitForFunction(() => document.getElementById('feedback-editor').hidden === true);
-      assert.equal(await page.locator('#feedback-image-state').textContent(), language === 'zh' ? '尚未选择图片' : 'No image selected');
-      await page.locator('#feedback-image').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: syntheticPNG() });
-      await visible(page, '#feedback-editor');
-      await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
+      await page.waitForFunction(() => {
+        const text = document.getElementById('feedback-context-summary')?.textContent || '';
+        return /(?:Attached|已附带)\s*\d+/.test(text);
+      });
+      assert.match(await page.locator('#feedback-context-summary').textContent(), language === 'zh' ? /已附带 \d+ 个页面元素 \/ 当前视图：/ : /Attached \d+ page elements \/ Current view:/);
+      assert.match(await page.locator('#feedback-image-state').textContent(), /current-page\.png/);
+      const captureOptions = await page.evaluate(() => window.__folioCaptureOptions);
+      assert.equal(captureOptions.preferCurrentTab, true, 'current tab is preferred');
+      assert.equal(captureOptions.audio, false);
+      assert.equal(await page.evaluate(() => window.__folioCaptureVisibility), 'hidden', 'feedback panel is hidden during capture');
+      assert.equal(await page.locator('#feedback-view').isVisible(), true, 'feedback panel is restored after capture');
+      assert.equal(await page.locator('#feedback-context-details').isVisible(), true);
+      await page.locator('#feedback-context-details > summary').click();
+      const contextListCount = await page.locator('#feedback-context-list li').count();
+      assert.ok(contextListCount > 0 && contextListCount <= 24, `context element list count: ${contextListCount}`);
+      assert.ok((await page.locator('#feedback-context-list li code').first().textContent()).length > 0, 'context list shows selectors');
+      assert.equal(await submitVisible(), true, 'submit stays visible with a captured preview');
+      if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-feedback-${language}.png` });
       const canvasBox = await page.locator('#feedback-canvas').boundingBox();
       assert.ok(canvasBox && canvasBox.width > 8 && canvasBox.height > 8);
       await page.mouse.move(canvasBox.x + 4, canvasBox.y + 4);
@@ -646,56 +757,98 @@ async function main() {
       assert.equal(exported.type, 'image/png');
       assert.ok(exported.size > 0);
       assert.equal(exported.signature.join(','), '137,80,78,71,13,10,26,10');
+      await page.locator('#feedback-current').fill('The synthetic current behavior is confusing.');
+      await page.locator('#feedback-expected').fill('The synthetic expected behavior is clear.');
+      const captureResponse = page.waitForResponse(response => response.url().endsWith('/api/feedback') && response.request().method() === 'POST');
+      await page.locator('#feedback-submit').click();
+      await captureResponse;
+      await visible(page, '#feedback-created [data-chat-task]');
+      assert.equal(feedbackRequests.length, 1);
+      const captureRequest = feedbackRequests[0];
+      assert.ok(Array.from(captureRequest.fields.title).length >= 4, 'title is derived on submit');
+      assert.equal(captureRequest.fields.area, 'dashboard', 'area follows the active view');
+      assert.equal(captureRequest.fields.priority, 'P2', 'priority defaults to P2');
+      assert.ok(captureRequest.fields.acceptance.length >= 8, 'acceptance is derived when empty');
+      assert.ok(captureRequest.image && captureRequest.image.length > 0, 'captured PNG is attached');
+      assert.equal(captureRequest.image.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+      assert.equal(captureRequest.image.readUInt32BE(16), 800, 'capture keeps native width');
+      assert.equal(captureRequest.image.readUInt32BE(20), 600, 'capture keeps native height');
+      assert.ok(captureRequest.context, 'page capture attaches context JSON');
+      assert.equal(captureRequest.context.view, 'dashboard');
+      assert.match(captureRequest.context.route, /^#/);
+      assert.equal(captureRequest.context.language, language);
+      assert.ok(captureRequest.context.viewport.width > 1 && captureRequest.context.viewport.height > 1);
+      assert.ok(captureRequest.context.elements.length > 0 && captureRequest.context.elements.length <= 24);
+      assert.ok(Buffer.byteLength(captureRequest.fields.context, 'utf8') <= 24 * 1024, 'context stays within 24 KiB');
+      for (const element of captureRequest.context.elements) {
+        assert.equal(Object.prototype.hasOwnProperty.call(element, 'value'), false, 'no input values in context');
+        assert.ok(element.rect.x >= 0 && element.rect.y >= 0 && element.rect.width >= 0 && element.rect.height >= 0);
+        assert.equal(String(element.selector || '').includes('feedback-'), false, 'feedback UI is excluded from context');
+      }
+      assert.match(await page.locator('#feedback-message').textContent(), language === 'zh' ? /已接受/ : /accepted/i);
+      assert.equal(await page.locator('#feedback-context').isVisible(), false, 'accepted submission clears context');
+      // A pasted/uploaded file carries only view/route/theme/language/viewport.
+      feedbackAccepted = false; feedbackReason = 'ambiguous';
+      await page.locator('#feedback-image').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: syntheticPNG() });
+      await visible(page, '#feedback-editor');
+      await page.waitForFunction(() => document.getElementById('feedback-canvas').width > 1);
+      await page.waitForFunction(() => {
+        const text = document.getElementById('feedback-context-summary')?.textContent || '';
+        return (document.documentElement.lang.startsWith('zh') ? text.includes('仅附带当前视图') : text.includes('Only the current view'));
+      });
+      assert.equal(await page.locator('#feedback-context-details').isVisible(), false, 'uploaded files do not expand to elements');
+      await page.locator('#feedback-more > summary').click();
+      await visible(page, '#feedback-title');
       await page.locator('#feedback-title').fill('Synthetic feedback title');
       await page.locator('#feedback-current').fill('The synthetic current behavior is confusing.');
       await page.locator('#feedback-expected').fill('The synthetic expected behavior is clear.');
       await page.locator('#feedback-acceptance').fill('The synthetic acceptance check passes.');
-      await page.locator('#feedback-area').selectOption('assistant');
       await page.locator('#feedback-priority').selectOption('P1');
+      const fileResponse = page.waitForResponse(response => response.url().endsWith('/api/feedback') && response.request().method() === 'POST');
       await page.locator('#feedback-submit').click();
-      await visible(page, '#feedback-created [data-chat-task]');
-      assert.equal(feedbackRequests.length, 1);
-      assert.equal(feedbackRequests[0].fields.title, 'Synthetic feedback title');
-      assert.equal(feedbackRequests[0].fields.area, 'assistant');
-      assert.equal(feedbackRequests[0].fields.priority, 'P1');
-      assert.ok(feedbackRequests[0].image && feedbackRequests[0].image.length > 0, 'annotated PNG is attached');
-      assert.equal(feedbackRequests[0].image.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-      assert.match(await page.locator('#feedback-message').textContent(), language === 'zh' ? /已接受/ : /accepted/i);
-      feedbackAccepted = false; feedbackReason = 'ambiguous';
-      await page.locator('#feedback-title').fill('Preserved rejected draft');
-      await page.locator('#feedback-current').fill('Preserved current details.');
-      await page.locator('#feedback-expected').fill('Preserved expected details.');
-      await page.locator('#feedback-acceptance').fill('Preserved acceptance details.');
-      await page.locator('#feedback-submit').click();
+      await fileResponse;
+      assert.equal(feedbackRequests.length, 2);
+      const fileRequest = feedbackRequests[1];
+      assert.equal(fileRequest.fields.title, 'Synthetic feedback title');
+      assert.equal(fileRequest.fields.area, 'dashboard');
+      assert.equal(fileRequest.fields.priority, 'P1');
+      assert.equal(fileRequest.fields.acceptance, 'The synthetic acceptance check passes.');
+      assert.ok(fileRequest.image && fileRequest.image.length > 0);
+      assert.ok(fileRequest.context, 'file upload attaches base context');
+      assert.equal(Object.prototype.hasOwnProperty.call(fileRequest.context, 'elements'), false, 'file upload has no element context');
+      assert.equal(fileRequest.context.view, 'dashboard');
+      assert.match(fileRequest.context.route, /^#/);
       await page.waitForFunction(() => {
         const text = document.getElementById('feedback-message')?.textContent || '';
         return text.includes(document.documentElement.lang.startsWith('zh') ? '含义不明确' : 'ambiguous');
       });
-      assert.equal(await page.locator('#feedback-title').inputValue(), 'Preserved rejected draft');
-      assert.equal(await page.locator('#feedback-current').inputValue(), 'Preserved current details.');
+      assert.equal(await page.locator('#feedback-title').inputValue(), 'Synthetic feedback title');
+      assert.equal(await page.locator('#feedback-current').inputValue(), 'The synthetic current behavior is confusing.');
       assert.equal(await page.locator('#feedback-created [data-chat-task]').count(), 0);
       feedbackReason = 'synthetic_unknown_reason';
       await page.locator('#feedback-submit').click();
       await page.waitForFunction(() => (document.getElementById('feedback-message')?.textContent || '').includes('synthetic_unknown_reason'));
-      assert.equal(await page.locator('#feedback-title').inputValue(), 'Preserved rejected draft');
+      assert.equal(await page.locator('#feedback-title').inputValue(), 'Synthetic feedback title');
       feedbackValidationError = true;
       await page.locator('#feedback-submit').click();
       await page.waitForFunction(() => {
         const text = document.getElementById('feedback-message')?.textContent || '';
         return text.includes(document.documentElement.lang.startsWith('zh') ? '标题太短' : 'title is too short');
       });
-      assert.equal(await page.locator('#feedback-title').inputValue(), 'Preserved rejected draft');
+      assert.equal(await page.locator('#feedback-title').inputValue(), 'Synthetic feedback title');
       feedbackValidationError = false;
       await page.locator('#feedback-image').setInputFiles({ name: 'not-image.txt', mimeType: 'text/plain', buffer: Buffer.from('not an image') });
       await page.waitForFunction(() => document.getElementById('feedback-image-error').dataset.error === 'true');
-      assert.match(await page.locator('#feedback-image-error').textContent(), language === 'zh' ? /PNG|JPEG/ : /PNG|JPEG/);
+      assert.match(await page.locator('#feedback-image-error').textContent(), /PNG|JPEG/);
+      assert.equal(await page.locator('#feedback-context').isVisible(), false, 'invalid image clears context');
       feedbackAccepted = true;
       await page.locator('#feedback-close').click();
       assert.equal(await page.locator('#feedback-view').isVisible(), false);
       assert.equal(await page.locator('#feedback-launcher').getAttribute('aria-expanded'), 'false');
       await page.locator('#feedback-launcher').click();
       await visible(page, '#feedback-view');
-      assert.equal(await page.locator('#feedback-title').inputValue(), 'Preserved rejected draft', 'closing the floating window preserves the draft');
+      assert.equal(await page.locator('#feedback-title').inputValue(), 'Synthetic feedback title', 'closing the floating window preserves the draft');
+      await page.locator('#feedback-more').evaluate(node => { node.open = false; });
       await page.locator('#feedback-close').click();
       // The board uses real stages, explains waiting, filters, and opens an attempt drawer.
       reviewRun = { ...maintenance(), needs_review: [] };
@@ -813,6 +966,13 @@ async function main() {
       await page.locator('#feedback-launcher').click();
       await visible(page, '#feedback-view');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile overflow in feedback window');
+      const mobilePanel = await page.locator('#feedback-view').boundingBox();
+      assert.ok(mobilePanel.width >= 388 && mobilePanel.width <= 391, `full-width mobile sheet: ${mobilePanel.width}`);
+      assert.equal(await page.locator('#feedback-area').inputValue(), 'runs', 'area follows the active view');
+      assert.ok(mobilePanel.y + mobilePanel.height >= 843, 'mobile sheet reaches the bottom edge');
+      assert.equal(await submitVisible(), true, 'submit stays visible in the mobile sheet');
+      assert.equal(await page.locator('#feedback-form textarea:visible').count(), 2);
+      if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-feedback-mobile-${language}.png` });
       await page.locator('#feedback-close').click();
       // Delayed history and report responses from a logged-out session must not
       // restore private data after a fresh login (even for the same owner).
@@ -866,6 +1026,7 @@ async function main() {
       await visible(page, '#feedback-view');
       await page.locator('#feedback-image').setInputFiles({ name: 'private.png', mimeType: 'image/png', buffer: syntheticPNG() });
       await visible(page, '#feedback-editor');
+      await page.locator('#feedback-more').evaluate(node => { node.open = true; });
       await page.locator('#feedback-title').fill('Synthetic private feedback');
       await page.locator('#feedback-current').fill('Synthetic private current details.');
       expired = true;
@@ -879,10 +1040,12 @@ async function main() {
       assert.equal(await page.locator('#feedback-current').inputValue(), '');
       assert.equal(await page.locator('#feedback-image').inputValue(), '');
       assert.equal(await page.locator('#feedback-canvas').isVisible(), false);
+      assert.equal(await page.locator('#feedback-context').isVisible(), false);
+      assert.equal(await page.locator('#feedback-context-summary').textContent(), '');
       assert.equal(await page.locator('#feedback-created').textContent(), '');
       assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, capability readiness, catalog submit/validation/disabled/fallback, chat task events/history, report result/retry/follow-up, floating draggable feedback image/canvas/accept/reject, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, catalog submit/validation/disabled/fallback, chat task events/history, report result/retry/follow-up, screenshot-first feedback capture/context/fallback/accept/reject, board/filter/drawer/actions, review/recheck, errors, language, mobile, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

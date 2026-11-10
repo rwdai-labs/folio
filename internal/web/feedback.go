@@ -52,7 +52,7 @@ func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.MultipartForm.RemoveAll()
 	values := map[string]any{}
-	for _, key := range []string{"title", "area", "current", "expected", "acceptance", "priority"} {
+	for _, key := range []string{"title", "area", "current", "expected", "acceptance", "priority", "context"} {
 		if list := r.MultipartForm.Value[key]; len(list) > 0 {
 			values[key] = list[0]
 		}
@@ -97,6 +97,7 @@ var feedbackInvalidReasons = map[string]bool{
 	"title_short": true, "title_long": true, "area_invalid": true,
 	"current_short": true, "expected_short": true, "acceptance_short": true,
 	"priority_invalid": true, "image_invalid": true, "too_large": true, "too_long": true,
+	"context_invalid": true,
 }
 
 func (s *Server) writeFeedbackInvalid(w http.ResponseWriter, reason string) {
