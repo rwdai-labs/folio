@@ -142,11 +142,11 @@ func TestCreateFeedbackDeterministicReasons(t *testing.T) {
 		{"title short", func(input *FeedbackInput) { input.Title = "abc" }, nil, "title_short"},
 		{"title long", func(input *FeedbackInput) { input.Title = strings.Repeat("x", 121) }, nil, "title_long"},
 		{"area invalid", func(input *FeedbackInput) { input.Area = "home" }, nil, "area_invalid"},
-		{"current short", func(input *FeedbackInput) { input.Current = "short" }, nil, "current_short"},
+		{"current empty", func(input *FeedbackInput) { input.Current = "" }, nil, "current_short"},
 		{"current long", func(input *FeedbackInput) { input.Current = strings.Repeat("x", maxFeedbackTextRunes+1) }, nil, "too_long"},
-		{"expected short", func(input *FeedbackInput) { input.Expected = "short" }, nil, "expected_short"},
+		{"expected empty", func(input *FeedbackInput) { input.Expected = "" }, nil, "expected_short"},
 		{"expected long", func(input *FeedbackInput) { input.Expected = strings.Repeat("x", maxFeedbackTextRunes+1) }, nil, "too_long"},
-		{"acceptance short", func(input *FeedbackInput) { input.Acceptance = "short" }, nil, "acceptance_short"},
+		{"acceptance empty", func(input *FeedbackInput) { input.Acceptance = "" }, nil, "acceptance_short"},
 		{"acceptance long", func(input *FeedbackInput) { input.Acceptance = strings.Repeat("x", maxFeedbackTextRunes+1) }, nil, "too_long"},
 		{"priority invalid", func(input *FeedbackInput) { input.Priority = "P3" }, nil, "priority_invalid"},
 		{"image invalid", func(input *FeedbackInput) {}, []byte("not an image"), "image_invalid"},
@@ -271,23 +271,22 @@ func TestFeedbackImageReencodeBoundsAndSafety(t *testing.T) {
 	}
 }
 
-func TestFeedbackModelGate(t *testing.T) {
+func TestFeedbackGateIsAdvisory(t *testing.T) {
 	cases := []struct {
-		name       string
-		body       string
-		status     int
-		accepted   bool
-		reason     string
-		wantReason string
+		name     string
+		body     string
+		status   int
+		advisory string
 	}{
-		{"ready fenced", "```json\n{\"ready\":true,\"reason\":\"ok\"}\n```", http.StatusOK, true, "", ""},
-		{"reject", "{\"ready\":false,\"reason\":\"too_broad\"}", http.StatusOK, false, "too_broad", "too_broad"},
-		{"ready with reject reason", "{\"ready\":true,\"reason\":\"too_broad\"}", http.StatusOK, false, "ambiguous", "ambiguous"},
-		{"unknown reason", "{\"ready\":false,\"reason\":\"maybe\"}", http.StatusOK, false, "ambiguous", "ambiguous"},
-		{"extra field", "{\"ready\":true,\"reason\":\"ok\",\"extra\":1}", http.StatusOK, false, "gate_unavailable", "gate_unavailable"},
-		{"wrong type", "{\"ready\":\"yes\",\"reason\":\"ok\"}", http.StatusOK, false, "gate_unavailable", "gate_unavailable"},
-		{"prose no object", "the request is fine", http.StatusOK, false, "gate_unavailable", "gate_unavailable"},
-		{"upstream failure", "", http.StatusInternalServerError, false, "gate_unavailable", "gate_unavailable"},
+		{"ready fenced", "```json\n{\"ready\":true,\"reason\":\"ok\"}\n```", http.StatusOK, ""},
+		{"ready with unusual reason", "{\"ready\":true,\"reason\":\"clear\"}", http.StatusOK, ""},
+		{"ready with reject reason", "{\"ready\":true,\"reason\":\"too_broad\"}", http.StatusOK, ""},
+		{"reject", "{\"ready\":false,\"reason\":\"too_broad\"}", http.StatusOK, "too_broad"},
+		{"unknown reason", "{\"ready\":false,\"reason\":\"maybe\"}", http.StatusOK, "ambiguous"},
+		{"extra field", "{\"ready\":true,\"reason\":\"ok\",\"extra\":1}", http.StatusOK, "gate_unavailable"},
+		{"wrong type", "{\"ready\":\"yes\",\"reason\":\"ok\"}", http.StatusOK, "gate_unavailable"},
+		{"prose no object", "the request is fine", http.StatusOK, "gate_unavailable"},
+		{"upstream failure", "", http.StatusInternalServerError, "gate_unavailable"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -310,10 +309,22 @@ func TestFeedbackModelGate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("gate call: %v", err)
 			}
-			if value["accepted"] != test.accepted {
-				t.Fatalf("accepted=%v want %v value=%v", value["accepted"], test.accepted, value)
+			// The gate never vetoes owner input: a submission is always accepted
+			// and only carries the model's opinion as bounded advisory metadata.
+			if value["accepted"] != true {
+				t.Fatalf("accepted=%v want true value=%v", value["accepted"], value)
 			}
 			record := value["feedback"].(map[string]any)
+			if record["status"] != "accepted" || record["task_id"] == nil {
+				t.Fatalf("accepted record=%v", record)
+			}
+			if record["reason"] != nil {
+				t.Fatalf("advisory verdict was recorded as a rejection reason: %v", record)
+			}
+			advisory, _ := record["gate_advisory"].(string)
+			if advisory != test.advisory {
+				t.Fatalf("gate_advisory=%q want %q value=%v", advisory, test.advisory, record)
+			}
 			persisted, err := os.ReadFile(filepath.Join(store.feedbackDirFor(record["id"].(string)), "feedback.json"))
 			if err != nil {
 				t.Fatal(err)
@@ -322,26 +333,19 @@ func TestFeedbackModelGate(t *testing.T) {
 			if err := json.Unmarshal(persisted, &stored); err != nil {
 				t.Fatal(err)
 			}
+			if storedAdvisory, _ := stored["gate_advisory"].(string); storedAdvisory != test.advisory {
+				t.Fatalf("persisted gate_advisory=%q want %q", storedAdvisory, test.advisory)
+			}
 			if test.status == http.StatusOK {
 				usage, ok := record["gate_usage"].(map[string]any)
 				if !ok || usage["input_tokens"] != int64(70) || usage["cached_tokens"] != int64(30) || usage["total_tokens"] != int64(120) {
 					t.Fatalf("gate usage=%v", record["gate_usage"])
 				}
-				storedUsage, ok := stored["gate_usage"].(map[string]any)
-				if !ok || storedUsage["total_tokens"] != float64(120) {
+				if storedUsage, ok := stored["gate_usage"].(map[string]any); !ok || storedUsage["total_tokens"] != float64(120) {
 					t.Fatalf("persisted gate usage=%v", stored["gate_usage"])
 				}
 			} else if record["gate_usage"] != nil || stored["gate_usage"] != nil {
 				t.Fatalf("failed call without a response invented usage: %v", record)
-			}
-			if test.accepted {
-				if record["status"] != "accepted" || record["task_id"] == nil {
-					t.Fatalf("accepted record=%v", record)
-				}
-				return
-			}
-			if record["status"] != "rejected" || record["reason"] != test.wantReason {
-				t.Fatalf("rejected record=%v", record)
 			}
 			if strings.Contains(string(persisted), "maybe") || strings.Contains(string(persisted), "the request is fine") {
 				t.Fatalf("raw gate output persisted: %s", persisted)
@@ -641,6 +645,40 @@ func TestFeedbackInvalidContextNeverReachesModel(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("invalid context reached the gate model %d times", calls)
+	}
+}
+
+func TestCreateFeedbackAcceptsShortOwnerText(t *testing.T) {
+	store := newTestStore(t)
+	input := validFeedbackInput()
+	// Short owner wording is valid input: the form is not a writing exercise and
+	// the screenshot region carries the referent.
+	input.Current = "没发生什么"
+	input.Expected = "把这个模块去掉"
+	value, err := store.CreateFeedback(input, nil)
+	if err != nil || value["accepted"] != true {
+		t.Fatalf("short owner text value=%v err=%v", value, err)
+	}
+	record := value["feedback"].(map[string]any)
+	if record["status"] != "accepted" || record["task_id"] == nil {
+		t.Fatalf("short owner text record=%v", record)
+	}
+}
+
+func TestFeedbackGatePromptNamesTheCapturedRegion(t *testing.T) {
+	input := validFeedbackInput()
+	context := syntheticPageContextFixture()
+	context.Elements = []FeedbackElement{{
+		Index: 1, Tag: "section", Name: "快捷操作", Section: "工作",
+		Selector: "#catalog", Text: "创建后台报告",
+		Rect: FeedbackRect{Width: 1361, Height: 324},
+	}}
+	input.Context = &context
+	prompt := feedbackGatePrompt(input)
+	for _, phrase := range []string{"screenshot region", "this module", `name="快捷操作"`} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("gate prompt missing %q: %s", phrase, prompt)
+		}
 	}
 }
 

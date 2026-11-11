@@ -74,9 +74,10 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   `requireSession`/CSRF but before `requestBody` JSON parsing; bound the total
   body with `MaxBytesReader` at 8 MiB plus a bounded 1 MiB multipart-envelope
   allowance, while the image part itself stays capped at 8 MiB. Create returns 201
-  `{accepted:true,feedback,task}` or 200 `{accepted:false,feedback}` for a
-  recorded gate rejection. Records may carry bounded normalized `gate_usage`
-  counters from the gate call, never raw gate text. Malformed input returns 400
+  `{accepted:true,feedback,task}`; the store no longer rejects owner feedback,
+  and a backend's `{accepted:false,feedback}` is still passed through unchanged.
+  Records may carry bounded normalized `gate_usage` counters from the advisory
+  gate call plus a `gate_advisory` code, never raw gate text. Malformed input returns 400
   `feedback_invalid`, with a fixed `reason` such as `title_short`/`image_invalid`
   when available. An optional multipart `context` field carries the store's
   bounded page-context JSON (<=24 KiB UTF-8 object; no HTML, input values or

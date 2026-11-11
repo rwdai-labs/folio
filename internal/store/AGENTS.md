@@ -61,14 +61,20 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   viewport and at most 8 elements within the existing 4000-rune prompt bound.
   When a report binding exists, call the trusted
   tool-free adapter with a strict JSON-only sufficiency prompt (30s, <=512
-  output), extract the first balanced object, reject extra/missing/wrong-typed
-  fields, accept ready=true only with reason `ok`, map unknown reasons to
-  `ambiguous`, record only normalized bounded `gate_usage` counters (also on
-  parse failure), and record `gate_unavailable` on any call/parse failure; never
-  persist raw gate output. No report binding skips the gate without inventing a
-  model. Rejections (`too_broad`, `ambiguous`, `not_actionable`, `unsafe_scope`,
-  `gate_unavailable`, defensive `too_long`) are recorded with status rejected
-  and returned as normal accepted=false outcomes. Acceptance uses the reserved
+  output). That prompt states that "this module"/"this UI" means the summarized
+  Visible elements captured inside the owner's screenshot region, so a pointer
+  into the image is not treated as missing detail. Extract the first balanced
+  object, reject extra/missing/wrong-typed fields, accept any ready=true answer,
+  map unknown reasons to `ambiguous`, record only normalized bounded
+  `gate_usage` counters (also on parse failure), and record `gate_unavailable`
+  on any call/parse failure; never persist raw gate output. No report binding
+  skips the gate without inventing a model. The gate is advisory: owner input is
+  authoritative, so a not-ready verdict is stored as bounded `gate_advisory` and
+  still creates the plan task instead of rejecting the submission. Text fields
+  need only to be non-empty (no minimum length) and within their bounds; only
+  deterministic validation (empty/oversized fields, invalid area, priority,
+  image or context, defensive `too_long`) refuses input, writing no record and
+  returning the fixed reason. Acceptance uses the reserved
   internal `feedback-plan` report kind (never listed or configurable, so a
   configured `report` action cannot intercept it) to build a bounded
   plan-only report task (`Plan: ` title, payload request, no edits/deploy, no
