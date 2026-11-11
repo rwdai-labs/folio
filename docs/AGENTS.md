@@ -6,7 +6,8 @@ Inherit `../AGENTS.md`.
   personal assistant, task center, and owner-controlled digital counterpart;
   context maintenance is its first shipped scenario.
 - `self-bootstrap.md` describes owner feedback capture, the action catalog,
-  the sufficiency gate, the plan-only task, and the isolated source workshop
+  asynchronous screenshot-aware intake and clarification, the plan-only task,
+  and the isolated source workshop
   that remains planned. Do not claim source auto-edit, commit/push, or
   deployment from Phase 1–2.
 - `integration-plugins.md` documents implemented plugin boundaries and signed

@@ -13,10 +13,11 @@ The long-term loop is:
 ```text
 annotated screenshot + structured feedback
               ↓
-   advisory sufficiency gate
-     accepted + optional hint
+   accepted immediately (no model wait)
               ↓
-        durable plan task
+ async main-agent intake (screenshot + page context)
+   ├─ clear → durable plan task
+   └─ one missing decision → owner answers options → intake again
               ↓
  isolated source workshop (planned)
               ↓
@@ -69,7 +70,7 @@ are rendered as text.
 `context`, or `workshop`. Readiness is local configuration, never proof that an
 upstream account or inference call works.
 
-## Phase 2: feedback inbox and gate
+## Phase 2: feedback inbox and asynchronous intake
 
 Feedback is private owner data stored under `data/feedback/`; the public image
 never contains context, credentials, or runtime files. The console exposes it as
@@ -94,13 +95,14 @@ selected rectangle; the summary also names the region size. It never records
 input values, passwords, raw HTML or hidden elements. Uploaded files carry only
 the basic view/route metadata, not invented DOM elements. The context is capped
 at 24 KiB, stored only in the private feedback record, and summarized into the
-gate/plan prompt; the detail API exposes it to the authenticated owner while list
+intake/plan prompt; the detail API exposes it to the authenticated owner while list
 summaries expose only a count. Screen capture uses the browser display-capture
 API when the page is a secure context and the selected region can be mapped to a
 tab frame; on an HTTP LAN address, or when the browser shares a window/monitor
 instead of the tab, the same selector renders a permission-free local DOM
 snapshot cropped to the chosen region and attaches the same metadata. The
-screenshot still never leaves the private feedback store.
+screenshot leaves the private store only for the configured intake model call;
+it is never written to a report, run audit, or notification.
 
 The screenshot is decoded and re-encoded as PNG to strip metadata, bounded by
 dimensions and byte size, and served only through an authenticated route. No
@@ -109,25 +111,42 @@ multipart envelope gets a separate bounded 1 MiB allowance so a maximal image
 plus form fields is still accepted. Required boolean catalog fields must be
 explicitly true, not merely present.
 
-Submission stays deterministic:
+Submission stays deterministic and never waits on a provider:
 
 - Required fields, area, priority, and image checks. Text fields only have to be
   non-empty and within their maximum length; there is no minimum length.
-- No model grades the owner's wording or the screenshot. The owner is the
-  authority on what they want, and a request that points at the captured region
-  ("remove this module") is a normal request, not an underspecified one.
+- Deterministic malformed input (empty or oversized fields, an invalid image or
+  context) is refused with a 400 response before a feedback record is written.
+- A valid submission is stored and accepted immediately. When a main agent is
+  configured, a durable `feedback-intake` task reviews it asynchronously; with
+  no main agent, the deterministic plan task is created immediately.
 
-Deterministic malformed input (empty or oversized fields, an invalid image or
-context) is refused with a 400 response before a feedback record is written.
-Any accepted request becomes a durable **planning** report task that names
-assumptions instead of asking the owner to rephrase. An accepted
-request currently creates a durable **planning** report task: it may describe
+The intake turn is a bounded main-agent turn with only two host tools:
+`feedback.plan` and `feedback.clarify`. It receives the owner's text, the
+bounded page/element projection, and the screenshot (downscaled and re-encoded
+for the model request). The screenshot leaves the private feedback store only
+through that configured model connection; it is never written to a report, run
+audit, or notification.
+
+- `feedback.plan` when the captured region and text identify the request well
+  enough to plan. A region plus "remove this module" is specific enough.
+- `feedback.clarify` only when two materially different plans are plausible and
+  one missing decision changes what gets planned. It asks at most two questions,
+  each with 2–4 concrete options and an optional free-form detail. It must not
+  ask the owner to restate, explain, or justify what they wrote, and must not ask
+  for information already visible in the screenshot or page context.
+
+Clarification questions and the owner's answers are durable state on the
+feedback record. Answers are validated against the current question set,
+increment an intake revision, and queue another intake turn. Once the request is
+ready, the store creates the durable **planning** report task with the owner's
+clarification answers and the main agent's planning focus. The plan may describe
 likely files, implementation steps, tests, assumptions, and scope risks, but it
-must not edit files, run commands, deploy, or ask the owner a clarifying
-question. This is deliberately not the source-edit loop.
+must not edit files, run commands, or deploy.
 
-The deterministic checks and the plan task are implemented in Phase 2. The
-source workshop below remains planned.
+A model or provider failure falls back to the deterministic plan task, so the
+owner's submission is never left waiting. The main agent manages the intake, not
+the source change: the isolated workshop remains planned.
 
 ## Phase 3: isolated source workshop
 
@@ -181,7 +200,10 @@ and attachment policy.
 - A screenshot can be dragged as a region (or captured whole), pasted, dropped,
   selected, annotated, and submitted; the stored image is private and
   authenticated.
-- Missing or vague feedback is rejected with a fixed reason and no task.
+- Malformed feedback is refused with a fixed reason and no record. A clear
+  request becomes a plan task without asking the owner to rephrase; one genuinely
+  missing decision is asked as an option-based question, and the answers resume
+  intake.
 - Accepted feedback creates a durable plan task and preserves the feedback and
   task association.
 - Both languages, keyboard operation, mobile layout, logout cleanup, and the

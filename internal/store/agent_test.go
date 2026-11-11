@@ -322,7 +322,7 @@ func TestAgentTaskCreateRejectsReservedFeedbackPlan(t *testing.T) {
 	store := newTestStore(t)
 	result, err := store.runAgentTool(context.Background(), AgentToolCall{Name: "task.create", Arguments: map[string]any{
 		"action": taskKindFeedbackPlan, "title": "Bypass", "payload": map[string]any{"request": "Synthetic"},
-	}}, eventTrustOwner, "console-main")
+	}}, eventTrustOwner, "console-main", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

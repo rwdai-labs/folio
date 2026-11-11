@@ -2725,6 +2725,19 @@ textarea {
 .feedback-submit-bar .btn { flex: 0 0 auto; margin-left: auto; }
 .feedback-window #feedback-created:empty { display: none; }
 .feedback-window #feedback-created .chat-task-card { margin: 0; }
+.feedback-intake { display: grid; gap: 10px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2, rgba(127, 127, 127, .06)); }
+.feedback-intake[hidden] { display: none; }
+.feedback-intake > .hint { margin: 0; }
+.feedback-clarify { display: grid; gap: 10px; }
+.feedback-clarify[hidden] { display: none; }
+.feedback-clarify > .hint { margin: 0; }
+.feedback-clarify #feedback-clarify-questions { display: grid; gap: 10px; }
+.feedback-question { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.feedback-question legend { padding: 0 4px; font-size: .8rem; font-weight: 650; }
+.feedback-option { display: flex; align-items: flex-start; gap: 8px; font-size: .8rem; line-height: 1.35; cursor: pointer; }
+.feedback-option input { margin: 2px 0 0; flex: 0 0 auto; }
+.feedback-answer-text { width: 100%; min-height: 44px; margin-top: 2px; }
+.feedback-clarify .btn { justify-self: start; }
 
 /* Region capture is a full-viewport selection layer. The transparent overlay
    leaves the page readable until a drag starts, then the selection's huge

@@ -27,6 +27,11 @@ type reportResult struct {
 }
 
 func (s *Store) runReportTask(kind taskKind, task taskRecord) (map[string]any, error) {
+	// Feedback intake is a report-shaped internal kind with its own executor:
+	// one main-agent turn that either queues a plan or asks the owner questions.
+	if kind.ID == taskKindFeedbackIntake {
+		return s.runFeedbackIntakeTask(task)
+	}
 	started := time.Now()
 	runID, err := newAutoRunID()
 	if err != nil {

@@ -531,7 +531,7 @@ func (s *Store) CreateTask(kind, source, title, priority string, payload map[str
 	// The feedback planning kind is reserved internal work: only the dedicated
 	// feedback source may create it. Owner, agent, hook and event callers cannot
 	// mint a plan task directly.
-	if kind == taskKindFeedbackPlan && source != taskSourceFeedback {
+	if isReservedFeedbackKind(kind) && source != taskSourceFeedback {
 		return nil, errStore("invalid_task_kind")
 	}
 	definition, err := s.resolveTaskAction(kind)

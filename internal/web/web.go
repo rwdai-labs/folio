@@ -176,9 +176,11 @@ type ActionRunBackend interface {
 	RunAction(id string, fields map[string]any) (map[string]any, error)
 }
 
-// FeedbackBackend owns the private feedback inbox and its sufficiency gate.
+// FeedbackBackend owns the private feedback inbox, asynchronous intake and the
+// owner's clarification answers.
 type FeedbackBackend interface {
 	CreateFeedbackRequest(values map[string]any, image []byte) (map[string]any, error)
+	FeedbackAnswerRequest(id string, values map[string]any) (map[string]any, error)
 	ListFeedback() (map[string]any, error)
 	FeedbackDetail(id string) (map[string]any, error)
 	FeedbackImage(id string) ([]byte, error)
@@ -1989,6 +1991,10 @@ func (s *Server) doPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/plugins/") {
 		s.pluginAPI(w, r, payload)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/feedback/") && strings.HasSuffix(r.URL.Path, "/answers") {
+		s.feedbackAnswer(w, r.URL.Path, payload)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/tasks/") && s.taskAdmin(w, r, payload) {

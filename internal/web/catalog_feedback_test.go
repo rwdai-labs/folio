@@ -366,3 +366,51 @@ func findFeedbackSummaryByID(t *testing.T, listing map[string]any, id string) ma
 	t.Fatalf("feedback %s not listed: %v", id, listing)
 	return nil
 }
+
+func TestHTTPFeedbackAnswersRoute(t *testing.T) {
+	backend := &testBackend{}
+	server, _ := testServer(t, backend)
+	defer server.Close()
+	client := &testClient{server: server}
+	client.login(t, "correct horse")
+	status, _, _, result := client.multipartRequest(t, "/api/feedback", validFeedbackFields(), nil, true, server.URL)
+	if status != http.StatusCreated {
+		t.Fatalf("create status=%d result=%v", status, result)
+	}
+	id := result["feedback"].(map[string]any)["id"].(string)
+	answers := map[string]any{"answers": []any{map[string]any{"question_id": "q1", "option_id": "o1"}}}
+
+	anonymous := &testClient{server: server}
+	if status, _, _ = anonymous.request(t, http.MethodPost, "/api/feedback/"+id+"/answers", answers, server.URL); status != http.StatusUnauthorized {
+		t.Fatalf("anonymous answers status=%d", status)
+	}
+	noCSRF := &testClient{server: server, cookie: client.cookie}
+	if status, _, _ = noCSRF.request(t, http.MethodPost, "/api/feedback/"+id+"/answers", answers, server.URL); status != http.StatusForbidden {
+		t.Fatalf("missing csrf answers status=%d", status)
+	}
+	if status, _, _ = client.request(t, http.MethodPost, "/api/feedback/f-aaaaaaaaaaaa/answers", answers, server.URL); status != http.StatusNotFound {
+		t.Fatalf("unknown answers status=%d", status)
+	}
+	if status, _, _ = client.request(t, http.MethodPost, "/api/feedback/not-an-id/answers", answers, server.URL); status != http.StatusNotFound {
+		t.Fatalf("malformed answers status=%d", status)
+	}
+	status, _, result = client.request(t, http.MethodPost, "/api/feedback/"+id+"/answers", answers, server.URL)
+	if status != http.StatusOK || result["feedback"].(map[string]any)["status"] != "accepted" {
+		t.Fatalf("answers status=%d result=%v", status, result)
+	}
+	status, _, result = client.request(t, http.MethodPost, "/api/feedback/"+id+"/answers", map[string]any{}, server.URL)
+	if status != http.StatusBadRequest || result["error"] != "feedback_invalid" || result["reason"] != "answers_invalid" {
+		t.Fatalf("invalid answers status=%d result=%v", status, result)
+	}
+	backend.feedbackAnswerErr = errors.New("feedback_not_awaiting_answers")
+	status, _, result = client.request(t, http.MethodPost, "/api/feedback/"+id+"/answers", answers, server.URL)
+	if status != http.StatusConflict || result["error"] != "feedback_not_awaiting_answers" {
+		t.Fatalf("not awaiting status=%d result=%v", status, result)
+	}
+	backend.feedbackAnswerErr = nil
+	backend.feedbackErr = errors.New("feedback_unavailable")
+	status, _, result = client.request(t, http.MethodPost, "/api/feedback/"+id+"/answers", answers, server.URL)
+	if status != http.StatusInternalServerError || result["error"] != "feedback_unavailable" {
+		t.Fatalf("unavailable status=%d result=%v", status, result)
+	}
+}

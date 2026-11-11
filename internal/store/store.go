@@ -118,6 +118,11 @@ type Store struct {
 	dispatchMu sync.Mutex
 	actionMu   sync.Mutex
 
+	// feedbackMu serializes question/answer/plan updates on feedback records.
+	// Intake turns run off the dispatcher while the owner may answer in the
+	// browser, so a record update is a load-modify-write under this lock.
+	feedbackMu sync.Mutex
+
 	// The main-agent turn loop serializes one interactive turn and stores
 	// bounded history. The runtime is injected from validated owner
 	// configuration; the default command adapter is unavailable until an

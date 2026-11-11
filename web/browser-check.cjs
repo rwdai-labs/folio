@@ -288,6 +288,7 @@ async function main() {
       let run = maintenance(), reviewRun = null, runRequests = [], jobRequests = 0, quotaRefreshes = 0;
       let tasks = [], capabilities = null, chatRequests = [], catalogRequests = [], feedbackRequests = [], resultError = false, runnerInstalled = true, historyTasks = [], historicalResult = false;
       let catalogUnavailable = false, feedbackAccepted = true, feedbackReason = 'ambiguous', feedbackValidationError = false;
+      let feedbackIntake = false, feedbackIntakeStage = 'pending', feedbackAnswerRequests = [], feedbackIntakeTask = null;
       let quotaMode = 'percent', latestAvailable = true;
       let holdHistory = false, holdResult = false, releaseHistory, releaseResult;
       const reportID = "synthetic-report-run";
@@ -383,6 +384,9 @@ async function main() {
           const parsed = parseMultipart(req.postDataBuffer(), req.headers()['content-type']);
           feedbackRequests.push(parsed);
           if (feedbackValidationError) { status = 400; body = { error: 'feedback_invalid', reason: 'title_short' }; }
+          else if (feedbackIntake) {
+            body = { accepted: true, feedback: { id: 'feedback-intake-1', status: 'intake_pending', has_image: Boolean(parsed.image && parsed.image.length), intake: { state: 'pending', revision: 0 } } };
+          }
           else if (feedbackAccepted) {
             const task = { id: 'feedback-task', title: parsed.fields.title, kind: 'feedback', status: 'queued', enabled: true, priority: parsed.fields.priority, source: 'manual' };
             tasks.push(task);
@@ -390,6 +394,26 @@ async function main() {
           } else {
             body = { accepted: false, feedback: { id: 'feedback-1', status: 'rejected', reason: feedbackReason } };
           }
+        }
+        else if (endpoint === '/api/feedback/feedback-intake-1' && req.method() === 'GET') {
+          if (feedbackIntakeStage === 'questions') {
+            body = { feedback: { id: 'feedback-intake-1', status: 'needs_clarification', intake: { state: 'questions', revision: 0, questions: [
+              { id: 'q1', question: 'Remove the whole card or keep the launcher?', options: [{ id: 'o1', label: 'Remove the whole card' }, { id: 'o2', label: 'Keep the launcher' }], allow_text: false },
+            ] } } };
+          } else if (feedbackIntakeStage === 'accepted') {
+            if (!feedbackIntakeTask) {
+              feedbackIntakeTask = { id: 'feedback-plan-task', title: 'Plan: remove the synthetic module', kind: 'feedback-plan', status: 'queued', enabled: true, priority: 'P2', source: 'feedback' };
+              tasks.push(feedbackIntakeTask);
+            }
+            body = { feedback: { id: 'feedback-intake-1', status: 'accepted', task_id: feedbackIntakeTask.id, intake: { state: 'ready', revision: 1 }, task: feedbackIntakeTask } };
+          } else {
+            body = { feedback: { id: 'feedback-intake-1', status: 'intake_pending', intake: { state: 'pending', revision: 0 } } };
+          }
+        }
+        else if (endpoint === '/api/feedback/feedback-intake-1/answers' && req.method() === 'POST') {
+          feedbackAnswerRequests.push(req.postDataJSON());
+          feedbackIntakeStage = 'accepted';
+          body = { feedback: { id: 'feedback-intake-1', status: 'intake_pending', intake: { state: 'pending', revision: 1 } } };
         }
         else if (endpoint.startsWith('/api/agent/sessions/')) {
           if (holdHistory) { holdHistory = false; await new Promise(resolve => { releaseHistory = resolve; }); body = { messages: [{ role: 'assistant', content: 'OLD SESSION CHAT CONTENT' }], tasks: [] }; }
@@ -1218,6 +1242,30 @@ async function main() {
       }
       assert.match(await page.locator('#feedback-message').textContent(), language === 'zh' ? /已接受/ : /accepted/i);
       assert.equal(await page.locator('#feedback-context').isVisible(), false, 'accepted submission clears context');
+
+      // Asynchronous intake: the main agent may ask one decision question with
+      // concrete options before it files the plan task.
+      feedbackIntake = true; feedbackIntakeStage = 'pending'; feedbackIntakeTask = null;
+      await page.locator('#feedback-current').fill('The synthetic card should go away.');
+      await page.locator('#feedback-expected').fill('Remove this module.');
+      const intakeResponse = page.waitForResponse(response => response.url().endsWith('/api/feedback') && response.request().method() === 'POST');
+      await page.locator('#feedback-submit').click();
+      await intakeResponse;
+      await visible(page, '#feedback-intake');
+      assert.equal(await page.locator('#feedback-clarify').isVisible(), false, 'clarification stays hidden while intake is pending');
+      feedbackIntakeStage = 'questions';
+      await visible(page, '#feedback-clarify');
+      await page.locator('#feedback-clarify-questions .feedback-question').first().waitFor();
+      assert.equal(await page.locator('#feedback-clarify-questions input[type="radio"]').count(), 2, 'clarification shows concrete options');
+      const answerResponse = page.waitForResponse(response => response.url().endsWith('/answers') && response.request().method() === 'POST');
+      await page.locator('#feedback-clarify-questions input[type="radio"]').nth(1).check();
+      await page.locator('#feedback-clarify-submit').click();
+      await answerResponse;
+      assert.equal(feedbackAnswerRequests.length, 1, 'answers are submitted');
+      assert.deepEqual(feedbackAnswerRequests[0], { answers: [{ question_id: 'q1', option_id: 'o2', text: '' }] });
+      await visible(page, '#feedback-created [data-chat-task]');
+      assert.match(await page.locator('#feedback-intake-state').textContent(), language === 'zh' ? /已交给规划/ : /filed for planning/i);
+      feedbackIntake = false; feedbackIntakeStage = 'pending';
       // A pasted/uploaded file carries only view/route/theme/language/viewport.
       feedbackAccepted = false; feedbackReason = 'ambiguous';
       await page.locator('#feedback-image').setInputFiles({ name: 'synthetic.png', mimeType: 'image/png', buffer: syntheticPNG() });
@@ -1238,8 +1286,8 @@ async function main() {
       const fileResponse = page.waitForResponse(response => response.url().endsWith('/api/feedback') && response.request().method() === 'POST');
       await page.locator('#feedback-submit').click();
       await fileResponse;
-      assert.equal(feedbackRequests.length, 2);
-      const fileRequest = feedbackRequests[1];
+      assert.equal(feedbackRequests.length, 3);
+      const fileRequest = feedbackRequests[2];
       assert.equal(fileRequest.fields.title, 'Synthetic feedback title');
       assert.equal(fileRequest.fields.area, 'dashboard');
       assert.equal(fileRequest.fields.priority, 'P1');

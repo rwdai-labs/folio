@@ -125,14 +125,22 @@ Inherit `../AGENTS.md`.
 - On submit derive a title from the first context element or the current text
   (at least 4 characters), derive the area from the active view, derive
   acceptance when empty, and default priority to P2. All remain editable under
-  `更多`. Show an accepted task card or the rejection reason without clearing
-  drafted fields (including derived values); translate known
-  `feedback.reason.<code>` values and show an unknown code as text. Never show a
-  model's opinion of the owner's wording: submission is accepted as written.
-  Validate required fields and the 8 MiB image limit client-side; there is no
-  minimum text length. Clear images, canvas,
-  fields and context on logout or session expiry and never persist screenshots
-  in browser storage.
+  `更多`. A successful submission may clear the draft; a rejection keeps it.
+  Translate known `feedback.reason.<code>` values and show an unknown code as
+  text. Never show a verdict on the owner's wording. Intake is asynchronous: the
+  POST returns `intake_pending`, so keep the window open and poll
+  `GET /api/feedback/{id}` with a bounded 2.5s timer (about three minutes),
+  guarded by the session epoch and stopped on logout, expiry, close, or a
+  terminal status. Render `needs_clarification` as a question card with native
+  radio options plus an optional 1000-rune detail field; submit
+  `{answers:[{question_id,option_id,text}]}` to
+  `POST /api/feedback/{id}/answers`, require one choice or detail per question,
+  and resume polling. Render the queued task card from the accepted detail.
+  Restore the last in-memory feedback id when the window reopens, but never
+  persist screenshots or feedback text in browser storage. Validate required
+  fields and the 8 MiB image limit client-side; there is no minimum text length.
+  Clear images, canvas, fields, questions and context on logout or session
+  expiry.
 - Structured `task.created` SSE events carry `task_id`, `title`, and `status`;
   session history's top-level `tasks` restores durable task cards. Cards open
   the existing task dialog. Results use authenticated
@@ -292,7 +300,8 @@ selection with live size/cancel/full-view/44px mobile controls, media and
 DOM-snapshot capture fallback (including missing `navigator.mediaDevices`),
 selected-region and whole-view capture with element context, uploaded-file
 context without elements, image/canvas export, accepted and rejected submissions
-with preserved drafts, mobile sheet layout, and session expiry cleanup. The mock
+with preserved drafts, asynchronous pending/clarification/answer/plan-card
+states with option controls, mobile sheet layout, and session expiry cleanup. The mock
 multipart parser exposes the parsed `context` JSON. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed
 provider authorization and external manual review still need runtime acceptance.

@@ -50,11 +50,12 @@ type testBackend struct {
 	runActionFields map[string]any
 	runActionErr    error
 
-	feedbackItems    []map[string]any
-	feedbackImages   map[string][]byte
-	feedbackErr      error
-	feedbackRejected bool
-	feedbackReason   string
+	feedbackItems     []map[string]any
+	feedbackImages    map[string][]byte
+	feedbackErr       error
+	feedbackRejected  bool
+	feedbackReason    string
+	feedbackAnswerErr error
 }
 
 func (b *testBackend) ReportResult(runID string) (map[string]any, error) {
@@ -388,6 +389,25 @@ func (b *testBackend) ListFeedback() (map[string]any, error) {
 		items = append(items, record)
 	}
 	return map[string]any{"feedback": items}, nil
+}
+
+func (b *testBackend) FeedbackAnswerRequest(id string, values map[string]any) (map[string]any, error) {
+	if b.feedbackAnswerErr != nil {
+		return nil, b.feedbackAnswerErr
+	}
+	if b.feedbackErr != nil {
+		return nil, b.feedbackErr
+	}
+	if _, ok := values["answers"].([]any); !ok {
+		return nil, errors.New("feedback_answers_invalid")
+	}
+	for _, record := range b.feedbackItems {
+		if record["id"] == id {
+			record["status"] = "accepted"
+			return map[string]any{"feedback": record}, nil
+		}
+	}
+	return nil, errors.New("feedback_unknown")
 }
 
 func (b *testBackend) FeedbackDetail(id string) (map[string]any, error) {

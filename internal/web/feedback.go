@@ -97,7 +97,38 @@ var feedbackInvalidReasons = map[string]bool{
 	"title_short": true, "title_long": true, "area_invalid": true,
 	"current_short": true, "expected_short": true, "acceptance_short": true,
 	"priority_invalid": true, "image_invalid": true, "too_large": true, "too_long": true,
-	"context_invalid": true,
+	"context_invalid": true, "answers_invalid": true,
+}
+
+// feedbackAnswer stores one owner answer set and queues the next intake turn.
+// The JSON body was parsed and bounded by the generic request contract; the
+// store validates every question/option against the pending question set.
+func (s *Server) feedbackAnswer(w http.ResponseWriter, path string, payload map[string]any) {
+	backend, ok := s.store.(FeedbackBackend)
+	if !ok {
+		s.writeError(w, http.StatusServiceUnavailable, "feedback_unavailable")
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/feedback/"), "/answers")
+	if !safeFeedbackID.MatchString(id) {
+		s.writeError(w, http.StatusNotFound, "feedback_unknown")
+		return
+	}
+	value, err := backend.FeedbackAnswerRequest(id, payload)
+	if err != nil {
+		switch err.Error() {
+		case "feedback_unknown":
+			s.writeError(w, http.StatusNotFound, "feedback_unknown")
+		case "feedback_answers_invalid":
+			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "feedback_invalid", "reason": "answers_invalid"}, nil)
+		case "feedback_not_awaiting_answers":
+			s.writeError(w, http.StatusConflict, "feedback_not_awaiting_answers")
+		default:
+			s.writeError(w, http.StatusInternalServerError, "feedback_unavailable")
+		}
+		return
+	}
+	s.writeJSON(w, http.StatusOK, safeMap(value), nil)
 }
 
 func (s *Server) writeFeedbackInvalid(w http.ResponseWriter, reason string) {

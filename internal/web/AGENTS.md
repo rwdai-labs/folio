@@ -69,13 +69,19 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   target resolving to it fails closed. Presentation fields are validated for
   owner launches and for hook/event actions that declare fields.
 - The optional `FeedbackBackend` serves session-protected `GET /api/feedback`,
-  `GET /api/feedback/{id}` and `GET /api/feedback/{id}/image`, plus CSRF-protected
-  multipart `POST /api/feedback`. The multipart branch must run after
+  `GET /api/feedback/{id}` and `GET /api/feedback/{id}/image`, CSRF-protected
+  multipart `POST /api/feedback`, and CSRF-protected JSON
+  `POST /api/feedback/{id}/answers` (`{"answers":[{"question_id","option_id","text"}]}`).
+  The multipart branch must run after
   `requireSession`/CSRF but before `requestBody` JSON parsing; bound the total
   body with `MaxBytesReader` at 8 MiB plus a bounded 1 MiB multipart-envelope
   allowance, while the image part itself stays capped at 8 MiB. Create returns 201
-  `{accepted:true,feedback,task}` with no model call on the submission path; a
-  backend's `{accepted:false,feedback}` is still passed through unchanged. Old
+  `{accepted:true,feedback}` with no model call on the submission path; feedback
+  is `intake_pending` when a main agent is configured, otherwise `accepted` with
+  an immediate task. A backend's `{accepted:false,feedback}` is still passed
+  through unchanged. Answers return the updated feedback (200); invalid answer
+  sets are 400 `feedback_invalid`/`answers_invalid`, a non-pending record is 409
+  `feedback_not_awaiting_answers`, and an unknown id is 404 `feedback_unknown`. Old
   records may still carry legacy `gate_usage`/`gate_advisory` fields, never raw
   model text. Malformed input returns 400
   `feedback_invalid`, with a fixed `reason` such as `title_short`/`image_invalid`
@@ -88,12 +94,14 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   valid. Context bounds (<=24 elements, fixed view enum, route <=200 runes,
   viewport 1..10000 with dpr 0.5..4, bounded element labels/selector/section and
   rect values 0..100000) live in store validation. Only validated context is
-  summarized into the bounded gate/plan prompt.
+  summarized into the bounded intake/plan prompt.
   Image responses are ID-only PNG bytes with `no-store`,
   `nosniff` and inline disposition; only `has_image` records serve them. Never
-  accept caller paths. Acceptance creates the reserved `feedback-plan` task with
-  the dedicated `feedback` store source; manual, agent, hook, event and pipeline
-  callers cannot create that kind directly.
+  accept caller paths. Acceptance queues the reserved `feedback-intake` task
+  asynchronously when a main agent is configured, or creates the reserved
+  `feedback-plan` task immediately; both use the dedicated `feedback` store
+  source, and manual, agent, hook, event and pipeline callers cannot create
+  either kind directly.
 - The optional `QuotaBackend` contract exposes session-protected
   `GET /api/quotas` and CSRF-protected `POST /api/quotas/refresh`. Responses are
   bounded maps, never raw magpie bodies, key paths, or credentials. A
@@ -128,8 +136,9 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   deduplication. A report's owner `payload.request` permits at most 4000 runes;
   excess/type errors return 400 `report_request_invalid`. A configured action's
   `action_disabled` returns 409, `action_input_invalid` returns 400, and other
-  invalid task input keeps 400 `task_invalid`. The reserved `feedback-plan`
-  kind is not accepted here; direct creation returns 400 `task_invalid`.
+  invalid task input keeps 400 `task_invalid`. The reserved `feedback-intake`
+  and `feedback-plan` kinds are not accepted here; direct creation returns 400
+  `task_invalid`.
 - `/api/state.capabilities` separates assistant/report/maintenance/context
   configuration readiness (`available`, `reason`, `verification: unknown`) and
   advertises `workshop` as unavailable (`workshop_unavailable`) until a later

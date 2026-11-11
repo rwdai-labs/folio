@@ -264,11 +264,11 @@ func TestStandaloneBoundReportDispatchAndFollowup(t *testing.T) {
 	if err != nil || !strings.Contains(result["text"].(string), "synthetic result") {
 		t.Fatalf("result=%v err=%v", result, err)
 	}
-	followup, err := store.runAgentTool(context.Background(), AgentToolCall{Name: "report.get", Arguments: map[string]any{"id": runID}}, eventTrustOwner, "console-main")
+	followup, err := store.runAgentTool(context.Background(), AgentToolCall{Name: "report.get", Arguments: map[string]any{"id": runID}}, eventTrustOwner, "console-main", nil)
 	if err != nil || followup["ok"] != true || followup["value"].(map[string]any)["run_id"] != runID {
 		t.Fatalf("followup=%v err=%v", followup, err)
 	}
-	denied, _ := store.runAgentTool(context.Background(), AgentToolCall{Name: "report.get", Arguments: map[string]any{"id": runID}}, eventTrustIntegration, "observer")
+	denied, _ := store.runAgentTool(context.Background(), AgentToolCall{Name: "report.get", Arguments: map[string]any{"id": runID}}, eventTrustIntegration, "observer", nil)
 	if denied["error"] != "tool_not_granted" {
 		t.Fatalf("observer read report: %v", denied)
 	}

@@ -46,7 +46,7 @@
     automationLoading: false,
     recovering: false,
     device: null,
-    timers: { poll: null, countdown: null, job: null, copy: null, automation: null },
+    timers: { poll: null, countdown: null, job: null, copy: null, automation: null, intake: null },
     automation: null,
     automationRuns: [],
     automationError: false,
@@ -114,6 +114,7 @@
       tool: "pen", color: "#d64545", width: 3,
       imageError: "", context: null, capturing: false, selecting: false,
       captureRegion: null,
+      lastId: "", questions: [], pollEpoch: 0, answersBusy: false, intakeFeedback: null,
     },
   };
 
@@ -1623,7 +1624,10 @@
 
   // Task kinds are data. The hook form lists whatever data/task-kinds.json
   // defines, so the owner adds a kind without touching this file.
-  const RESERVED_KIND_LABELS = Object.freeze({ "feedback-plan": "tasks.kind.feedback_plan" });
+  const RESERVED_KIND_LABELS = Object.freeze({
+    "feedback-plan": "tasks.kind.feedback_plan",
+    "feedback-intake": "tasks.kind.feedback_intake",
+  });
 
   function kindLabel(id) {
     const kind = (state.kinds || []).find((item) => item && item.id === id);
@@ -5213,6 +5217,7 @@
       setFeedbackContext(feedbackBaseContext());
     }
     feedbackClampWindow();
+    if (state.feedback.lastId) feedbackRefreshIntake();
     if (focus) $("feedback-heading").focus();
   }
 
@@ -5304,6 +5309,195 @@
     renderFeedbackNotice();
   }
 
+  /* Asynchronous intake: the main agent reviews the submission after the POST
+     returns. The window polls a bounded number of times and renders decision
+     questions with concrete options; the owner's answers queue another turn. */
+  const FEEDBACK_INTAKE_POLL_MS = 2500;
+  const FEEDBACK_INTAKE_POLL_LIMIT = 72;
+
+  function feedbackIntakeStopPoll() {
+    if (state.timers.intake) {
+      clearTimeout(state.timers.intake);
+      state.timers.intake = null;
+    }
+    state.feedback.pollEpoch += 1;
+  }
+
+  function feedbackIntakeStartPoll(id) {
+    feedbackIntakeStopPoll();
+    if (!id || !state.authenticated) return;
+    const epoch = state.feedback.pollEpoch;
+    const attempt = (remaining) => {
+      if (!state.authenticated || epoch !== state.feedback.pollEpoch) return;
+      state.timers.intake = setTimeout(() => {
+        state.timers.intake = null;
+        if (!state.authenticated || epoch !== state.feedback.pollEpoch) return;
+        api(`/api/feedback/${encodeURIComponent(id)}`, { method: "GET" })
+          .then((result) => {
+            if (!state.authenticated || epoch !== state.feedback.pollEpoch) return;
+            const feedback = result && result.feedback && typeof result.feedback === "object" ? result.feedback : null;
+            if (!feedback) return;
+            renderFeedbackIntake(feedback);
+            if (feedback.status === "accepted" || feedback.status === "rejected") return;
+            if (remaining > 1) attempt(remaining - 1);
+          })
+          .catch(() => {
+            if (remaining > 1) attempt(remaining - 1);
+          });
+      }, FEEDBACK_INTAKE_POLL_MS);
+    };
+    attempt(FEEDBACK_INTAKE_POLL_LIMIT);
+  }
+
+  function renderFeedbackIntake(feedback) {
+    const section = $("feedback-intake");
+    const stateNode = $("feedback-intake-state");
+    const clarify = $("feedback-clarify");
+    if (!section || !stateNode) return;
+    state.feedback.intakeFeedback = feedback || null;
+    section.hidden = false;
+    const status = feedback && typeof feedback.status === "string" ? feedback.status : "";
+    const intake = feedback && feedback.intake && typeof feedback.intake === "object" ? feedback.intake : {};
+    if (status === "needs_clarification" && Array.isArray(intake.questions) && intake.questions.length) {
+      state.feedback.questions = intake.questions;
+      stateNode.textContent = t("feedback.intake.questions");
+      stateNode.dataset.error = "false";
+      if (clarify) clarify.hidden = false;
+      renderFeedbackQuestions(intake.questions);
+      return;
+    }
+    state.feedback.questions = [];
+    if (clarify) clarify.hidden = true;
+    const created = $("feedback-created");
+    if (status === "accepted") {
+      stateNode.textContent = t("feedback.intake.filed");
+      stateNode.dataset.error = "false";
+      const task = feedback && feedback.task;
+      if (created && task && typeof task === "object") created.replaceChildren(chatTaskCard(task));
+      feedbackIntakeStopPoll();
+      refreshTasks();
+    } else if (status === "rejected") {
+      stateNode.textContent = t("feedback.rejected", { reason: feedbackReasonText(feedback.reason) });
+      stateNode.dataset.error = "true";
+      feedbackIntakeStopPoll();
+    } else {
+      stateNode.textContent = t("feedback.intake.pending");
+      stateNode.dataset.error = "false";
+    }
+  }
+
+  function renderFeedbackQuestions(questions) {
+    const container = $("feedback-clarify-questions");
+    if (!container) return;
+    container.replaceChildren();
+    questions.forEach((question, index) => {
+      if (!question || typeof question !== "object") return;
+      const group = document.createElement("fieldset");
+      group.className = "feedback-question";
+      group.dataset.questionId = typeof question.id === "string" ? question.id : `q${index + 1}`;
+      const legend = document.createElement("legend");
+      legend.textContent = typeof question.question === "string" ? question.question : "";
+      group.append(legend);
+      const options = Array.isArray(question.options) ? question.options : [];
+      options.forEach((option, optionIndex) => {
+        if (!option || typeof option !== "object") return;
+        const label = document.createElement("label");
+        label.className = "feedback-option";
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = `feedback-answer-${group.dataset.questionId}`;
+        input.value = typeof option.id === "string" ? option.id : `o${optionIndex + 1}`;
+        const text = document.createElement("span");
+        text.textContent = typeof option.label === "string" ? option.label : "";
+        label.append(input, text);
+        group.append(label);
+      });
+      const detail = document.createElement("textarea");
+      detail.className = "feedback-answer-text";
+      detail.dataset.answerText = "true";
+      detail.rows = 2;
+      detail.maxLength = 1000;
+      detail.placeholder = t("feedback.clarify.text");
+      detail.setAttribute("aria-label", t("feedback.clarify.text"));
+      group.append(detail);
+      container.append(group);
+    });
+  }
+
+  function collectFeedbackAnswers() {
+    const container = $("feedback-clarify-questions");
+    const questions = state.feedback.questions || [];
+    if (!container || !questions.length) return null;
+    const answers = [];
+    for (const question of questions) {
+      const questionID = question && typeof question.id === "string" ? question.id : "";
+      if (!questionID) return null;
+      const group = Array.from(container.querySelectorAll(".feedback-question"))
+        .find((node) => node.dataset.questionId === questionID);
+      if (!group) return null;
+      const checked = Array.from(group.querySelectorAll('input[type="radio"]')).find((input) => input.checked);
+      const textNode = group.querySelector("textarea[data-answer-text]");
+      const text = textNode ? textNode.value.trim() : "";
+      const optionID = checked && typeof checked.value === "string" ? checked.value : "";
+      if (!optionID && !text) {
+        if (textNode) textNode.focus();
+        return null;
+      }
+      answers.push({ question_id: questionID, option_id: optionID, text });
+    }
+    return answers;
+  }
+
+  async function submitFeedbackAnswers(event) {
+    if (event) event.preventDefault();
+    if (state.feedback.answersBusy) return;
+    const id = state.feedback.lastId;
+    const answers = collectFeedbackAnswers();
+    if (!id || !answers) {
+      setFeedbackNotice({ key: "feedback.clarify.required", error: true });
+      return;
+    }
+    if (!state.authenticated) return;
+    const epoch = state.sessionEpoch;
+    state.feedback.answersBusy = true;
+    const button = $("feedback-clarify-submit");
+    setBusy(button, "feedback.clarify.sending");
+    setFeedbackNotice(null);
+    try {
+      const result = await api(`/api/feedback/${encodeURIComponent(id)}/answers`, {
+        method: "POST",
+        body: { answers },
+      });
+      if (!state.authenticated || epoch !== state.sessionEpoch) return;
+      if (result && result.feedback) renderFeedbackIntake(result.feedback);
+      feedbackIntakeStartPoll(id);
+    } catch (error) {
+      if (state.authenticated && epoch === state.sessionEpoch) {
+        const detail = error && (error.payload || error.data) && typeof (error.payload || error.data) === "object" ? (error.payload || error.data) : {};
+        const reason = typeof detail.reason === "string" ? detail.reason : "";
+        setFeedbackNotice(reason ? { reason, error: true } : { key: errorKey(error, "feedback.clarify.failed"), error: true });
+      }
+    } finally {
+      state.feedback.answersBusy = false;
+      clearBusy(button);
+    }
+  }
+
+  async function feedbackRefreshIntake() {
+    const id = state.feedback.lastId;
+    if (!id || !state.authenticated) return;
+    try {
+      const result = await api(`/api/feedback/${encodeURIComponent(id)}`, { method: "GET" });
+      if (!state.authenticated) return;
+      if (result && result.feedback && typeof result.feedback === "object") {
+        renderFeedbackIntake(result.feedback);
+        if (result.feedback.status === "intake_pending") feedbackIntakeStartPoll(id);
+      }
+    } catch (_) {
+      // A missing or stale record leaves the draft intact and shows nothing.
+    }
+  }
+
   function renderFeedbackImageState() {
     const element = $("feedback-image-state");
     if (!element) return;
@@ -5391,13 +5585,24 @@
   function resetFeedbackSession() {
     state.feedbackBusy = false;
     state.feedback.capturing = false;
+    state.feedback.answersBusy = false;
+    feedbackIntakeStopPoll();
     feedbackSelectorClose(true);
     state.feedback.selecting = false;
     state.feedbackNotice = null;
+    state.feedback.lastId = "";
+    state.feedback.questions = [];
+    state.feedback.intakeFeedback = null;
     feedbackWindowClose(false);
     resetFeedbackDraft();
     const created = $("feedback-created");
     if (created) created.replaceChildren();
+    const intake = $("feedback-intake");
+    if (intake) intake.hidden = true;
+    const clarify = $("feedback-clarify");
+    if (clarify) clarify.hidden = true;
+    const questions = $("feedback-clarify-questions");
+    if (questions) questions.replaceChildren();
     if ($("feedback-color")) $("feedback-color").value = "#d64545";
     if ($("feedback-width")) $("feedback-width").value = "3";
     if ($("feedback-width-value")) $("feedback-width-value").textContent = "3";
@@ -5865,11 +6070,22 @@
         feedbackFocusRejection(reason);
         return;
       }
-      setFeedbackNotice({ key: "feedback.accepted" });
-      const task = result && (result.task || (result.feedback && result.feedback.task));
+      const feedback = result && result.feedback && typeof result.feedback === "object" ? result.feedback : null;
+      const feedbackID = feedback && typeof feedback.id === "string" ? feedback.id : "";
+      const task = result && (result.task || (feedback && feedback.task));
       const resultBox = $("feedback-created");
       if (resultBox && task && typeof task === "object") resultBox.replaceChildren(chatTaskCard(task));
+      if (feedbackID) state.feedback.lastId = feedbackID;
+      if (task) {
+        setFeedbackNotice({ key: "feedback.accepted" });
+        const intake = $("feedback-intake");
+        if (intake) intake.hidden = true;
+      } else {
+        setFeedbackNotice({ key: "feedback.intake.pending" });
+      }
+      if (feedback) renderFeedbackIntake(feedback);
       resetFeedbackDraft();
+      if (!task && feedbackID) feedbackIntakeStartPoll(feedbackID);
       await refreshTasks();
     } catch (error) {
       if (state.authenticated && epoch === state.sessionEpoch) {
@@ -6701,6 +6917,7 @@
   on("feedback-drag-handle", "pointerup", feedbackDragEnd);
   on("feedback-drag-handle", "pointercancel", feedbackDragEnd);
   on("feedback-form", "submit", submitFeedback);
+  on("feedback-clarify-submit", "click", submitFeedbackAnswers);
   on("feedback-image", "change", feedbackFileInputChanged);
   on("feedback-capture-page", "click", feedbackSelectorOpen);
   on("feedback-selector", "pointerdown", feedbackSelectorStart);
@@ -6850,6 +7067,8 @@
     renderFeedbackImageError();
     renderFeedbackContext();
     renderFeedbackNotice();
+    if (state.feedback.intakeFeedback) renderFeedbackIntake(state.feedback.intakeFeedback);
+    else if (state.feedback.questions.length) renderFeedbackQuestions(state.feedback.questions);
     rerenderBusyLabels();
   });
 

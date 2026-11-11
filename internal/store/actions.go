@@ -100,8 +100,11 @@ func builtinActionPlan(id string) (actionPlan, error) {
 // and dispatch. Runtime actions win over a legacy kind with the same id; a
 // disabled action is not a silent fallback to a legacy executor.
 func (s *Store) resolveTaskAction(id string) (actionPlan, error) {
-	// Feedback planning is an internal reserved kind; owner actions must never
-	// shadow it with arbitrary pipeline steps.
+	// Feedback intake and planning are internal reserved kinds; owner actions
+	// must never shadow them with arbitrary pipeline steps.
+	if id == taskKindFeedbackIntake {
+		return actionPlanForKind(feedbackIntakeKind())
+	}
 	if id == taskKindFeedbackPlan {
 		return actionPlanForKind(feedbackPlanKind())
 	}

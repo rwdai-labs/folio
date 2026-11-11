@@ -110,6 +110,33 @@ func (s *Store) agentTools(trust string) []AgentTool {
 	}
 }
 
+// feedbackAgentTools is the complete grant for one asynchronous feedback
+// intake turn. It can only record a verdict for the session's own feedback
+// record; the store re-checks the session and the pending revision.
+func feedbackAgentTools() []AgentTool {
+	return []AgentTool{
+		agentToolSpec("feedback.plan", "Accept the owner's feedback and queue one plan-only task. Use this when the captured screenshot region and the owner's text identify the request well enough to plan. The request is a short planning focus, not a copy of the owner's text.", map[string]any{
+			"type": "object", "properties": map[string]any{
+				"request": map[string]any{"type": "string", "maxLength": 4000},
+			}, "required": []string{"request"}, "additionalProperties": false,
+		}),
+		agentToolSpec("feedback.clarify", "Ask the owner up to two decision questions when a materially different plan depends on the answer. Each question needs 2-4 concrete options. Never ask the owner to restate the feedback or to justify their wording; never ask for information already visible in the screenshot or page context.", map[string]any{
+			"type": "object", "properties": map[string]any{
+				"questions": map[string]any{
+					"type": "array", "minItems": 1, "maxItems": 2,
+					"items": map[string]any{
+						"type": "object", "properties": map[string]any{
+							"question":   map[string]any{"type": "string", "maxLength": 240},
+							"options":    map[string]any{"type": "array", "minItems": 2, "maxItems": 4, "items": map[string]any{"type": "string", "maxLength": 120}},
+							"allow_text": map[string]any{"type": "boolean"},
+						}, "required": []string{"question", "options"}, "additionalProperties": false,
+					},
+				},
+			}, "required": []string{"questions"}, "additionalProperties": false,
+		}),
+	}
+}
+
 func emptyToolSchema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
 }
@@ -142,9 +169,12 @@ func agentMapArg(args map[string]any, key string) (map[string]any, bool) {
 
 // runAgentTool executes one host-authorized tool. A tool error is returned to
 // the model as data so it can recover; it does not abort the turn.
-func (s *Store) runAgentTool(ctx context.Context, call AgentToolCall, trust, session string) (map[string]any, error) {
+func (s *Store) runAgentTool(ctx context.Context, call AgentToolCall, trust, session string, grantedTools []AgentTool) (map[string]any, error) {
+	if grantedTools == nil {
+		grantedTools = s.agentTools(trust)
+	}
 	granted := false
-	for _, tool := range s.agentTools(trust) {
+	for _, tool := range grantedTools {
 		if tool.Name == call.Name {
 			granted = true
 			break
@@ -158,6 +188,18 @@ func (s *Store) runAgentTool(ctx context.Context, call AgentToolCall, trust, ses
 		args = map[string]any{}
 	}
 	switch call.Name {
+	case "feedback.plan":
+		value, err := s.feedbackPlanFromAgent(session, args)
+		if err != nil {
+			return agentToolError(err.Error()), nil
+		}
+		return agentToolOK(value), nil
+	case "feedback.clarify":
+		value, err := s.feedbackClarifyFromAgent(session, args)
+		if err != nil {
+			return agentToolError(err.Error()), nil
+		}
+		return agentToolOK(value), nil
 	case "task.create":
 		action, ok := agentStringArg(args, "action")
 		if !ok {

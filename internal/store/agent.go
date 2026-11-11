@@ -14,17 +14,21 @@ import (
 )
 
 const (
-	maxAgentInput       = 16 * 1024
-	maxAgentOutput      = 32 * 1024
-	maxAgentSession     = 128 * 1024
-	maxAgentMessages    = 40
-	maxAgentRounds      = 6
-	maxAgentToolCalls   = 8
-	maxAgentToolArgs    = 16 * 1024
-	maxAgentToolResult  = 64 * 1024
-	maxAgentRequest     = 256 * 1024
-	maxAgentRuntimeOut  = 2 * 1024 * 1024
-	agentRuntimeTimeout = 120 * time.Second
+	maxAgentInput      = 16 * 1024
+	maxAgentOutput     = 32 * 1024
+	maxAgentSession    = 128 * 1024
+	maxAgentMessages   = 40
+	maxAgentRounds     = 6
+	maxAgentToolCalls  = 8
+	maxAgentToolArgs   = 16 * 1024
+	maxAgentToolResult = 64 * 1024
+	maxAgentRequest    = 256 * 1024
+	// A feedback intake turn attaches one re-encoded screenshot. The image is
+	// downscaled and JPEG-encoded before it reaches this bound, so the request
+	// stays a small multiple of the 1.5 MiB source budget.
+	maxAgentImageRequest = 8 * 1024 * 1024
+	maxAgentRuntimeOut   = 2 * 1024 * 1024
+	agentRuntimeTimeout  = 120 * time.Second
 )
 
 var agentSessionRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -43,6 +47,15 @@ type AgentRequest struct {
 	History []AgentMessage `json:"history"`
 	Tools   []AgentTool    `json:"tools"`
 	Event   map[string]any `json:"event,omitempty"`
+	// System overrides the default main-agent framing for a scoped turn such as
+	// feedback intake. The host still owns the tool grants and execution.
+	System string `json:"system,omitempty"`
+	// ImageDataURL attaches one bounded PNG/JPEG data URL to the latest user
+	// message. It is never persisted with the session.
+	ImageDataURL string `json:"image_data_url,omitempty"`
+	// ToolChoice is "auto" (default), "required" or "none". Feedback intake
+	// uses "required" so the model must record a verdict through a host tool.
+	ToolChoice string `json:"tool_choice,omitempty"`
 }
 
 type AgentMessage struct {
@@ -188,17 +201,35 @@ func (s *Store) AgentTurnMap(ctx context.Context, session, text, trust string, e
 	return map[string]any{"text": result.Text, "run_id": result.RunID, "usage": result.Usage}, nil
 }
 
+// agentTurnOptions scopes one host turn. Zero values preserve the owner-console
+// behavior: default tools, default system prompt and no image.
+type agentTurnOptions struct {
+	Session      string
+	Input        string
+	Trust        string
+	System       string
+	Tools        []AgentTool
+	ImageDataURL string
+	RequireTool  bool
+	StopTools    map[string]bool
+}
+
 // AgentTurn runs one bounded main-agent turn. It loads session history, calls
 // the runtime, executes only granted tools, and records one audit run.
 func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit func(AgentEvent)) (AgentTurnResult, error) {
-	text = strings.TrimSpace(text)
+	return s.agentTurn(ctx, agentTurnOptions{Session: session, Input: text, Trust: trust}, emit)
+}
+
+func (s *Store) agentTurn(ctx context.Context, opts agentTurnOptions, emit func(AgentEvent)) (AgentTurnResult, error) {
+	text := strings.TrimSpace(opts.Input)
+	trust := opts.Trust
+	session := strings.TrimSpace(opts.Session)
 	if text == "" || len([]byte(text)) > maxAgentInput {
 		return AgentTurnResult{}, errStore("agent_input_invalid")
 	}
 	if !validEventTrust(trust) {
 		return AgentTurnResult{}, errStore("agent_trust_invalid")
 	}
-	session = strings.TrimSpace(session)
 	if session == "" {
 		session = "console-main"
 	}
@@ -210,6 +241,10 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 	runtime, runtimeConfig, runtimeErr := s.boundAgentRuntime()
 	if runtimeErr != nil || runtime == nil || !runtime.Available() {
 		return AgentTurnResult{}, errStore("agent_unavailable")
+	}
+	tools := opts.Tools
+	if tools == nil {
+		tools = s.agentTools(trust)
 	}
 	send := func(event AgentEvent) {
 		if emit != nil {
@@ -227,7 +262,6 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 	}
 	history := append([]AgentMessage(nil), sessionFile.Messages...)
 	history = append(history, AgentMessage{Role: "user", Content: text})
-	tools := s.agentTools(trust)
 	toolAudit := make([]any, 0, maxAgentToolCalls)
 	modelUsage := make([]any, 0, maxAgentRounds)
 	usage := map[string]int64{}
@@ -283,12 +317,19 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 		if ctx.Err() != nil {
 			return finish("canceled", "agent_canceled", "")
 		}
+		toolChoice := ""
+		if opts.RequireTool && round == 0 {
+			toolChoice = "required"
+		}
 		response, callErr := runtime.Turn(ctx, AgentRequest{
-			Session: session,
-			Input:   text,
-			History: history,
-			Tools:   tools,
-			Event:   map[string]any{"type": "owner.message", "trust": trust},
+			Session:      session,
+			Input:        text,
+			History:      history,
+			Tools:        tools,
+			Event:        map[string]any{"type": "owner.message", "trust": trust},
+			System:       opts.System,
+			ImageDataURL: opts.ImageDataURL,
+			ToolChoice:   toolChoice,
 		})
 		if normalized := reportUsage(response.Usage); normalized != nil {
 			mergePipelineUsage(usage, normalized)
@@ -333,6 +374,7 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 		// Keep the assistant tool-call message in history: OpenAI-compatible
 		// runtimes require it to be paired with each tool result by id.
 		history = append(history, AgentMessage{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
+		stopped := false
 		for _, call := range response.ToolCalls {
 			args, _ := json.Marshal(call.Arguments)
 			if len(args) > maxAgentToolArgs {
@@ -340,7 +382,7 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 			}
 			send(AgentEvent{Type: "tool.call", Tool: call.Name, Status: "running"})
 			stepStart := time.Now()
-			result, toolErr := s.runAgentTool(ctx, call, trust, session)
+			result, toolErr := s.runAgentTool(ctx, call, trust, session, tools)
 			status := "completed"
 			if toolErr != nil {
 				status = "failed"
@@ -368,6 +410,20 @@ func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit
 			send(AgentEvent{Type: "tool.result", Tool: call.Name, Status: status,
 				Summary: publicText(toolResultSummary(result), 200)})
 			history = append(history, AgentMessage{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: string(resultText)})
+			if status == "completed" && opts.StopTools[call.Name] {
+				stopped = true
+				break
+			}
+		}
+		if stopped {
+			if err := s.saveAgentSession(session, history); err != nil {
+				return finish("failed", "agent_session_failed", "")
+			}
+			final := strings.TrimSpace(response.Text)
+			if final != "" {
+				send(AgentEvent{Type: "text.delta", Text: final})
+			}
+			return finish("reported", "", final)
 		}
 	}
 	return finish("failed", "agent_tool_limit", "")

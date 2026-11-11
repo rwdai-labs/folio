@@ -213,7 +213,7 @@ func validatePipelines(file *pipelineFile, dataDir string) error {
 		definition.Description = strings.TrimSpace(definition.Description)
 		definition.Priority = strings.TrimSpace(definition.Priority)
 		definition.ReportFrom = strings.TrimSpace(definition.ReportFrom)
-		if !taskKindRE.MatchString(definition.ID) || seen[definition.ID] || definition.ID == taskKindFeedbackPlan {
+		if !taskKindRE.MatchString(definition.ID) || seen[definition.ID] || isReservedFeedbackKind(definition.ID) {
 			return errStore("actions are invalid")
 		}
 		seen[definition.ID] = true

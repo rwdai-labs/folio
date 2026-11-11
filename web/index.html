@@ -497,6 +497,14 @@
                 </details>
                 <input id="feedback-area" type="hidden" value="dashboard">
                 <div id="feedback-created"></div>
+                <section id="feedback-intake" class="feedback-intake" aria-live="polite" hidden>
+                  <p id="feedback-intake-state" class="hint"></p>
+                  <div id="feedback-clarify" class="feedback-clarify" hidden>
+                    <p class="hint" data-i18n="feedback.clarify.hint">Choose an answer so the plan matches what you meant.</p>
+                    <div id="feedback-clarify-questions"></div>
+                    <button id="feedback-clarify-submit" class="btn primary small" type="button" data-i18n="feedback.clarify.submit">Send answers</button>
+                  </div>
+                </section>
               </div>
               <div class="feedback-submit-bar">
                 <p id="feedback-message" class="form-message" role="status" aria-live="polite"></p>

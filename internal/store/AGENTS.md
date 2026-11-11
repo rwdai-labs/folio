@@ -9,7 +9,7 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `maintenance.go` | Incremental fingerprints, persistent review findings and continuation tasks |
 | `tasks.go`, `kinds.go`, `hooks.go`, `actions.go`, `events.go`, `routes.go`, `action_config.go`, `action_pipeline.go` | Durable queue, data-defined actions, internal action plans, signed events, event routes and the runtime action registry/pipeline |
 | `action_catalog.go` | Owner-facing catalog and validated action launch contract; never executes steps inline |
-| `feedback.go` | Private feedback inbox, deterministic validation, image normalization, bounded page context and the report sufficiency gate |
+| `feedback.go`, `feedback_intake.go` | Private feedback inbox, deterministic validation, image normalization, bounded page context, asynchronous main-agent intake and durable clarification answers |
 | `agent.go`, `agent_config.go`, `agent_openai.go`, `agent_tools.go` | Main-agent runtime boundary, validated owner configuration, OpenAI-compatible and command adapters, bounded sessions, owner/observer tool grants and agent run audit |
 | `model_services.go`, `model_execution.go` | Reusable model connections, task bindings, secret files, bounded catalog tests and tool-free report calls |
 | `report.go`, `report_result.go`, `readiness.go`, `usage.go`, `channels.go`, `models.go`, `quota.go`, `pricing.go` | Reports and bounded result reads, capability readiness, usage and estimated cost, notifications, runner catalogs, the optional quota snapshot and the cached model price catalog |
@@ -57,24 +57,36 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   is persisted only inside feedback.json, separate from screenshot.png. Detail
   exposes the sanitized schema; list summaries expose `element_count` only, and
   records without context stay readable. Invalid context never reaches a model:
-  the plan prompt appends a bounded textual projection of view, route, viewport
-  and at most 8 elements within the existing 4000-rune prompt bound. No model
-  grades the owner's feedback: the submission path makes no model call, so the
-  form never waits on a provider and no wording can be vetoed. Text fields need
-  only to be non-empty (no minimum length) and within their bounds; only
-  deterministic validation (empty/oversized fields, invalid area, priority,
-  image or context, defensive `too_long`) refuses input, writing no record and
-  returning the fixed reason. Records written while the retired sufficiency
-  gate existed still carry `gate_usage`/`gate_advisory`; new records leave both
-  empty and neither influences acceptance. Acceptance uses the reserved
-  internal `feedback-plan` report kind (never listed or configurable, so a
-  configured `report` action cannot intercept it) to build a bounded
-  plan-only report task (`Plan: ` title, payload request, no edits/deploy, no
-  clarifying questions) and stores task_id. Only the dedicated `feedback` source
-  may create this reserved kind; manual, agent, hook, event and pipeline callers
-  are rejected with `invalid_task_kind`. Feedback plan tasks use the explicit
-  full payload projection so the 4000-rune request survives persistence and
-  reload. Listing returns at most 50 newest summaries; detail/image are ID-only.
+  the intake and plan prompts append a bounded textual projection of view,
+  route, viewport and at most 8 elements within the existing 4000-rune plan
+  bound. Submission itself makes no model call. With a configured main agent the
+  record is accepted as `intake_pending` and a reserved `feedback-intake` task
+  runs one asynchronous agent turn whose only granted tools are `feedback.plan`
+  and `feedback.clarify`; the turn receives the downscaled, re-encoded screenshot
+  as a bounded image data URL plus the text/context projection. The screenshot
+  leaves the private store only for that configured model call and is never
+  written to a report, run audit, or notification. `feedback.clarify` stores at
+  most 2 questions with server-assigned ids and 2-4 options (question <=240,
+  option <=120 runes); it is for a missing decision that changes the plan, never
+  for judging clarity or asking the owner to restate. Answers must cover every
+  current question and match its options; the store appends the question and
+  option labels, increments the intake revision and queues another intake task.
+  A model/provider failure or a text-only verdict falls back to the deterministic
+  plan task, so a submission is never blocked. Text fields need only to be
+  non-empty (no minimum length) and within their bounds; only deterministic
+  validation (empty/oversized fields, invalid area, priority, image or context,
+  defensive `too_long`, invalid answer set) refuses input, writing no record or
+  no answer. Records written while the retired sufficiency gate existed still
+  carry `gate_usage`/`gate_advisory`; new records leave both empty. When ready,
+  the reserved `feedback-plan` report kind (never listed or configurable, so a
+  configured `report` action cannot intercept it) builds a bounded plan-only
+  task (`Plan: ` title, payload request with the owner's answers and the
+  managing agent's focus, no edits/deploy) and stores task_id. Only the
+  dedicated `feedback` source may create either reserved kind; manual, agent,
+  hook, event and pipeline callers are rejected with `invalid_task_kind`.
+  Feedback tasks use the explicit full payload projection so the 4000-rune
+  request survives persistence and reload. Listing returns at most 50 newest
+  summaries; detail/image are ID-only.
 - Reports use immutable `run-<run_id>.md` names. Result reads accept a run ID only,
   validate successful run ownership of its exact report filename, reject paths,
   symlinks and secret-shaped content, and bound regular-file reads to 64 KiB.

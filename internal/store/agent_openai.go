@@ -33,10 +33,22 @@ type openAIAgentRuntime struct {
 
 type openAIMessage struct {
 	Role       string           `json:"role"`
-	Content    string           `json:"content"`
+	Content    any              `json:"content"`
 	Name       string           `json:"name,omitempty"`
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
+}
+
+// openAIContentPart is the multimodal content shape used when a turn attaches
+// the owner's screenshot. Text-only messages keep the plain string form.
+type openAIContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openAIImageURL `json:"image_url,omitempty"`
+}
+
+type openAIImageURL struct {
+	URL string `json:"url"`
 }
 
 type openAIToolCall struct {
@@ -117,17 +129,30 @@ func (r *openAIAgentRuntime) Turn(ctx context.Context, request AgentRequest) (Ag
 		return AgentResponse{}, errStore("agent_unavailable")
 	}
 	tools := openAITools(request.Tools)
+	system := strings.TrimSpace(request.System)
+	if system == "" {
+		system = agentSystemPrompt
+	}
 	upstream := openAIRequest{
 		Model:     r.cfg.Model,
-		Messages:  openAIMessages(request.History),
+		Messages:  openAIMessages(request.History, system, request.ImageDataURL),
 		Tools:     tools,
 		MaxTokens: r.cfg.MaxOutputTokens,
 	}
 	if len(tools) > 0 {
 		upstream.ToolChoice = "auto"
+		if request.ToolChoice == "required" {
+			upstream.ToolChoice = "required"
+		}
+	}
+	// A screenshot turn carries a bounded image data URL. Text-only turns keep
+	// the smaller general request bound.
+	maxRequest := maxAgentRequest
+	if request.ImageDataURL != "" {
+		maxRequest = maxAgentImageRequest
 	}
 	payload, err := json.Marshal(upstream)
-	if err != nil || len(payload) > maxAgentRequest {
+	if err != nil || len(payload) > maxRequest {
 		return AgentResponse{}, errStore("agent_request_invalid")
 	}
 	if ctx == nil {
@@ -253,13 +278,25 @@ func openAITools(tools []AgentTool) []openAITool {
 	return result
 }
 
-func openAIMessages(history []AgentMessage) []openAIMessage {
+func openAIMessages(history []AgentMessage, system, imageDataURL string) []openAIMessage {
 	result := make([]openAIMessage, 0, len(history)+1)
-	result = append(result, openAIMessage{Role: "system", Content: agentSystemPrompt})
-	for _, message := range history {
+	result = append(result, openAIMessage{Role: "system", Content: system})
+	lastUser := -1
+	for index, message := range history {
+		if message.Role == "user" {
+			lastUser = index
+		}
+	}
+	for index, message := range history {
 		switch message.Role {
 		case "user", "assistant":
 			item := openAIMessage{Role: message.Role, Content: message.Content}
+			if message.Role == "user" && index == lastUser && imageDataURL != "" {
+				item.Content = []openAIContentPart{
+					{Type: "text", Text: message.Content},
+					{Type: "image_url", ImageURL: &openAIImageURL{URL: imageDataURL}},
+				}
+			}
 			for _, call := range message.ToolCalls {
 				arguments, _ := json.Marshal(call.Arguments)
 				if len(arguments) == 0 {

@@ -18,10 +18,11 @@ const (
 	kindActionMaintenance = "maintenance"
 	kindActionReport      = "report"
 
-	// taskKindFeedbackPlan is an internal, reserved report kind used by the
-	// feedback gate. It is not listed as a task kind and cannot be shadowed by
-	// an owner action.
-	taskKindFeedbackPlan = "feedback-plan"
+	// taskKindFeedbackIntake and taskKindFeedbackPlan are internal, reserved
+	// report-shaped kinds used by the feedback flow. Neither is listed as a
+	// task kind and neither can be shadowed by an owner action.
+	taskKindFeedbackIntake = "feedback-intake"
+	taskKindFeedbackPlan   = "feedback-plan"
 
 	maxKinds            = 32
 	maxKindBytes        = 64 * 1024
@@ -177,6 +178,16 @@ func feedbackPlanKind() taskKind {
 		Prompt: "Produce the plan requested in the payload. Do not edit files, run commands, deploy, or ask clarifying questions."}
 }
 
+// feedbackIntakeKind is an internal in-memory kind. runReportTask branches to
+// the main-agent intake executor before it would treat it as a Markdown report.
+func feedbackIntakeKind() taskKind {
+	return taskKind{ID: taskKindFeedbackIntake, Label: "Feedback intake", Action: kindActionReport, Priority: "P1"}
+}
+
+func isReservedFeedbackKind(id string) bool {
+	return id == taskKindFeedbackIntake || id == taskKindFeedbackPlan
+}
+
 func defaultTaskKinds() *taskKindsFile {
 	return &taskKindsFile{Version: 1, Kinds: []taskKind{{
 		ID: taskKindMaintenance, Label: "Context maintenance", Action: kindActionMaintenance, Priority: "P2",
@@ -196,7 +207,7 @@ func validateTaskKinds(file *taskKindsFile) error {
 		kind.Priority = strings.TrimSpace(kind.Priority)
 		kind.Runner = strings.TrimSpace(kind.Runner)
 		kind.Model = strings.TrimSpace(kind.Model)
-		if !taskKindRE.MatchString(kind.ID) || seen[kind.ID] || kind.ID == taskKindFeedbackPlan {
+		if !taskKindRE.MatchString(kind.ID) || seen[kind.ID] || isReservedFeedbackKind(kind.ID) {
 			return errStore("task kinds are invalid")
 		}
 		seen[kind.ID] = true
