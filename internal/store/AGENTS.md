@@ -59,9 +59,9 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   records without context stay readable. Invalid context never reaches a model:
   the intake and plan prompts append a bounded textual projection of view,
   route, viewport and at most 8 elements within the existing 4000-rune plan
-  bound. Submission itself makes no model call. With a configured main agent the
-  record is accepted as `intake_pending` and a reserved `feedback-intake` task
-  runs one asynchronous agent turn whose only granted tools are `feedback.plan`
+  bound. Submission itself makes no model call and never takes the agent-turn lock;
+  it persists the record as `intake_pending` and a reserved `feedback-intake`
+  task runs one asynchronous agent turn whose only granted tools are `feedback.plan`
   and `feedback.clarify`; the turn receives the downscaled, re-encoded screenshot
   as a bounded image data URL plus the text/context projection. The screenshot
   leaves the private store only for that configured model call and is never
@@ -71,8 +71,16 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   for judging clarity or asking the owner to restate. Answers must cover every
   current question and match its options; the store appends the question and
   option labels, increments the intake revision and queues another intake task.
-  A model/provider failure or a text-only verdict falls back to the deterministic
-  plan task, so a submission is never blocked. Text fields need only to be
+  A model/provider failure, missing verdict or interrupted queue attempt becomes
+  `intake_failed` with a fixed reason and is retryable through a new revision; it
+  never creates a plan, because an unassessed request is not approval. Only the
+  scoped turn's `feedback.plan` may create a plan. The tool re-checks the active
+  revision from a turn-scoped context, and generic console/Weixin turns and
+  history cannot use feedback-scoped sessions. Question ids are
+  `r<revision>-q<n>`; answers preserve their question and option labels. The
+  plan worker resolves the immutable feedback id at dispatch, so every
+  accumulated answer reaches the plan prompt even though the queued preview
+  request is projection-bounded. Text fields need only to be
   non-empty (no minimum length) and within their bounds; only deterministic
   validation (empty/oversized fields, invalid area, priority, image or context,
   defensive `too_long`, invalid answer set) refuses input, writing no record or
@@ -153,7 +161,12 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   whole shape, reject plain HTTP or malformed URLs, store a supplied API key
   only at `data/secrets/agent-api-key` with mode 0600, and never return it.
   The built-in OpenAI-compatible adapter and the optional command adapter at
-  `/data/agent/runtime` share the same gateway and bounds. Tool-call ids must
+  `/data/agent/runtime` share the same gateway and bounds. The HTTP adapter
+  encodes dotted host tool names with hyphens on the wire (some compatible
+  gateways reject dots) and maps them back before grant checks and audit, so
+  authorization keeps Folio's canonical names. Feedback-scoped sessions are
+  internal: generic console/Weixin turns, generic history and the command/HTTP
+  chat path reject `feedback-<id>` sessions. Tool-call ids must
   pair the assistant message with each tool result; a real pi wrapper remains
   unverified, so tests use a synthetic endpoint or executable. Successful
   `task.create` emits bounded `task.created` task ID/title/status metadata and

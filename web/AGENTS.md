@@ -130,14 +130,26 @@ Inherit `../AGENTS.md`.
   text. Never show a verdict on the owner's wording. Intake is asynchronous: the
   POST returns `intake_pending`, so keep the window open and poll
   `GET /api/feedback/{id}` with a bounded 2.5s timer (about three minutes),
-  guarded by the session epoch and stopped on logout, expiry, close, or a
-  terminal status. Render `needs_clarification` as a question card with native
-  radio options plus an optional 1000-rune detail field; submit
-  `{answers:[{question_id,option_id,text}]}` to
-  `POST /api/feedback/{id}/answers`, require one choice or detail per question,
-  and resume polling. Render the queued task card from the accepted detail.
-  Restore the last in-memory feedback id when the window reopens, but never
-  persist screenshots or feedback text in browser storage. Validate required
+  guarded by the session epoch, active feedback ID and generation (including
+  async cleanup), and stopped on logout, expiry, close, questions, or a terminal
+  status. Reopening refreshes the in-memory feedback ID; with no ID, recover the
+  newest unresolved `intake_pending`/`needs_clarification`/`intake_failed` summary
+  from `GET /api/feedback` (`feedback` array), then fetch its detail. Never
+  restore server text over a new local draft or persist screenshots, feedback
+  text, or IDs in browser storage. Render `needs_clarification` as a question
+  card with native radio options and a 1000-rune custom-text field, always
+  available even if `allow_text` is false. Preserve selected answers and text
+  across refresh, close/reopen and language changes using the backend's opaque,
+  revision-scoped question IDs; discard them for a different feedback/revision.
+  Submit `{answers:[{question_id,option_id?,text?}]}` to
+  `POST /api/feedback/{id}/answers`, omit empty optional values, require one
+  choice or detail per question, and resume polling only for pending intake.
+  Render `intake_failed` (`intake.state: failed`, fixed `feedback.reason`) as a
+  processing failure with `POST /api/feedback/{id}/retry` (`{}`) to queue another
+  revision, never as a fallback plan. Keep a visible manual status refresh after
+  polling times out or a request fails. Questions, options and recovery controls
+  use safe text and 44px touch targets. Render the queued task card only from
+  accepted detail. Validate required
   fields and the 8 MiB image limit client-side; there is no minimum text length.
   Clear images, canvas, fields, questions and context on logout or session
   expiry.
@@ -301,7 +313,11 @@ DOM-snapshot capture fallback (including missing `navigator.mediaDevices`),
 selected-region and whole-view capture with element context, uploaded-file
 context without elements, image/canvas export, accepted and rejected submissions
 with preserved drafts, asynchronous pending/clarification/answer/plan-card
-states with option controls, mobile sheet layout, and session expiry cleanup. The mock
+states with option-only/custom-text answers and real completion waits, draft
+preservation during repeated polls and language changes, stopped polling on
+questions/close, server-backed reload recovery, failure/retry and bounded timeout
+with manual refresh, 44px options, mobile sheet layout, and stale-session/expiry
+cleanup. The mock
 multipart parser exposes the parsed `context` JSON. Set
 `FOLIO_SCREENSHOTS=1` to save synthetic screenshots under `/tmp`. Actual deployed
 provider authorization and external manual review still need runtime acceptance.

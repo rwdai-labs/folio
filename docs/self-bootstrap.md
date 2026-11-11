@@ -117,9 +117,10 @@ Submission stays deterministic and never waits on a provider:
   non-empty and within their maximum length; there is no minimum length.
 - Deterministic malformed input (empty or oversized fields, an invalid image or
   context) is refused with a 400 response before a feedback record is written.
-- A valid submission is stored and accepted immediately. When a main agent is
-  configured, a durable `feedback-intake` task reviews it asynchronously; with
-  no main agent, the deterministic plan task is created immediately.
+- A valid submission is stored and accepted immediately. A durable
+  `feedback-intake` task reviews it asynchronously; submission never acquires the
+  main-agent turn lock or calls a model. No agent is a retryable processing
+  failure, not permission to skip the assessment.
 
 The intake turn is a bounded main-agent turn with only two host tools:
 `feedback.plan` and `feedback.clarify`. It receives the owner's text, the
@@ -144,9 +145,13 @@ clarification answers and the main agent's planning focus. The plan may describe
 likely files, implementation steps, tests, assumptions, and scope risks, but it
 must not edit files, run commands, or deploy.
 
-A model or provider failure falls back to the deterministic plan task, so the
-owner's submission is never left waiting. The main agent manages the intake, not
-the source change: the isolated workshop remains planned.
+A model or provider failure preserves the record and screenshot as a retryable
+`intake_failed` state; it never creates a plan, because an unassessed request is
+not approval. The owner can retry, and a crash/interrupted queue attempt is
+reconciled to the same retryable state. The main agent manages the intake, while
+the plan worker later resolves the immutable owner evidence by feedback id, so
+clarification answers are not lost to the queue's request-length projection.
+The isolated workshop remains planned.
 
 ## Phase 3: isolated source workshop
 

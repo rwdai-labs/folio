@@ -2734,8 +2734,10 @@ textarea {
 .feedback-clarify #feedback-clarify-questions { display: grid; gap: 10px; }
 .feedback-question { display: grid; gap: 6px; min-width: 0; margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
 .feedback-question legend { padding: 0 4px; font-size: .8rem; font-weight: 650; }
-.feedback-option { display: flex; align-items: flex-start; gap: 8px; font-size: .8rem; line-height: 1.35; cursor: pointer; }
-.feedback-option input { margin: 2px 0 0; flex: 0 0 auto; }
+.feedback-option { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 0; font-size: .8rem; line-height: 1.35; cursor: pointer; }
+.feedback-option input { margin: 0; flex: 0 0 auto; }
+.feedback-intake-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.feedback-intake-actions .btn, .feedback-clarify .btn { min-height: 44px; }
 .feedback-answer-text { width: 100%; min-height: 44px; margin-top: 2px; }
 .feedback-clarify .btn { justify-self: start; }
 
@@ -2847,6 +2849,7 @@ textarea {
   .feedback-tool-field { flex: 1 1 100%; }
   .feedback-tool-field input[type="range"] { flex: 1 1 auto; width: auto; }
   .feedback-context-list { grid-template-columns: 1fr; }
+  .feedback-intake-actions .btn, .feedback-clarify .btn { flex: 1 1 auto; }
 }
 
 /* ------------------------------------------------- daily activity shell */

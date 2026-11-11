@@ -77,8 +77,8 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   body with `MaxBytesReader` at 8 MiB plus a bounded 1 MiB multipart-envelope
   allowance, while the image part itself stays capped at 8 MiB. Create returns 201
   `{accepted:true,feedback}` with no model call on the submission path; feedback
-  is `intake_pending` when a main agent is configured, otherwise `accepted` with
-  an immediate task. A backend's `{accepted:false,feedback}` is still passed
+  is `intake_pending`; the assessment is always asynchronous. `accepted` appears
+  only after a successful main-agent verdict and plan creation. A backend's `{accepted:false,feedback}` is still passed
   through unchanged. Answers return the updated feedback (200); invalid answer
   sets are 400 `feedback_invalid`/`answers_invalid`, a non-pending record is 409
   `feedback_not_awaiting_answers`, and an unknown id is 404 `feedback_unknown`. Old
@@ -98,10 +98,12 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   Image responses are ID-only PNG bytes with `no-store`,
   `nosniff` and inline disposition; only `has_image` records serve them. Never
   accept caller paths. Acceptance queues the reserved `feedback-intake` task
-  asynchronously when a main agent is configured, or creates the reserved
-  `feedback-plan` task immediately; both use the dedicated `feedback` store
-  source, and manual, agent, hook, event and pipeline callers cannot create
-  either kind directly.
+  asynchronously. Only the scoped main-agent verdict may create the reserved
+  `feedback-plan` task; both use the dedicated `feedback` store source, and
+  manual, agent, hook, event and pipeline callers cannot create either kind
+  directly. A failed assessment returns `intake_failed` with a fixed reason and
+  no task; `POST /api/feedback/{id}/retry` re-queues it (409 when not
+  retryable).
 - The optional `QuotaBackend` contract exposes session-protected
   `GET /api/quotas` and CSRF-protected `POST /api/quotas/refresh`. Responses are
   bounded maps, never raw magpie bodies, key paths, or credentials. A

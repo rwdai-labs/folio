@@ -391,6 +391,22 @@ func (b *testBackend) ListFeedback() (map[string]any, error) {
 	return map[string]any{"feedback": items}, nil
 }
 
+func (b *testBackend) RetryFeedbackRequest(id string, values map[string]any) (map[string]any, error) {
+	if b.feedbackAnswerErr != nil {
+		return nil, b.feedbackAnswerErr
+	}
+	if len(values) != 0 {
+		return nil, errors.New("feedback_answers_invalid")
+	}
+	for _, record := range b.feedbackItems {
+		if record["id"] == id {
+			record["status"] = "intake_pending"
+			return map[string]any{"feedback": record}, nil
+		}
+	}
+	return nil, errors.New("feedback_unknown")
+}
+
 func (b *testBackend) FeedbackAnswerRequest(id string, values map[string]any) (map[string]any, error) {
 	if b.feedbackAnswerErr != nil {
 		return nil, b.feedbackAnswerErr

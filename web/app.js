@@ -114,7 +114,8 @@
       tool: "pen", color: "#d64545", width: 3,
       imageError: "", context: null, capturing: false, selecting: false,
       captureRegion: null,
-      lastId: "", questions: [], pollEpoch: 0, answersBusy: false, intakeFeedback: null,
+      lastId: "", questions: [], pollEpoch: 0, generation: 0, answersBusy: false,
+      intakeFeedback: null, questionKey: "", answerDrafts: new Map(), intakeNotice: "",
     },
   };
 
@@ -3046,12 +3047,14 @@
   }
 
   async function refreshTasks() {
+    const epoch = state.sessionEpoch;
     try {
       const data = await api("/api/tasks");
+      if (!state.authenticated || epoch !== state.sessionEpoch) return;
       renderTasks(data);
       setMessage("tasks", null);
     } catch (error) {
-      if (error.code === "authentication_required") return;
+      if (!state.authenticated || epoch !== state.sessionEpoch || error.code === "authentication_required") return;
       setMessage("tasks", errorKey(error, "tasks.failed"), { error: true });
     }
   }
@@ -4290,6 +4293,16 @@
     invalid: "feedback.reason.invalid",
     title_long: "feedback.reason.title_long",
     context_invalid: "feedback.reason.context_invalid",
+    answers_invalid: "feedback.reason.answers_invalid",
+    agent_unavailable: "feedback.reason.agent_unavailable",
+    agent_runtime_timeout: "feedback.reason.intake_timeout",
+    agent_runtime_failed: "feedback.reason.intake_failed",
+    agent_verdict_missing: "feedback.reason.intake_failed",
+    agent_tool_limit: "feedback.reason.intake_failed",
+    feedback_intake_failed: "feedback.reason.intake_failed",
+    feedback_queue_unavailable: "feedback.reason.intake_failed",
+    feedback_image_unavailable: "feedback.reason.intake_failed",
+    feedback_intake_interrupted: "feedback.reason.intake_failed",
   };
   // A server rejection names a validation reason, not a field. Point the owner
   // at the control they can actually change instead of leaving focus behind.
@@ -5026,6 +5039,7 @@
         height: feedbackClampNumber(region.height, 1, window.innerHeight, 1),
       }
       : null;
+    const token = feedbackRequestToken();
     const media = navigator.mediaDevices;
     const panel = $("feedback-view");
     const launcher = $("feedback-launcher");
@@ -5057,6 +5071,7 @@
             audio: false,
             preferCurrentTab: true,
           });
+          if (!feedbackGenerationCurrent(token)) return;
           video = document.createElement("video");
           video.muted = true;
           video.playsInline = true;
@@ -5166,20 +5181,22 @@
           video = null;
         }
       }
+      if (!feedbackGenerationCurrent(token)) return;
       if (!file) file = await feedbackSnapshotFile(selectedRegion);
-      if (!state.authenticated) return;
+      if (!feedbackGenerationCurrent(token)) return;
       feedbackSelectFile(file, context, selectedRegion);
     } catch (error) {
-      if (state.authenticated) setFeedbackImageError(feedbackCaptureErrorKey(error));
+      if (feedbackGenerationCurrent(token)) setFeedbackImageError(feedbackCaptureErrorKey(error));
     } finally {
       stopFeedbackCaptureMedia(stream, video);
-      if (panel) panel.style.visibility = "";
-      if (launcher) launcher.style.visibility = "";
-      state.feedback.capturing = false;
-      clearBusy(button);
-      // The selector had focus while the panel was hidden. Return it to the
-      // capture control so keyboard users do not land on the document body.
-      if (state.authenticated && state.feedbackOpen && button) button.focus({ preventScroll: true });
+      if (feedbackGenerationCurrent(token)) {
+        if (panel) panel.style.visibility = "";
+        if (launcher) launcher.style.visibility = "";
+        state.feedback.capturing = false;
+        clearBusy(button);
+        // Return focus from the selector to the capture control.
+        if (state.feedbackOpen && button) button.focus({ preventScroll: true });
+      }
     }
   }
 
@@ -5217,11 +5234,12 @@
       setFeedbackContext(feedbackBaseContext());
     }
     feedbackClampWindow();
-    if (state.feedback.lastId) feedbackRefreshIntake();
+    feedbackRefreshIntake();
     if (focus) $("feedback-heading").focus();
   }
 
   function feedbackWindowClose(restoreFocus = true) {
+    feedbackIntakeStopPoll();
     const panel = $("feedback-view");
     const launcher = $("feedback-launcher");
     if (!panel || panel.hidden) return;
@@ -5287,6 +5305,11 @@
     return key ? translateKnown(key, code) : code;
   }
 
+  function feedbackIntakeFailureText(code) {
+    const key = typeof code === "string" ? FEEDBACK_REASONS[code] : "";
+    return translateKnown(key || "feedback.reason.intake_failed", t("feedback.reason.intake_failed"));
+  }
+
   function renderFeedbackNotice() {
     const element = $("feedback-message");
     if (!element) return;
@@ -5323,27 +5346,52 @@
     state.feedback.pollEpoch += 1;
   }
 
+  function feedbackRequestToken() {
+    return { epoch: state.sessionEpoch, generation: state.feedback.generation, id: state.feedback.lastId };
+  }
+
+  function feedbackGenerationCurrent(token) {
+    return state.authenticated && token.epoch === state.sessionEpoch && token.generation === state.feedback.generation;
+  }
+
+  function feedbackRequestCurrent(token) {
+    return feedbackGenerationCurrent(token) && token.id === state.feedback.lastId;
+  }
+
+  function feedbackIntakeNotice(key) {
+    state.feedback.intakeNotice = key;
+    const section = $("feedback-intake");
+    if (section) section.hidden = false;
+    const node = $("feedback-intake-state");
+    if (node) {
+      node.textContent = t(key);
+      node.dataset.error = "true";
+    }
+  }
+
   function feedbackIntakeStartPoll(id) {
     feedbackIntakeStopPoll();
-    if (!id || !state.authenticated) return;
-    const epoch = state.feedback.pollEpoch;
+    if (!id || !state.authenticated || !state.feedbackOpen || id !== state.feedback.lastId) return;
+    const token = feedbackRequestToken();
+    const pollEpoch = state.feedback.pollEpoch;
+    const current = () => feedbackRequestCurrent(token) && state.feedbackOpen && pollEpoch === state.feedback.pollEpoch;
     const attempt = (remaining) => {
-      if (!state.authenticated || epoch !== state.feedback.pollEpoch) return;
-      state.timers.intake = setTimeout(() => {
+      if (!current()) return;
+      state.timers.intake = setTimeout(async () => {
         state.timers.intake = null;
-        if (!state.authenticated || epoch !== state.feedback.pollEpoch) return;
-        api(`/api/feedback/${encodeURIComponent(id)}`, { method: "GET" })
-          .then((result) => {
-            if (!state.authenticated || epoch !== state.feedback.pollEpoch) return;
-            const feedback = result && result.feedback && typeof result.feedback === "object" ? result.feedback : null;
-            if (!feedback) return;
-            renderFeedbackIntake(feedback);
-            if (feedback.status === "accepted" || feedback.status === "rejected") return;
-            if (remaining > 1) attempt(remaining - 1);
-          })
-          .catch(() => {
-            if (remaining > 1) attempt(remaining - 1);
-          });
+        if (!current()) return;
+        try {
+          const result = await api(`/api/feedback/${encodeURIComponent(id)}`);
+          if (!current()) return;
+          const feedback = result && result.feedback;
+          if (!feedback || feedback.id !== id) throw new Error("feedback_missing");
+          renderFeedbackIntake(feedback);
+          if (feedback.status !== "intake_pending") return;
+        } catch (_) {
+          if (!current()) return;
+        }
+        if (remaining > 1) attempt(remaining - 1);
+        else feedbackIntakeNotice("feedback.intake.timeout");
       }, FEEDBACK_INTAKE_POLL_MS);
     };
     attempt(FEEDBACK_INTAKE_POLL_LIMIT);
@@ -5355,10 +5403,19 @@
     const clarify = $("feedback-clarify");
     if (!section || !stateNode) return;
     state.feedback.intakeFeedback = feedback || null;
+    state.feedback.intakeNotice = "";
     section.hidden = false;
     const status = feedback && typeof feedback.status === "string" ? feedback.status : "";
     const intake = feedback && feedback.intake && typeof feedback.intake === "object" ? feedback.intake : {};
+    const retry = $("feedback-intake-retry");
+    if (retry) retry.hidden = status !== "intake_failed";
+    if (status === "needs_clarification") feedbackIntakeStopPoll();
     if (status === "needs_clarification" && Array.isArray(intake.questions) && intake.questions.length) {
+      const questionKey = JSON.stringify([feedback.id, intake.revision, intake.questions.map((question) => question.id)]);
+      if (questionKey !== state.feedback.questionKey) {
+        state.feedback.answerDrafts.clear();
+        state.feedback.questionKey = questionKey;
+      }
       state.feedback.questions = intake.questions;
       stateNode.textContent = t("feedback.intake.questions");
       stateNode.dataset.error = "false";
@@ -5367,7 +5424,11 @@
       return;
     }
     state.feedback.questions = [];
+    state.feedback.questionKey = "";
+    state.feedback.answerDrafts.clear();
     if (clarify) clarify.hidden = true;
+    const questionNodes = $("feedback-clarify-questions");
+    if (questionNodes) questionNodes.replaceChildren();
     const created = $("feedback-created");
     if (status === "accepted") {
       stateNode.textContent = t("feedback.intake.filed");
@@ -5376,6 +5437,10 @@
       if (created && task && typeof task === "object") created.replaceChildren(chatTaskCard(task));
       feedbackIntakeStopPoll();
       refreshTasks();
+    } else if (status === "intake_failed") {
+      stateNode.textContent = t("feedback.intake.failed", { reason: feedbackIntakeFailureText(intake.reason || feedback.reason) });
+      stateNode.dataset.error = "true";
+      feedbackIntakeStopPoll();
     } else if (status === "rejected") {
       stateNode.textContent = t("feedback.rejected", { reason: feedbackReasonText(feedback.reason) });
       stateNode.dataset.error = "true";
@@ -5390,23 +5455,30 @@
     const container = $("feedback-clarify-questions");
     if (!container) return;
     container.replaceChildren();
-    questions.forEach((question, index) => {
-      if (!question || typeof question !== "object") return;
+    questions.forEach((question) => {
+      if (!question || typeof question.id !== "string" || !question.id) return;
+      const draft = state.feedback.answerDrafts.get(question.id) || {};
       const group = document.createElement("fieldset");
       group.className = "feedback-question";
-      group.dataset.questionId = typeof question.id === "string" ? question.id : `q${index + 1}`;
+      group.dataset.questionId = question.id;
+      group.addEventListener("input", () => {
+        const checked = group.querySelector('input[type="radio"]:checked');
+        const text = group.querySelector("textarea");
+        state.feedback.answerDrafts.set(question.id, { option_id: checked ? checked.value : "", text: text ? text.value : "" });
+      });
       const legend = document.createElement("legend");
       legend.textContent = typeof question.question === "string" ? question.question : "";
       group.append(legend);
       const options = Array.isArray(question.options) ? question.options : [];
-      options.forEach((option, optionIndex) => {
-        if (!option || typeof option !== "object") return;
+      options.forEach((option) => {
+        if (!option || typeof option.id !== "string" || !option.id) return;
         const label = document.createElement("label");
         label.className = "feedback-option";
         const input = document.createElement("input");
         input.type = "radio";
         input.name = `feedback-answer-${group.dataset.questionId}`;
-        input.value = typeof option.id === "string" ? option.id : `o${optionIndex + 1}`;
+        input.value = option.id;
+        input.checked = draft.option_id === option.id;
         const text = document.createElement("span");
         text.textContent = typeof option.label === "string" ? option.label : "";
         label.append(input, text);
@@ -5417,6 +5489,7 @@
       detail.dataset.answerText = "true";
       detail.rows = 2;
       detail.maxLength = 1000;
+      detail.value = draft.text || "";
       detail.placeholder = t("feedback.clarify.text");
       detail.setAttribute("aria-label", t("feedback.clarify.text"));
       group.append(detail);
@@ -5443,58 +5516,86 @@
         if (textNode) textNode.focus();
         return null;
       }
-      answers.push({ question_id: questionID, option_id: optionID, text });
+      if (Array.from(text).length > 1000) {
+        if (textNode) textNode.focus();
+        return null;
+      }
+      const answer = { question_id: questionID };
+      if (optionID) answer.option_id = optionID;
+      if (text) answer.text = text;
+      answers.push(answer);
     }
     return answers;
   }
 
   async function submitFeedbackAnswers(event) {
     if (event) event.preventDefault();
-    if (state.feedback.answersBusy) return;
-    const id = state.feedback.lastId;
+    if (state.feedback.answersBusy || state.feedbackBusy) return;
     const answers = collectFeedbackAnswers();
-    if (!id || !answers) {
+    if (!state.feedback.lastId || !answers) {
       setFeedbackNotice({ key: "feedback.clarify.required", error: true });
       return;
     }
-    if (!state.authenticated) return;
-    const epoch = state.sessionEpoch;
+    await feedbackSendRevision("answers", { answers });
+  }
+
+  async function feedbackSendRevision(action, body = {}) {
+    if (!state.authenticated || !state.feedback.lastId || state.feedback.answersBusy || state.feedbackBusy) return;
+    feedbackIntakeStopPoll();
+    const token = feedbackRequestToken();
     state.feedback.answersBusy = true;
-    const button = $("feedback-clarify-submit");
-    setBusy(button, "feedback.clarify.sending");
+    const button = $(action === "retry" ? "feedback-intake-retry" : "feedback-clarify-submit");
+    setBusy(button, action === "retry" ? "feedback.intake.retrying" : "feedback.clarify.sending");
     setFeedbackNotice(null);
     try {
-      const result = await api(`/api/feedback/${encodeURIComponent(id)}/answers`, {
-        method: "POST",
-        body: { answers },
-      });
-      if (!state.authenticated || epoch !== state.sessionEpoch) return;
-      if (result && result.feedback) renderFeedbackIntake(result.feedback);
-      feedbackIntakeStartPoll(id);
+      const result = await api(`/api/feedback/${encodeURIComponent(token.id)}/${action}`, { method: "POST", body });
+      if (!feedbackRequestCurrent(token)) return;
+      if (!result || !result.feedback || result.feedback.id !== token.id) throw new Error("feedback_missing");
+      renderFeedbackIntake(result.feedback);
+      if (result.feedback.status === "intake_pending") feedbackIntakeStartPoll(token.id);
     } catch (error) {
-      if (state.authenticated && epoch === state.sessionEpoch) {
-        const detail = error && (error.payload || error.data) && typeof (error.payload || error.data) === "object" ? (error.payload || error.data) : {};
-        const reason = typeof detail.reason === "string" ? detail.reason : "";
-        setFeedbackNotice(reason ? { reason, error: true } : { key: errorKey(error, "feedback.clarify.failed"), error: true });
+      if (feedbackRequestCurrent(token)) {
+        setFeedbackNotice({ key: errorKey(error, action === "retry" ? "feedback.intake.retry_failed" : "feedback.clarify.failed"), error: true });
       }
     } finally {
-      state.feedback.answersBusy = false;
-      clearBusy(button);
+      if (feedbackRequestCurrent(token)) {
+        state.feedback.answersBusy = false;
+        clearBusy(button);
+      }
     }
   }
 
   async function feedbackRefreshIntake() {
-    const id = state.feedback.lastId;
-    if (!id || !state.authenticated) return;
+    if (!state.authenticated || !state.feedbackOpen || state.feedbackBusy || state.feedback.answersBusy) return;
+    feedbackIntakeStopPoll();
+    const token = feedbackRequestToken();
+    const pollEpoch = state.feedback.pollEpoch;
+    const current = () => feedbackRequestCurrent(token) && state.feedbackOpen && pollEpoch === state.feedback.pollEpoch;
     try {
-      const result = await api(`/api/feedback/${encodeURIComponent(id)}`, { method: "GET" });
-      if (!state.authenticated) return;
-      if (result && result.feedback && typeof result.feedback === "object") {
-        renderFeedbackIntake(result.feedback);
-        if (result.feedback.status === "intake_pending") feedbackIntakeStartPoll(id);
+      if (!token.id) {
+        // Server records are the only recovery source; drafts and screenshots
+        // are never persisted in browser storage.
+        const listing = await api("/api/feedback");
+        if (!current()) return;
+        const records = listing && Array.isArray(listing.feedback) ? listing.feedback : [];
+        const unresolved = records.find((record) => record && /^f-[0-9a-f]{12}$/.test(record.id) &&
+          ["intake_pending", "needs_clarification", "intake_failed"].includes(record.status));
+        if (!unresolved) {
+          state.feedback.intakeNotice = "";
+          const section = $("feedback-intake");
+          if (section) section.hidden = true;
+          return;
+        }
+        token.id = unresolved.id;
+        state.feedback.lastId = token.id;
       }
+      const result = await api(`/api/feedback/${encodeURIComponent(token.id)}`);
+      if (!current()) return;
+      if (!result || !result.feedback || result.feedback.id !== token.id) throw new Error("feedback_missing");
+      renderFeedbackIntake(result.feedback);
+      if (result.feedback.status === "intake_pending") feedbackIntakeStartPoll(token.id);
     } catch (_) {
-      // A missing or stale record leaves the draft intact and shows nothing.
+      if (current()) feedbackIntakeNotice("feedback.intake.refresh_failed");
     }
   }
 
@@ -5586,6 +5687,10 @@
     state.feedbackBusy = false;
     state.feedback.capturing = false;
     state.feedback.answersBusy = false;
+    state.feedback.generation += 1;
+    ["feedback-submit", "feedback-clarify-submit", "feedback-intake-retry", "feedback-capture-page"].forEach((id) => clearBusy($(id)));
+    if ($("feedback-view")) $("feedback-view").style.visibility = "";
+    if ($("feedback-launcher")) $("feedback-launcher").style.visibility = "";
     feedbackIntakeStopPoll();
     feedbackSelectorClose(true);
     state.feedback.selecting = false;
@@ -5593,12 +5698,17 @@
     state.feedback.lastId = "";
     state.feedback.questions = [];
     state.feedback.intakeFeedback = null;
+    state.feedback.questionKey = "";
+    state.feedback.answerDrafts.clear();
+    state.feedback.intakeNotice = "";
     feedbackWindowClose(false);
     resetFeedbackDraft();
     const created = $("feedback-created");
     if (created) created.replaceChildren();
     const intake = $("feedback-intake");
     if (intake) intake.hidden = true;
+    const retry = $("feedback-intake-retry");
+    if (retry) retry.hidden = true;
     const clarify = $("feedback-clarify");
     if (clarify) clarify.hidden = true;
     const questions = $("feedback-clarify-questions");
@@ -5727,9 +5837,11 @@
     setFeedbackContext(capturedContext || feedbackBuildContext(false));
     const feedback = state.feedback;
     const generation = ++feedback.loadGeneration;
+    const token = feedbackRequestToken();
+    const current = () => generation === feedback.loadGeneration && feedbackGenerationCurrent(token);
     const reader = new FileReader();
     reader.onload = () => {
-      if (generation !== feedback.loadGeneration || !state.authenticated) return;
+      if (!current()) return;
       const dataURL = typeof reader.result === "string" ? reader.result : "";
       if (!/^data:image\/(png|jpeg);base64,/.test(dataURL)) {
         clearFeedbackImage();
@@ -5740,7 +5852,7 @@
       feedback.imageName = typeof file.name === "string" && file.name ? file.name : "feedback.png";
       const image = new Image();
       image.onload = () => {
-        if (generation !== feedback.loadGeneration || !state.authenticated) return;
+        if (!current()) return;
         const width = image.naturalWidth || 0;
         const height = image.naturalHeight || 0;
         if (width < 64 || height < 64 || width > 4096 || height > 4096 || width * height > 8_000_000) {
@@ -5753,14 +5865,14 @@
         renderFeedbackImageState();
       };
       image.onerror = () => {
-        if (generation !== feedback.loadGeneration) return;
+        if (!current()) return;
         clearFeedbackImage();
         setFeedbackImageError("feedback.image_invalid");
       };
       image.src = dataURL;
     };
     reader.onerror = () => {
-      if (generation !== feedback.loadGeneration) return;
+      if (!current()) return;
       clearFeedbackImage();
       setFeedbackImageError("feedback.image_invalid");
     };
@@ -5976,7 +6088,7 @@
 
   async function submitFeedback(event) {
     event.preventDefault();
-    if (state.feedbackBusy || state.feedback.capturing || state.feedback.selecting) return;
+    if (state.feedbackBusy || state.feedback.answersBusy || state.feedback.capturing || state.feedback.selecting) return;
     const created = $("feedback-created");
     if (created) created.replaceChildren();
     const titleNode = $("feedback-title");
@@ -6023,47 +6135,50 @@
       setFeedbackNotice({ key: "feedback.invalid", error: true });
       return;
     }
-    let imageBlob = null;
-    if (state.feedback.image) {
-      try {
-        imageBlob = await feedbackExportBlob();
-      } catch (_) {
-        setFeedbackImageError("feedback.export_failed");
-        return;
-      }
-      if (!imageBlob || imageBlob.type !== "image/png") {
-        setFeedbackImageError("feedback.export_failed");
-        return;
-      }
-      if (imageBlob.size > FEEDBACK_IMAGE_MAX) {
-        setFeedbackImageError("feedback.image_too_large");
-        return;
-      }
-    }
     if (!state.authenticated) return;
-    const epoch = state.sessionEpoch;
+    feedbackIntakeStopPoll();
+    state.feedback.generation += 1;
+    const token = feedbackRequestToken();
     state.feedbackBusy = true;
     setFeedbackImageError("");
     const button = $("feedback-submit");
     setBusy(button, "feedback.submitting");
     setFeedbackNotice(null);
-    const data = new FormData();
-    data.append("title", title);
-    data.append("area", area);
-    data.append("current", current);
-    data.append("expected", expected);
-    data.append("acceptance", acceptance);
-    data.append("priority", priority);
-    if (imageBlob) {
-      data.append("image", imageBlob, "feedback.png");
-      const context = state.feedback.context && feedbackContextCount(state.feedback.context)
-        ? state.feedback.context
-        : feedbackBaseContext();
-      data.append("context", feedbackContextJSON(context));
-    }
     try {
+      let imageBlob = null;
+      if (state.feedback.image) {
+        try {
+          imageBlob = await feedbackExportBlob();
+        } catch (_) {
+          if (feedbackRequestCurrent(token)) setFeedbackImageError("feedback.export_failed");
+          return;
+        }
+        if (!feedbackRequestCurrent(token)) return;
+        if (!imageBlob || imageBlob.type !== "image/png") {
+          setFeedbackImageError("feedback.export_failed");
+          return;
+        }
+        if (imageBlob.size > FEEDBACK_IMAGE_MAX) {
+          setFeedbackImageError("feedback.image_too_large");
+          return;
+        }
+      }
+      const data = new FormData();
+      data.append("title", title);
+      data.append("area", area);
+      data.append("current", current);
+      data.append("expected", expected);
+      data.append("acceptance", acceptance);
+      data.append("priority", priority);
+      if (imageBlob) {
+        data.append("image", imageBlob, "feedback.png");
+        const context = state.feedback.context && feedbackContextCount(state.feedback.context)
+          ? state.feedback.context
+          : feedbackBaseContext();
+        data.append("context", feedbackContextJSON(context));
+      }
       const result = await api("/api/feedback", { method: "POST", formData: data });
-      if (!state.authenticated || epoch !== state.sessionEpoch) return;
+      if (!feedbackRequestCurrent(token)) return;
       if (result && result.accepted === false) {
         const reason = result.feedback && typeof result.feedback.reason === "string" ? result.feedback.reason : "";
         setFeedbackNotice({ reason, error: true });
@@ -6075,20 +6190,25 @@
       const task = result && (result.task || (feedback && feedback.task));
       const resultBox = $("feedback-created");
       if (resultBox && task && typeof task === "object") resultBox.replaceChildren(chatTaskCard(task));
-      if (feedbackID) state.feedback.lastId = feedbackID;
+      if (feedbackID) {
+        state.feedback.lastId = feedbackID;
+        // The POST guard covers the shared generation and session; capture
+        // cleanup applies once this specific record becomes the active one.
+        token.id = feedbackID;
+      }
       if (task) {
         setFeedbackNotice({ key: "feedback.accepted" });
         const intake = $("feedback-intake");
         if (intake) intake.hidden = true;
       } else {
-        setFeedbackNotice({ key: "feedback.intake.pending" });
+        setFeedbackNotice(null);
       }
       if (feedback) renderFeedbackIntake(feedback);
       resetFeedbackDraft();
-      if (!task && feedbackID) feedbackIntakeStartPoll(feedbackID);
+      if (feedback && feedback.status === "intake_pending" && feedbackID) feedbackIntakeStartPoll(feedbackID);
       await refreshTasks();
     } catch (error) {
-      if (state.authenticated && epoch === state.sessionEpoch) {
+      if (feedbackRequestCurrent(token)) {
         const detail = error && (error.payload || error.data) && typeof (error.payload || error.data) === "object" ? (error.payload || error.data) : {};
         const reason = typeof detail.reason === "string" ? detail.reason : "";
         const code = reason || (error && typeof error.code === "string" ? error.code : "");
@@ -6098,8 +6218,10 @@
         } else setFeedbackNotice({ key: errorKey(error, "feedback.failed"), error: true });
       }
     } finally {
-      state.feedbackBusy = false;
-      clearBusy(button);
+      if (feedbackRequestCurrent(token)) {
+        state.feedbackBusy = false;
+        clearBusy(button);
+      }
     }
   }
 
@@ -6918,6 +7040,8 @@
   on("feedback-drag-handle", "pointercancel", feedbackDragEnd);
   on("feedback-form", "submit", submitFeedback);
   on("feedback-clarify-submit", "click", submitFeedbackAnswers);
+  on("feedback-intake-refresh", "click", feedbackRefreshIntake);
+  on("feedback-intake-retry", "click", () => feedbackSendRevision("retry"));
   on("feedback-image", "change", feedbackFileInputChanged);
   on("feedback-capture-page", "click", feedbackSelectorOpen);
   on("feedback-selector", "pointerdown", feedbackSelectorStart);
@@ -7067,8 +7191,10 @@
     renderFeedbackImageError();
     renderFeedbackContext();
     renderFeedbackNotice();
+    const intakeNotice = state.feedback.intakeNotice;
     if (state.feedback.intakeFeedback) renderFeedbackIntake(state.feedback.intakeFeedback);
     else if (state.feedback.questions.length) renderFeedbackQuestions(state.feedback.questions);
+    if (intakeNotice) feedbackIntakeNotice(intakeNotice);
     rerenderBusyLabels();
   });
 

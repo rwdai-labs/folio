@@ -205,7 +205,7 @@ func (r *openAIAgentRuntime) Turn(ctx context.Context, request AgentRequest) (Ag
 		return invalid()
 	}
 	for index, call := range message.ToolCalls {
-		if !agentToolNameRE.MatchString(call.Function.Name) {
+		if !agentToolNameRE.MatchString(strings.ReplaceAll(call.Function.Name, "-", ".")) {
 			return invalid()
 		}
 		arguments := map[string]any{}
@@ -218,7 +218,14 @@ func (r *openAIAgentRuntime) Turn(ctx context.Context, request AgentRequest) (Ag
 		if id == "" || len([]byte(id)) > 128 || strings.ContainsAny(id, "\r\n\x00") {
 			id = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), index)
 		}
-		result.ToolCalls = append(result.ToolCalls, AgentToolCall{ID: id, Name: call.Function.Name, Arguments: arguments})
+		name := call.Function.Name
+		for _, tool := range request.Tools {
+			if name == openAIWireToolName(tool.Name) {
+				name = tool.Name
+				break
+			}
+		}
+		result.ToolCalls = append(result.ToolCalls, AgentToolCall{ID: id, Name: name, Arguments: arguments})
 	}
 	if len(result.ToolCalls) > maxAgentToolCalls || len([]byte(result.Text)) > maxAgentOutput {
 		return invalid()
@@ -259,6 +266,11 @@ func openAIContent(raw json.RawMessage) string {
 	return builder.String()
 }
 
+// Wire tool names cannot contain dots on some compatible gateways. Internal
+// names cannot contain hyphens, so this mapping is reversible without aliases
+// colliding; grants and audit names remain Folio's original dotted names.
+func openAIWireToolName(name string) string { return strings.ReplaceAll(name, ".", "-") }
+
 func openAITools(tools []AgentTool) []openAITool {
 	result := make([]openAITool, 0, len(tools))
 	for _, tool := range tools {
@@ -269,7 +281,7 @@ func openAITools(tools []AgentTool) []openAITool {
 		result = append(result, openAITool{
 			Type: "function",
 			Function: openAIToolSpec{
-				Name:        tool.Name,
+				Name:        openAIWireToolName(tool.Name),
 				Description: tool.Description,
 				Parameters:  parameters,
 			},
@@ -304,7 +316,7 @@ func openAIMessages(history []AgentMessage, system, imageDataURL string) []openA
 				}
 				item.ToolCalls = append(item.ToolCalls, openAIToolCall{
 					ID: call.ID, Type: "function",
-					Function: openAIFunctionCall{Name: call.Name, Arguments: string(arguments)},
+					Function: openAIFunctionCall{Name: openAIWireToolName(call.Name), Arguments: string(arguments)},
 				})
 			}
 			result = append(result, item)

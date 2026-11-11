@@ -289,6 +289,25 @@ async function main() {
       let tasks = [], capabilities = null, chatRequests = [], catalogRequests = [], feedbackRequests = [], resultError = false, runnerInstalled = true, historyTasks = [], historicalResult = false;
       let catalogUnavailable = false, feedbackAccepted = true, feedbackReason = 'ambiguous', feedbackValidationError = false;
       let feedbackIntake = false, feedbackIntakeStage = 'pending', feedbackAnswerRequests = [], feedbackIntakeTask = null;
+      let feedbackDetailRequests = 0, feedbackListRequests = 0, feedbackRetryRequests = 0, feedbackRevision = 0, feedbackDetailError = false;
+      let holdFeedbackDetail = false, releaseFeedbackDetail;
+      let holdFeedbackSubmit = false, releaseFeedbackSubmit;
+      const feedbackRecord = () => {
+        const record = { id: 'f-123456abcdef', status: 'intake_pending', intake: { state: 'pending', revision: feedbackRevision } };
+        if (feedbackIntakeStage === 'questions') {
+          record.status = 'needs_clarification'; record.intake.state = 'questions';
+          record.intake.questions = [{ id: `r${feedbackRevision}-q7`, question: 'Remove the whole card or keep the launcher?', options: [{ id: 'o1', label: 'Remove the whole card' }, { id: 'o2', label: 'Keep the launcher' }], allow_text: false }];
+        } else if (feedbackIntakeStage === 'failed') {
+          record.status = 'intake_failed'; record.intake.state = 'failed'; record.reason = 'feedback_intake_failed';
+        } else if (feedbackIntakeStage === 'accepted') {
+          if (!feedbackIntakeTask) {
+            feedbackIntakeTask = { id: 'feedback-plan-task', title: 'Plan: remove the synthetic module', kind: 'feedback-plan', status: 'queued', enabled: true, priority: 'P2', source: 'feedback' };
+            tasks.push(feedbackIntakeTask);
+          }
+          record.status = 'accepted'; record.intake.state = 'ready'; record.task_id = feedbackIntakeTask.id; record.task = feedbackIntakeTask;
+        }
+        return record;
+      };
       let quotaMode = 'percent', latestAvailable = true;
       let holdHistory = false, holdResult = false, releaseHistory, releaseResult;
       const reportID = "synthetic-report-run";
@@ -385,35 +404,44 @@ async function main() {
           feedbackRequests.push(parsed);
           if (feedbackValidationError) { status = 400; body = { error: 'feedback_invalid', reason: 'title_short' }; }
           else if (feedbackIntake) {
-            body = { accepted: true, feedback: { id: 'feedback-intake-1', status: 'intake_pending', has_image: Boolean(parsed.image && parsed.image.length), intake: { state: 'pending', revision: 0 } } };
+            body = { accepted: true, feedback: { id: 'f-123456abcdef', status: 'intake_pending', has_image: Boolean(parsed.image && parsed.image.length), intake: { state: 'pending', revision: 0 } } };
           }
           else if (feedbackAccepted) {
             const task = { id: 'feedback-task', title: parsed.fields.title, kind: 'feedback', status: 'queued', enabled: true, priority: parsed.fields.priority, source: 'manual' };
             tasks.push(task);
-            body = { accepted: true, feedback: { id: 'feedback-1', status: 'accepted' }, task };
+            body = { accepted: true, feedback: { id: 'f-abcdef123456', status: 'accepted' }, task };
           } else {
-            body = { accepted: false, feedback: { id: 'feedback-1', status: 'rejected', reason: feedbackReason } };
+            body = { accepted: false, feedback: { id: 'f-abcdef123456', status: 'rejected', reason: feedbackReason } };
           }
+          if (holdFeedbackSubmit) { holdFeedbackSubmit = false; await new Promise(resolve => { releaseFeedbackSubmit = resolve; }); }
         }
-        else if (endpoint === '/api/feedback/feedback-intake-1' && req.method() === 'GET') {
-          if (feedbackIntakeStage === 'questions') {
-            body = { feedback: { id: 'feedback-intake-1', status: 'needs_clarification', intake: { state: 'questions', revision: 0, questions: [
-              { id: 'q1', question: 'Remove the whole card or keep the launcher?', options: [{ id: 'o1', label: 'Remove the whole card' }, { id: 'o2', label: 'Keep the launcher' }], allow_text: false },
-            ] } } };
-          } else if (feedbackIntakeStage === 'accepted') {
-            if (!feedbackIntakeTask) {
-              feedbackIntakeTask = { id: 'feedback-plan-task', title: 'Plan: remove the synthetic module', kind: 'feedback-plan', status: 'queued', enabled: true, priority: 'P2', source: 'feedback' };
-              tasks.push(feedbackIntakeTask);
-            }
-            body = { feedback: { id: 'feedback-intake-1', status: 'accepted', task_id: feedbackIntakeTask.id, intake: { state: 'ready', revision: 1 }, task: feedbackIntakeTask } };
-          } else {
-            body = { feedback: { id: 'feedback-intake-1', status: 'intake_pending', intake: { state: 'pending', revision: 0 } } };
+        else if (endpoint === '/api/feedback' && req.method() === 'GET') {
+          feedbackListRequests++;
+          body = { feedback: feedbackIntake ? [{ id: 'f-123456abcdef', status: feedbackRecord().status }] : [] };
+        }
+        else if (endpoint === '/api/feedback/f-123456abcdef' && req.method() === 'GET') {
+          feedbackDetailRequests++;
+          body = { feedback: feedbackRecord() };
+          if (holdFeedbackDetail) { holdFeedbackDetail = false; await new Promise(resolve => { releaseFeedbackDetail = resolve; }); }
+          else if (feedbackDetailError) { status = 503; body = { error: 'service_unavailable' }; }
+        }
+        else if (endpoint === '/api/feedback/f-abcdef123456' && req.method() === 'GET') {
+          body = { feedback: { id: 'f-abcdef123456', status: 'accepted' } };
+        }
+        else if (endpoint === '/api/feedback/f-123456abcdef/answers' && req.method() === 'POST') {
+          const payload = req.postDataJSON();
+          for (const answer of payload.answers) {
+            assert.equal(answer.question_id, `r${feedbackRevision}-q7`);
+            assert.ok(!Object.hasOwn(answer, 'option_id') || answer.option_id.length > 0, 'empty option IDs must be omitted');
+            assert.ok(!Object.hasOwn(answer, 'text') || answer.text.length > 0, 'empty answer text must be omitted');
           }
+          feedbackAnswerRequests.push(payload);
+          feedbackRevision++; feedbackIntakeStage = 'pending';
+          body = { feedback: { id: 'f-123456abcdef', status: 'intake_pending', intake: { state: 'pending', revision: feedbackRevision } } };
         }
-        else if (endpoint === '/api/feedback/feedback-intake-1/answers' && req.method() === 'POST') {
-          feedbackAnswerRequests.push(req.postDataJSON());
-          feedbackIntakeStage = 'accepted';
-          body = { feedback: { id: 'feedback-intake-1', status: 'intake_pending', intake: { state: 'pending', revision: 1 } } };
+        else if (endpoint === '/api/feedback/f-123456abcdef/retry' && req.method() === 'POST') {
+          feedbackRetryRequests++; feedbackRevision++; feedbackIntakeStage = 'pending';
+          body = { feedback: feedbackRecord() };
         }
         else if (endpoint.startsWith('/api/agent/sessions/')) {
           if (holdHistory) { holdHistory = false; await new Promise(resolve => { releaseHistory = resolve; }); body = { messages: [{ role: 'assistant', content: 'OLD SESSION CHAT CONTENT' }], tasks: [] }; }
@@ -1246,25 +1274,58 @@ async function main() {
       // Asynchronous intake: the main agent may ask one decision question with
       // concrete options before it files the plan task.
       feedbackIntake = true; feedbackIntakeStage = 'pending'; feedbackIntakeTask = null;
+      const intakeDetailResponse = () => page.waitForResponse(response => response.url().endsWith('/api/feedback/f-123456abcdef') && response.request().method() === 'GET');
       await page.locator('#feedback-current').fill('The synthetic card should go away.');
       await page.locator('#feedback-expected').fill('Remove this module.');
       const intakeResponse = page.waitForResponse(response => response.url().endsWith('/api/feedback') && response.request().method() === 'POST');
       await page.locator('#feedback-submit').click();
       await intakeResponse;
+      await page.waitForFunction(() => !document.getElementById('feedback-submit').disabled);
       await visible(page, '#feedback-intake');
       assert.equal(await page.locator('#feedback-clarify').isVisible(), false, 'clarification stays hidden while intake is pending');
+      await page.locator('#feedback-current').fill('Next synthetic feedback draft');
+      await page.locator('#feedback-expected').fill('Keep this draft while reviewing');
+      await intakeDetailResponse();
+      await intakeDetailResponse();
+      assert.equal(await page.locator('#feedback-current').inputValue(), 'Next synthetic feedback draft', 'repeated polls preserve a new feedback draft');
+      await page.locator('#feedback-close').click();
+      const closedRequests = feedbackDetailRequests;
+      await page.waitForTimeout(2800);
+      assert.equal(feedbackDetailRequests, closedRequests, 'close stops intake polling');
+      const reopenPending = intakeDetailResponse();
+      await page.locator('#feedback-launcher').click();
+      await reopenPending;
       feedbackIntakeStage = 'questions';
       await visible(page, '#feedback-clarify');
-      await page.locator('#feedback-clarify-questions .feedback-question').first().waitFor();
       assert.equal(await page.locator('#feedback-clarify-questions input[type="radio"]').count(), 2, 'clarification shows concrete options');
-      const answerResponse = page.waitForResponse(response => response.url().endsWith('/answers') && response.request().method() === 'POST');
       await page.locator('#feedback-clarify-questions input[type="radio"]').nth(1).check();
+      await page.locator('.feedback-answer-text').fill('Synthetic detail survives translation');
+      const questionRequests = feedbackDetailRequests;
+      await page.waitForTimeout(2800);
+      assert.equal(feedbackDetailRequests, questionRequests, 'questions stop polling until human answers');
+      assert.equal(await page.locator('#feedback-clarify-questions input[type="radio"]').nth(1).isChecked(), true);
+      const alternateLanguage = language === 'zh' ? 'en' : 'zh';
+      await page.locator(`[data-lang="${alternateLanguage}"]`).click();
+      assert.equal(await page.locator('#feedback-clarify-questions input[type="radio"]').nth(1).isChecked(), true, 'language switch preserves selected answer');
+      assert.equal(await page.locator('.feedback-answer-text').inputValue(), 'Synthetic detail survives translation');
+      await page.locator(`[data-lang="${language}"]`).click();
+      await page.locator('#feedback-close').click();
+      const reopenQuestions = intakeDetailResponse();
+      await page.locator('#feedback-launcher').click();
+      await visible(page, '#feedback-clarify');
+      await reopenQuestions;
+      assert.equal(await page.locator('.feedback-answer-text').inputValue(), 'Synthetic detail survives translation', 'reopen preserves answers');
+      await page.locator('.feedback-answer-text').fill('');
+      const answerResponse = page.waitForResponse(response => response.url().endsWith('/answers') && response.request().method() === 'POST');
       await page.locator('#feedback-clarify-submit').click();
       await answerResponse;
-      assert.equal(feedbackAnswerRequests.length, 1, 'answers are submitted');
-      assert.deepEqual(feedbackAnswerRequests[0], { answers: [{ question_id: 'q1', option_id: 'o2', text: '' }] });
-      await visible(page, '#feedback-created [data-chat-task]');
-      assert.match(await page.locator('#feedback-intake-state').textContent(), language === 'zh' ? /已交给规划/ : /filed for planning/i);
+      await page.waitForFunction(() => document.getElementById('feedback-clarify').hidden);
+      assert.deepEqual(feedbackAnswerRequests[0], { answers: [{ question_id: 'r0-q7', option_id: 'o2' }] });
+      assert.equal(await page.locator('#feedback-created [data-chat-task]').count(), 0, 'answers queue a review, not an immediate plan');
+      feedbackIntakeStage = 'accepted';
+      await visible(page, '#feedback-created [data-chat-task="feedback-plan-task"]');
+      await page.waitForFunction(() => (document.getElementById('feedback-intake-state').textContent || '').includes(document.documentElement.lang.startsWith('zh') ? '已交给规划' : 'filed for planning'));
+      assert.equal(await page.locator('#feedback-current').inputValue(), 'Next synthetic feedback draft', 'completion preserves the new draft');
       feedbackIntake = false; feedbackIntakeStage = 'pending';
       // A pasted/uploaded file carries only view/route/theme/language/viewport.
       feedbackAccepted = false; feedbackReason = 'ambiguous';
@@ -1347,6 +1408,57 @@ async function main() {
       await visible(page, '#feedback-view');
       assert.equal(await page.locator('#feedback-title').inputValue(), 'Synthetic feedback title', 'closing the floating window preserves the draft');
       await page.locator('#feedback-more').evaluate(node => { node.open = false; });
+      await page.locator('#feedback-close').click();
+      // Recover unresolved intake from the server after a full page reload.
+      feedbackIntake = true; feedbackIntakeStage = 'failed'; feedbackIntakeTask = null;
+      const recoveryLists = feedbackListRequests;
+      await page.reload();
+      await visible(page, '#app-view');
+      await page.locator('#feedback-launcher').click();
+      await visible(page, '#feedback-intake-retry');
+      assert.ok(feedbackListRequests > recoveryLists, 'reload recovery lists server feedback');
+      assert.equal(await page.locator('#feedback-current').inputValue(), '', 'reload does not persist a local draft');
+      assert.equal(await page.locator('#feedback-intake-state').getAttribute('data-error'), 'true');
+      assert.equal(await page.locator('#feedback-created [data-chat-task]').count(), 0, 'processing failure never files a fallback plan');
+      feedbackDetailError = true;
+      await page.locator('#feedback-intake-refresh').click();
+      await page.waitForFunction(() => (document.getElementById('feedback-intake-state').textContent || '').includes(document.documentElement.lang.startsWith('zh') ? '无法加载' : 'Could not load'));
+      feedbackDetailError = false;
+      await page.locator('#feedback-intake-refresh').click();
+      await page.waitForFunction(() => (document.getElementById('feedback-intake-state').textContent || '').includes(document.documentElement.lang.startsWith('zh') ? '未能处理' : 'could not review'));
+      // Accelerate only the intake delay to exercise its full bounded timeout.
+      await page.evaluate(() => {
+        window.__folioOriginalTimeout = window.setTimeout;
+        window.setTimeout = (callback, delay, ...args) => window.__folioOriginalTimeout(callback, delay === 2500 ? 10 : delay, ...args);
+      });
+      const beforeTimeout = feedbackDetailRequests;
+      await page.locator('#feedback-intake-retry').click();
+      await page.waitForFunction(() => (document.getElementById('feedback-intake-state').textContent || '').includes(document.documentElement.lang.startsWith('zh') ? '自动查询已暂停' : 'Automatic status checks paused'));
+      await page.evaluate(() => { window.setTimeout = window.__folioOriginalTimeout; delete window.__folioOriginalTimeout; });
+      assert.equal(feedbackRetryRequests, 1, 'retry enqueues a fresh revision');
+      assert.equal(feedbackDetailRequests - beforeTimeout, 72, 'polling has a finite request budget');
+      assert.equal(await page.locator('#feedback-created [data-chat-task]').count(), 0);
+      await visible(page, '#feedback-intake-refresh');
+      feedbackIntakeStage = 'questions';
+      await page.locator('#feedback-intake-refresh').click();
+      await visible(page, '#feedback-clarify');
+      assert.equal(await page.locator('#feedback-clarify-questions .feedback-question').getAttribute('data-question-id'), 'r2-q7');
+      assert.equal(await page.locator('#feedback-clarify-questions input:checked').count(), 0, 'new revision has no stale selection');
+      await page.setViewportSize({ width: 390, height: 844 });
+      for (const target of ['.feedback-option', '#feedback-intake-refresh', '#feedback-clarify-submit']) {
+        const size = await page.locator(target).first().boundingBox();
+        assert.ok(size.width >= 44 && size.height >= 44, `${target} meets mobile touch target`);
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.locator('.feedback-answer-text').fill('Custom owner answer even when allow_text is false');
+      const customAnswerResponse = page.waitForResponse(response => response.url().endsWith('/answers'));
+      await page.locator('#feedback-clarify-submit').click();
+      await customAnswerResponse;
+      await page.waitForFunction(() => document.getElementById('feedback-clarify').hidden);
+      assert.deepEqual(feedbackAnswerRequests[1], { answers: [{ question_id: 'r2-q7', text: 'Custom owner answer even when allow_text is false' }] });
+      feedbackIntakeStage = 'accepted';
+      await visible(page, '#feedback-created [data-chat-task="feedback-plan-task"]');
+      feedbackIntake = false;
       await page.locator('#feedback-close').click();
       // The board uses real stages, explains waiting, filters, and opens an attempt drawer.
       reviewRun = { ...maintenance(), needs_review: [] };
@@ -1779,6 +1891,12 @@ async function main() {
       assert.equal(typeof releaseResult, 'function');
       await page.locator('#task-detail-close').click();
       await page.locator('[data-view="dashboard"]').click();
+      holdFeedbackDetail = true; feedbackIntakeStage = 'questions';
+      const heldFeedbackRequest = page.waitForRequest(request => request.url().endsWith('/api/feedback/f-123456abcdef'));
+      await page.locator('#feedback-launcher').click();
+      await heldFeedbackRequest;
+      assert.equal(typeof releaseFeedbackDetail, 'function');
+      await page.locator('#feedback-close').click();
       await openCatalog('report');
       await page.locator('#logout-button').evaluate(button => button.click());
       await visible(page, '#login-view');
@@ -1789,9 +1907,12 @@ async function main() {
       await visible(page, '#dashboard-view');
       const oldHistoryResponse = page.waitForResponse(response => response.url().includes('/api/agent/sessions/console-main'));
       const oldReportResponse = page.waitForResponse(response => response.url().endsWith('/result'));
-      releaseHistory(); releaseResult();
-      await Promise.all([oldHistoryResponse, oldReportResponse]);
+      const oldFeedbackResponse = intakeDetailResponse();
+      releaseHistory(); releaseResult(); releaseFeedbackDetail();
+      await Promise.all([oldHistoryResponse, oldReportResponse, oldFeedbackResponse]);
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+      assert.equal(await page.locator('#feedback-intake').evaluate(node => node.hidden), true, 'old feedback detail cannot restore intake after relogin');
+      assert.equal(await page.locator('#feedback-clarify-questions').textContent(), '');
       await page.locator('[data-view="chat"]').click();
       await visible(page, '#chat-view');
       assert.equal(await page.locator('#chat-log').textContent().then(text => text.includes('OLD SESSION')), false);
@@ -1801,6 +1922,41 @@ async function main() {
       await page.waitForFunction(() => (document.querySelector('#task-detail-body .run-report')?.textContent || '').includes('A readable result'));
       assert.equal(await page.locator('#task-detail-body').textContent().then(text => text.includes('OLD SESSION')), false);
       await page.locator('#task-detail-close').click();
+      await page.locator('[data-view="dashboard"]').click();
+      // Old submission cleanup must not clear a newer session's busy state.
+      const beginHeldSubmission = async (text) => {
+        holdFeedbackSubmit = true;
+        await page.locator('#feedback-launcher').click();
+        await page.locator('#feedback-current').fill(text);
+        await page.locator('#feedback-expected').fill('Synthetic expected behavior');
+        const request = page.waitForRequest(request => request.url().endsWith('/api/feedback') && request.method() === 'POST');
+        await page.locator('#feedback-submit').click();
+        await request;
+        assert.equal(typeof releaseFeedbackSubmit, 'function');
+        return releaseFeedbackSubmit;
+      };
+      feedbackIntake = true; feedbackIntakeStage = 'pending';
+      const releaseOldSubmission = await beginHeldSubmission('Old session submission');
+      await page.locator('#logout-button').evaluate(button => button.click());
+      await visible(page, '#login-view');
+      await page.locator('#login-username').fill('owner');
+      await page.locator('#password').fill('synthetic-password');
+      await page.locator('#login-submit').click();
+      await visible(page, '#dashboard-view');
+      const releaseNewSubmission = await beginHeldSubmission('New session submission');
+      const oldSubmissionResponse = page.waitForResponse(response => response.url().endsWith('/api/feedback') && response.request().method() === 'POST');
+      releaseOldSubmission();
+      await oldSubmissionResponse;
+      await settleNavigation();
+      assert.equal(await page.locator('#feedback-submit').isDisabled(), true, 'old finally cannot clear current busy state');
+      assert.equal(await page.locator('#feedback-submit').getAttribute('aria-busy'), 'true');
+      assert.equal(await page.locator('#feedback-current').inputValue(), 'New session submission', 'old result cannot erase current fields');
+      const newSubmissionResponse = page.waitForResponse(response => response.url().endsWith('/api/feedback') && response.request().method() === 'POST');
+      releaseNewSubmission();
+      await newSubmissionResponse;
+      await page.waitForFunction(() => !document.getElementById('feedback-submit').disabled);
+      await page.locator('#feedback-close').click();
+      feedbackIntake = false;
       // Missing authorization preserves the selected repository and guides setup.
       authorized = false;
       await page.goto(origin);
@@ -1838,7 +1994,7 @@ async function main() {
       assert.equal(await page.locator('#feedback-created').textContent(), '');
       assert.equal(await page.locator('#task-detail-body').textContent(), '');
       assert.deepEqual(errors, []);
-      console.log(`${language}: onboarding, capability readiness, four-item nav, scrolled navigation/deep links, dashboard current card and content-sized actions, settings URL tabs/readiness/mobile panel focus, Activity/Settings tabs with keyboard/hash/back/deep links, run filter groups/selected detail/mobile window, compact review help/recheck, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/layout/suggestions, chat task events/history, report result/retry/follow-up, feedback region selection/cancel/full-view/crop/context and HTTP/DOM-snapshot fallback/accept/reject/focus/safe-area, board/filter/drawer/actions, errors, both languages, mobile 44px targets/header/bottom nav/launcher/overflow, expiry passed`);
+      console.log(`${language}: onboarding, capability readiness, four-item nav, scrolled navigation/deep links, dashboard current card and content-sized actions, settings URL tabs/readiness/mobile panel focus, Activity/Settings tabs with keyboard/hash/back/deep links, run filter groups/selected detail/mobile window, compact review help/recheck, quick-action launcher/dialog/close/focus/validation/disabled/fallback, assistant title/composer/layout/suggestions, chat task events/history, report result/retry/follow-up, feedback region selection/cancel/full-view/crop/context and HTTP/DOM-snapshot fallback/accept/reject/focus/safe-area, async intake draft/answer/reload/retry/timeout, board/filter/drawer/actions, errors, both languages, mobile 44px targets/header/bottom nav/launcher/overflow, expiry passed`);
       await context.close();
     }
   } finally { await browser.close(); }

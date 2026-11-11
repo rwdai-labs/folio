@@ -45,9 +45,10 @@ volume. This repository contains only generic service code and Web assets.
    with pen, arrow or rectangle tools, describe what happened and what you want,
    and open **More** only if the derived title, priority or acceptance needs
    editing. Closing the window keeps the draft. A valid submission is accepted
-   immediately. When a main agent is configured it reviews the screenshot and
-   text asynchronously and either files a bounded planning task or asks you to
-   choose between concrete options when one missing decision changes the plan;
+   immediately, and the main agent reviews the screenshot and text
+   asynchronously. It either files a bounded planning task or asks you to choose
+   between concrete options when one missing decision changes the plan. A model
+   or provider failure keeps the feedback retryable and never creates a plan;
    malformed input is rejected with a fixed reason. The planning task is not a
    source edit or deployment.
 4. For personal-context answers and organization, authorize GitHub and connect

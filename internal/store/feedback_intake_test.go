@@ -53,7 +53,7 @@ func TestFeedbackIntakeSendsScreenshotAndFilesPlan(t *testing.T) {
 			function, _ := tool["function"].(map[string]any)
 			names[responseString(function, "name")] = true
 		}
-		sawTools = names["feedback.plan"] && names["feedback.clarify"]
+		sawTools = names["feedback-plan"] && names["feedback-clarify"]
 		sawRequired = true
 		messages, _ := payload["messages"].([]any)
 		for _, item := range messages {
@@ -76,7 +76,7 @@ func TestFeedbackIntakeSendsScreenshotAndFilesPlan(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"group/coding","choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"feedback.plan","arguments":"{\"request\":\"Remove the quick actions card\"}"}}]}}]}`))
+		_, _ = w.Write([]byte(`{"model":"group/coding","choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"feedback-plan","arguments":"{\"request\":\"Remove the quick actions card\"}"}}]}}]}`))
 	}))
 	defer server.Close()
 	bindSyntheticService(t, s, server.URL+"/v1", map[string]any{"assistant": syntheticBinding("group/coding")}, nil)
@@ -145,10 +145,10 @@ func TestFeedbackIntakeClarifiesAndResumes(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if calls == 1 {
-			_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"feedback.clarify","arguments":"{\"questions\":[{\"question\":\"Remove the whole card or keep the launcher?\",\"options\":[\"Remove the whole card\",\"Keep the launcher\"],\"allow_text\":false}]}"}}]}}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"feedback-clarify","arguments":"{\"questions\":[{\"question\":\"Remove the whole card or keep the launcher?\",\"options\":[\"Remove the whole card\",\"Keep the launcher\"],\"allow_text\":false}]}"}}]}}]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call_2","type":"function","function":{"name":"feedback.plan","arguments":"{\"request\":\"Remove the quick actions card\"}"}}]}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call_2","type":"function","function":{"name":"feedback-plan","arguments":"{\"request\":\"Remove the quick actions card\"}"}}]}}]}`))
 	}))
 	defer server.Close()
 	bindSyntheticService(t, s, server.URL+"/v1", map[string]any{"assistant": syntheticBinding("group/coding")}, nil)
@@ -173,7 +173,7 @@ func TestFeedbackIntakeClarifiesAndResumes(t *testing.T) {
 	questions := intake["questions"].([]any)
 	question := questions[0].(map[string]any)
 	options := question["options"].([]any)
-	if question["id"] != "q1" || len(options) != 2 {
+	if question["id"] != "r0-q1" || len(options) != 2 {
 		t.Fatalf("questions=%v", questions)
 	}
 	optionID := options[1].(map[string]any)["id"].(string)
@@ -181,7 +181,7 @@ func TestFeedbackIntakeClarifiesAndResumes(t *testing.T) {
 	if _, err := s.AnswerFeedback(id, []FeedbackAnswerInput{{QuestionID: "q9", OptionID: optionID}}); err == nil {
 		t.Fatal("unknown question accepted")
 	}
-	value, err = s.AnswerFeedback(id, []FeedbackAnswerInput{{QuestionID: "q1", OptionID: optionID}})
+	value, err = s.AnswerFeedback(id, []FeedbackAnswerInput{{QuestionID: "r0-q1", OptionID: optionID}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,45 +209,64 @@ func TestFeedbackIntakeClarifiesAndResumes(t *testing.T) {
 	}
 }
 
-func TestFeedbackIntakeFallsBackWhenTheModelFails(t *testing.T) {
+func TestFeedbackIntakeFailurePreservesEvidenceWithoutPlanning(t *testing.T) {
 	s := newTestStore(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "synthetic failure", http.StatusInternalServerError)
 	}))
 	defer server.Close()
 	bindSyntheticService(t, s, server.URL+"/v1", map[string]any{"assistant": syntheticBinding("group/coding")}, nil)
-
-	value, err := s.CreateFeedback(validFeedbackInput(), nil)
+	value, err := s.CreateFeedback(validFeedbackInput(), feedbackPNG(t, 320, 200))
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := value["feedback"].(map[string]any)["id"].(string)
 	result, err := s.runFeedbackIntakeTask(findIntakeTask(t, s, id, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result["status"] != "reported" || result["reason"] != "intake_fallback" {
-		t.Fatalf("result=%v", result)
+	if err != nil || result["status"] != "failed" {
+		t.Fatalf("result=%v err=%v", result, err)
 	}
 	detail, err := s.FeedbackDetail(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := detail["feedback"].(map[string]any)
-	if record["status"] != feedbackStatusAccepted || record["task_id"] == nil {
-		t.Fatalf("fallback detail=%v", record)
+	if record["status"] != feedbackStatusIntakeFailed || record["task_id"] != nil || record["current"] != validFeedbackInput().Current {
+		t.Fatalf("failed processing must preserve evidence without approval: %v", record)
+	}
+	if _, err := s.FeedbackImage(id); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := s.RetryFeedbackRequest(id, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried["feedback"].(map[string]any)["status"] != feedbackStatusIntakePending {
+		t.Fatal(retried)
+	}
+	findIntakeTask(t, s, id, 1)
+	if _, err := s.RetryFeedbackRequest(id, map[string]any{}); err == nil {
+		t.Fatal("concurrent retry accepted")
 	}
 }
 
-func TestFeedbackSubmitWithoutAgentKeepsImmediatePlan(t *testing.T) {
+func TestFeedbackWithoutAgentIsDurableAndRetryable(t *testing.T) {
 	s := newTestStore(t)
 	value, err := s.CreateFeedback(validFeedbackInput(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	feedback := value["feedback"].(map[string]any)
-	if feedback["status"] != feedbackStatusAccepted || value["task"] == nil {
-		t.Fatalf("no-agent submission=%v", value)
+	if feedback["status"] != feedbackStatusIntakePending || value["task"] != nil {
+		t.Fatalf("submission=%v", value)
+	}
+	id := feedback["id"].(string)
+	result, err := s.runFeedbackIntakeTask(findIntakeTask(t, s, id, 0))
+	if err != nil || result["status"] != "failed" || result["reason"] != "agent_unavailable" {
+		t.Fatalf("result=%v err=%v", result, err)
+	}
+	detail, _ := s.FeedbackDetail(id)
+	if detail["feedback"].(map[string]any)["task_id"] != nil {
+		t.Fatal("unassessed feedback created plan")
 	}
 }
 
@@ -267,5 +286,28 @@ func TestFeedbackQuestionsAreBoundedAndServerNumbered(t *testing.T) {
 	}}})
 	if err != nil || len(questions) != 1 || questions[0].ID != "q1" || questions[0].Options[1].ID != "o2" {
 		t.Fatalf("questions=%v err=%v", questions, err)
+	}
+}
+
+func TestFeedbackAgentPromptTreatsTheCapturedRegionAsTheReferent(t *testing.T) {
+	for _, phrase := range []string{
+		"selected region",
+		"Do not ask for its name",
+		"没发生什么",
+		"把这个模块去掉",
+		"allow_text:true",
+		"Inspect the actual attached screenshot",
+	} {
+		if !strings.Contains(feedbackAgentSystemPrompt, phrase) {
+			t.Fatalf("intake system prompt missing %q", phrase)
+		}
+	}
+	record := feedbackRecord{Title: "Synthetic", Area: "dashboard", Current: "没发生什么", Expected: "把这个模块去掉", Acceptance: "Synthetic", Priority: "P2"}
+	record.Intake = &feedbackIntake{Answers: []FeedbackAnswer{{QuestionID: "r0-q1", Question: "Which scope?", OptionLabel: "Only the dashboard card"}}}
+	input := feedbackAgentInput(record, true)
+	for _, phrase := range []string{"screenshot_attached", "Only the dashboard card", "没发生什么"} {
+		if !strings.Contains(input, phrase) {
+			t.Fatalf("intake input missing %q: %s", phrase, input)
+		}
 	}
 }

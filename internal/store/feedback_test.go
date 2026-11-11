@@ -55,24 +55,56 @@ func validFeedbackInput() FeedbackInput {
 	}
 }
 
+// legacyFeedbackIntakeQueued checks submission persistence independently of the
+// worker tests: valid owner input always queues intake, even without a model.
+func legacyFeedbackIntakeQueued(t *testing.T, store *Store, value map[string]any) {
+	t.Helper()
+	if value["accepted"] != true || value["task"] != nil {
+		t.Fatalf("submission must accept without a plan: %v", value)
+	}
+	record := value["feedback"].(map[string]any)
+	id, _ := record["id"].(string)
+	if !feedbackIDRE.MatchString(id) || record["status"] != "intake_pending" || record["reason"] != nil || record["task_id"] != nil || record["task"] != nil {
+		t.Fatalf("pending feedback=%v", record)
+	}
+	intake, ok := record["intake"].(map[string]any)
+	if !ok || intake["state"] != "pending" || intake["revision"] != 0 {
+		t.Fatalf("pending intake=%v", record["intake"])
+	}
+	persisted, err := store.loadFeedback(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != "intake_pending" || persisted.TaskID != "" || persisted.Intake == nil || persisted.Intake.State != "pending" || persisted.Intake.Revision != 0 {
+		t.Fatalf("persisted feedback=%+v", persisted)
+	}
+	tasks, err := store.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := tasks["tasks"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("submission should queue only intake: %v", items)
+	}
+	task := items[0].(map[string]any)
+	if task["kind"] != taskKindFeedbackIntake || task["source"] != taskSourceFeedback || task["priority"] != "P1" || task["status"] != "queued" {
+		t.Fatalf("intake task=%v", task)
+	}
+	payload := task["payload"].(map[string]any)
+	if len(payload) != 2 || payload["feedback_id"] != id || payload["revision"] != float64(0) {
+		t.Fatalf("intake payload=%v", payload)
+	}
+}
+
 func TestCreateFeedbackAcceptsWithoutModelBinding(t *testing.T) {
 	store := newTestStore(t)
 	value, err := store.CreateFeedback(validFeedbackInput(), nil)
 	if err != nil {
 		t.Fatalf("create feedback: %v", err)
 	}
-	if value["accepted"] != true {
-		t.Fatalf("feedback not accepted: %v", value)
-	}
+	legacyFeedbackIntakeQueued(t, store, value)
 	record := value["feedback"].(map[string]any)
 	id := record["id"].(string)
-	if !feedbackIDRE.MatchString(id) || record["status"] != "accepted" || record["reason"] != nil {
-		t.Fatalf("feedback record=%v", record)
-	}
-	taskID, _ := record["task_id"].(string)
-	if !taskIDRE.MatchString(taskID) {
-		t.Fatalf("task link=%q", taskID)
-	}
 	dirInfo, err := os.Stat(store.feedbackDirFor(id))
 	if err != nil || dirInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("feedback dir mode=%v err=%v", dirInfo, err)
@@ -83,33 +115,6 @@ func TestCreateFeedbackAcceptsWithoutModelBinding(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(store.feedbackDirFor(id), "screenshot.png")); !os.IsNotExist(err) {
 		t.Fatal("feedback without an image stored a screenshot")
-	}
-	tasks, err := store.ListTasks()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var task map[string]any
-	for _, item := range tasks["tasks"].([]any) {
-		candidate := item.(map[string]any)
-		if candidate["id"] == taskID {
-			task = candidate
-			break
-		}
-	}
-	if task == nil || task["kind"] != taskKindFeedbackPlan || task["source"] != taskSourceFeedback || task["priority"] != "P1" {
-		t.Fatalf("planning task=%v", task)
-	}
-	if !strings.HasPrefix(task["title"].(string), "Plan: ") || len([]rune(task["title"].(string))) > maxTaskTitleRunes {
-		t.Fatalf("planning title=%q", task["title"])
-	}
-	request := task["payload"].(map[string]any)["request"].(string)
-	for _, phrase := range []string{"plan-only", "do not edit files", "do not deploy", "likely files", "tests", "ambiguities", "scope risks", "Do not ask clarifying questions"} {
-		if !strings.Contains(request, phrase) {
-			t.Fatalf("planning prompt missing %q: %s", phrase, request)
-		}
-	}
-	if len([]rune(request)) > feedbackPlanPromptRunes {
-		t.Fatalf("planning prompt=%d runes", len([]rune(request)))
 	}
 	detail, err := store.FeedbackDetail(id)
 	if err != nil {
@@ -187,19 +192,31 @@ func TestCreateFeedbackMaxBoundedInputStaysUnderPlanLimit(t *testing.T) {
 	if value["accepted"] != true {
 		t.Fatalf("bounded feedback rejected: %v", value)
 	}
-	record := value["feedback"].(map[string]any)
-	request := ""
-	tasks, err := store.ListTasks()
+	legacyFeedbackIntakeQueued(t, store, value)
+	id := value["feedback"].(map[string]any)["id"].(string)
+	focus := "Check the synthetic loading indicator."
+	finalized, err := store.finalizeFeedbackPlan(id, focus)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("finalize plan: %v", err)
 	}
-	for _, item := range tasks["tasks"].([]any) {
-		task := item.(map[string]any)
-		if task["id"] == record["task_id"] {
-			request = task["payload"].(map[string]any)["request"].(string)
+	record := finalized["feedback"].(map[string]any)
+	task := record["task"].(map[string]any)
+	if record["status"] != "accepted" || record["task_id"] != task["id"] || !taskIDRE.MatchString(task["id"].(string)) {
+		t.Fatalf("finalized feedback=%v", record)
+	}
+	if task["kind"] != taskKindFeedbackPlan || task["source"] != taskSourceFeedback || task["priority"] != "P1" {
+		t.Fatalf("planning task=%v", task)
+	}
+	if !strings.HasPrefix(task["title"].(string), "Plan: ") || len([]rune(task["title"].(string))) > maxTaskTitleRunes {
+		t.Fatalf("planning title=%q", task["title"])
+	}
+	request := task["payload"].(map[string]any)["request"].(string)
+	for _, phrase := range []string{"plan-only", "do not edit files", "do not deploy", "likely files", "tests", "ambiguities", "scope risks", "Do not ask clarifying questions", focus} {
+		if !strings.Contains(request, phrase) {
+			t.Fatalf("planning prompt missing %q: %s", phrase, request)
 		}
 	}
-	if request == "" || len([]rune(request)) > feedbackPlanPromptRunes {
+	if len([]rune(request)) > feedbackPlanPromptRunes {
 		t.Fatalf("planning request length=%d", len([]rune(request)))
 	}
 }
@@ -279,7 +296,7 @@ func TestFeedbackNeverCallsASufficiencyModel(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"ready\":false,\"reason\":\"ambiguous\"}"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
-	bindSyntheticService(t, store, server.URL, map[string]any{"report": syntheticBinding("group/report")}, nil)
+	bindSyntheticService(t, store, server.URL, map[string]any{"assistant": syntheticBinding("group/assistant"), "report": syntheticBinding("group/report")}, nil)
 	value, err := store.CreateFeedback(validFeedbackInput(), nil)
 	if err != nil {
 		t.Fatalf("create feedback: %v", err)
@@ -298,9 +315,7 @@ func TestFeedbackNeverCallsASufficiencyModel(t *testing.T) {
 			t.Fatalf("record carries %s=%v", field, record[field])
 		}
 	}
-	if record["status"] != "accepted" || record["task_id"] == nil {
-		t.Fatalf("record=%v", record)
-	}
+	legacyFeedbackIntakeQueued(t, store, value)
 }
 
 func jsonText(t *testing.T, text string) []byte {
@@ -312,11 +327,13 @@ func jsonText(t *testing.T, text string) []byte {
 	return raw
 }
 
-func TestFeedbackPlanRequiresDedicatedFeedbackSource(t *testing.T) {
+func TestFeedbackKindsRequireDedicatedFeedbackSource(t *testing.T) {
 	store := newTestStore(t)
-	for _, source := range []string{"manual", "agent:console-main", "hook:synthetic", "event:synthetic", "action:parent"} {
-		if _, err := store.CreateTask(taskKindFeedbackPlan, source, "Bypass", "P1", map[string]any{"request": "Synthetic"}); err == nil || err.Error() != "invalid_task_kind" {
-			t.Fatalf("reserved kind from %s err=%v", source, err)
+	for _, kind := range []string{taskKindFeedbackIntake, taskKindFeedbackPlan} {
+		for _, source := range []string{"manual", "agent:console-main", "hook:synthetic", "event:synthetic", "action:parent"} {
+			if _, err := store.CreateTask(kind, source, "Bypass", "P1", map[string]any{"request": "Synthetic"}); err == nil || err.Error() != "invalid_task_kind" {
+				t.Fatalf("reserved kind %s from %s err=%v", kind, source, err)
+			}
 		}
 	}
 	request := strings.Repeat("界", feedbackPlanPromptRunes)
@@ -430,22 +447,7 @@ func TestFeedbackContextPersistencePublicAndList(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(store.feedbackDirFor(id), "screenshot.png")); !os.IsNotExist(err) {
 		t.Fatal("context created a screenshot")
 	}
-	tasks, err := store.ListTasks()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range tasks["tasks"].([]any) {
-		task := item.(map[string]any)
-		if task["id"] != record["task_id"] {
-			continue
-		}
-		request := task["payload"].(map[string]any)["request"].(string)
-		if !strings.Contains(request, "Page context (untrusted data)") ||
-			!strings.Contains(request, "view=dashboard") ||
-			!strings.Contains(request, `selector="#retry-task"`) {
-			t.Fatalf("plan prompt omitted context summary: %s", request)
-		}
-	}
+	legacyFeedbackIntakeQueued(t, store, value)
 
 	detail, err := store.FeedbackDetail(id)
 	if err != nil {
@@ -584,7 +586,7 @@ func TestFeedbackInvalidContextNeverReachesModel(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"ready\":true,\"reason\":\"ok\"}"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
-	bindSyntheticService(t, store, server.URL, map[string]any{"report": syntheticBinding("group/gate")}, nil)
+	bindSyntheticService(t, store, server.URL, map[string]any{"assistant": syntheticBinding("group/assistant")}, nil)
 	input := validFeedbackInput()
 	context := syntheticPageContextFixture()
 	context.Elements = make([]FeedbackElement, maxFeedbackContextElements+1)
@@ -608,10 +610,7 @@ func TestCreateFeedbackAcceptsShortOwnerText(t *testing.T) {
 	if err != nil || value["accepted"] != true {
 		t.Fatalf("short owner text value=%v err=%v", value, err)
 	}
-	record := value["feedback"].(map[string]any)
-	if record["status"] != "accepted" || record["task_id"] == nil {
-		t.Fatalf("short owner text record=%v", record)
-	}
+	legacyFeedbackIntakeQueued(t, store, value)
 }
 
 func TestFeedbackContextPromptsBoundedAndNameElements(t *testing.T) {
@@ -727,7 +726,13 @@ func TestFeedbackPlanPromptIncludesContext(t *testing.T) {
 	if err != nil || value["accepted"] != true {
 		t.Fatalf("feedback with context value=%v err=%v", value, err)
 	}
-	task := value["task"].(map[string]any)
+	legacyFeedbackIntakeQueued(t, store, value)
+	id := value["feedback"].(map[string]any)["id"].(string)
+	finalized, err := store.finalizeFeedbackPlan(id, "Inspect the synthetic task card.")
+	if err != nil {
+		t.Fatalf("finalize plan with context: %v", err)
+	}
+	task := finalized["feedback"].(map[string]any)["task"].(map[string]any)
 	prompt, _ := task["payload"].(map[string]any)["request"].(string)
 	for _, phrase := range []string{"Page context (untrusted data)", "view=dashboard", "route=\"/#dashboard\"", "viewport=1440x900", "index=1", "name=\"Retry\"", "selector=\"#retry-task\""} {
 		if !strings.Contains(prompt, phrase) {

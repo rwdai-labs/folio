@@ -576,7 +576,7 @@ func TestRunActionRejectsUnavailableWorkshopRequirement(t *testing.T) {
 	}
 }
 
-func TestFeedbackPlanKindCannotBeShadowedOrConfigured(t *testing.T) {
+func TestFeedbackKindsCannotBeShadowedOrConfigured(t *testing.T) {
 	store := newTestStore(t)
 	definition := validPipelineDefinition()
 	definition.ID = "report"
@@ -588,22 +588,40 @@ func TestFeedbackPlanKindCannotBeShadowedOrConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("feedback: %v", err)
 	}
-	task := value["task"].(map[string]any)
+	legacyFeedbackIntakeQueued(t, store, value)
+	id := value["feedback"].(map[string]any)["id"].(string)
+	finalized, err := store.finalizeFeedbackPlan(id, "Inspect the synthetic dashboard.")
+	if err != nil {
+		t.Fatalf("finalize feedback plan: %v", err)
+	}
+	task := finalized["feedback"].(map[string]any)["task"].(map[string]any)
 	if task["kind"] != taskKindFeedbackPlan {
 		t.Fatalf("feedback plan was intercepted: %v", task)
 	}
-	reserved := validPipelineDefinition()
-	reserved.ID = taskKindFeedbackPlan
-	reserved.Label = "Reserved"
-	if err := store.ValidateAction(reserved); err == nil {
-		t.Fatal("configured feedback-plan action was accepted")
+	for _, entry := range catalogDefinitions(t, store) {
+		if entry["id"] == taskKindFeedbackIntake || entry["id"] == taskKindFeedbackPlan {
+			t.Fatalf("reserved feedback kind appeared in catalog: %v", entry)
+		}
 	}
-	if err := store.PutAction(reserved); err == nil {
-		t.Fatal("configured feedback-plan action was written")
-	}
-	kinds := &taskKindsFile{Version: 1, Kinds: []taskKind{{ID: taskKindFeedbackPlan, Label: "Reserved", Action: kindActionReport}}}
-	if err := validateTaskKinds(kinds); err == nil {
-		t.Fatal("reserved feedback-plan kind was accepted in task-kinds")
+	for _, kind := range []string{taskKindFeedbackIntake, taskKindFeedbackPlan} {
+		t.Run(kind, func(t *testing.T) {
+			reserved := validPipelineDefinition()
+			reserved.ID = kind
+			reserved.Label = "Reserved"
+			if err := store.ValidateAction(reserved); err == nil {
+				t.Fatalf("configured %s action was accepted", kind)
+			}
+			if err := store.PutAction(reserved); err == nil {
+				t.Fatalf("configured %s action was written", kind)
+			}
+			kinds := &taskKindsFile{Version: 1, Kinds: []taskKind{{ID: kind, Label: "Reserved", Action: kindActionReport}}}
+			if err := validateTaskKinds(kinds); err == nil {
+				t.Fatalf("reserved %s kind was accepted in task-kinds", kind)
+			}
+			if _, err := store.RunAction(kind, nil); err == nil {
+				t.Fatalf("reserved %s kind was manually launched", kind)
+			}
+		})
 	}
 }
 

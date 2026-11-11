@@ -126,9 +126,11 @@ func (e AgentEvent) Map() map[string]any {
 }
 
 type AgentTurnResult struct {
-	Text  string
-	RunID string
-	Usage map[string]any
+	Text   string
+	RunID  string
+	Usage  map[string]any
+	Status string
+	Reason string
 }
 
 type agentSessionFile struct {
@@ -161,7 +163,7 @@ func (s *Store) AgentRoute(source, typ string) (string, bool, error) {
 
 func (s *Store) AgentHistory(session string) (map[string]any, error) {
 	session = strings.TrimSpace(session)
-	if !agentSessionRE.MatchString(session) {
+	if !agentSessionRE.MatchString(session) || strings.HasPrefix(session, feedbackAgentSessionPrefix) {
 		return nil, errStore("agent_session_invalid")
 	}
 	file, err := s.loadAgentSession(session)
@@ -212,11 +214,15 @@ type agentTurnOptions struct {
 	ImageDataURL string
 	RequireTool  bool
 	StopTools    map[string]bool
+	TaskID       string
 }
 
 // AgentTurn runs one bounded main-agent turn. It loads session history, calls
 // the runtime, executes only granted tools, and records one audit run.
 func (s *Store) AgentTurn(ctx context.Context, session, text, trust string, emit func(AgentEvent)) (AgentTurnResult, error) {
+	if strings.HasPrefix(strings.TrimSpace(session), feedbackAgentSessionPrefix) {
+		return AgentTurnResult{}, errStore("agent_session_invalid")
+	}
 	return s.agentTurn(ctx, agentTurnOptions{Session: session, Input: text, Trust: trust}, emit)
 }
 
@@ -224,7 +230,11 @@ func (s *Store) agentTurn(ctx context.Context, opts agentTurnOptions, emit func(
 	text := strings.TrimSpace(opts.Input)
 	trust := opts.Trust
 	session := strings.TrimSpace(opts.Session)
-	if text == "" || len([]byte(text)) > maxAgentInput {
+	inputLimit := maxAgentInput
+	if len(opts.StopTools) > 0 {
+		inputLimit = 96 * 1024
+	}
+	if text == "" || len([]byte(text)) > inputLimit {
 		return AgentTurnResult{}, errStore("agent_input_invalid")
 	}
 	if !validEventTrust(trust) {
@@ -261,6 +271,12 @@ func (s *Store) agentTurn(ctx context.Context, opts agentTurnOptions, emit func(
 		return AgentTurnResult{}, err
 	}
 	history := append([]AgentMessage(nil), sessionFile.Messages...)
+	if len(opts.StopTools) > 0 {
+		// Feedback owns its complete structured evidence and answer history.
+		// Rebuild each turn from that durable record instead of accumulating
+		// duplicate full screenshots/context projections in session history.
+		history = nil
+	}
 	history = append(history, AgentMessage{Role: "user", Content: text})
 	toolAudit := make([]any, 0, maxAgentToolCalls)
 	modelUsage := make([]any, 0, maxAgentRounds)
@@ -278,6 +294,9 @@ func (s *Store) agentTurn(ctx context.Context, opts agentTurnOptions, emit func(
 		"trust":       trust,
 		"summary":     "",
 		"duration_ms": 0,
+	}
+	if opts.TaskID != "" {
+		run["task_id"] = opts.TaskID
 	}
 	if runtimeConfig != nil {
 		run["model"] = runtimeConfig.Model
@@ -311,14 +330,14 @@ func (s *Store) agentTurn(ctx context.Context, opts agentTurnOptions, emit func(
 		}
 		_ = s.saveAutomationRun(run)
 		send(AgentEvent{Type: "turn.finished", Status: status, Code: reason, RunID: runID})
-		return AgentTurnResult{Text: final, RunID: runID, Usage: usageMap}, nil
+		return AgentTurnResult{Text: final, RunID: runID, Usage: usageMap, Status: status, Reason: reason}, nil
 	}
 	for round := 0; round < maxAgentRounds; round++ {
 		if ctx.Err() != nil {
 			return finish("canceled", "agent_canceled", "")
 		}
 		toolChoice := ""
-		if opts.RequireTool && round == 0 {
+		if opts.RequireTool {
 			toolChoice = "required"
 		}
 		response, callErr := runtime.Turn(ctx, AgentRequest{
@@ -352,6 +371,9 @@ func (s *Store) agentTurn(ctx context.Context, opts agentTurnOptions, emit func(
 		}
 
 		if len(response.ToolCalls) == 0 {
+			if opts.RequireTool {
+				return finish("failed", "agent_verdict_missing", "")
+			}
 			final := strings.TrimSpace(response.Text)
 			if final == "" {
 				return finish("failed", "agent_empty", "")
@@ -363,7 +385,7 @@ func (s *Store) agentTurn(ctx context.Context, opts agentTurnOptions, emit func(
 			send(AgentEvent{Type: "text.delta", Text: final})
 			return finish("reported", "", final)
 		}
-		if len(response.ToolCalls) > maxAgentToolCalls {
+		if len(response.ToolCalls) > maxAgentToolCalls || len(opts.StopTools) > 0 && len(response.ToolCalls) != 1 {
 			return finish("failed", "agent_tool_limit", "")
 		}
 		for index := range response.ToolCalls {
@@ -523,7 +545,11 @@ func (r *commandAgentRuntime) Turn(ctx context.Context, request AgentRequest) (A
 		return AgentResponse{}, errStore("agent_unavailable")
 	}
 	raw, err := json.Marshal(request)
-	if err != nil || len(raw) > maxAgentRequest {
+	limit := maxAgentRequest
+	if request.ImageDataURL != "" {
+		limit = maxAgentImageRequest
+	}
+	if err != nil || len(raw) > limit {
 		return AgentResponse{}, errStore("agent_request_invalid")
 	}
 	env := map[string]string{

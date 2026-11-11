@@ -189,13 +189,13 @@ func (s *Store) runAgentTool(ctx context.Context, call AgentToolCall, trust, ses
 	}
 	switch call.Name {
 	case "feedback.plan":
-		value, err := s.feedbackPlanFromAgent(session, args)
+		value, err := s.feedbackPlanFromAgent(ctx, session, args)
 		if err != nil {
 			return agentToolError(err.Error()), nil
 		}
 		return agentToolOK(value), nil
 	case "feedback.clarify":
-		value, err := s.feedbackClarifyFromAgent(session, args)
+		value, err := s.feedbackClarifyFromAgent(ctx, session, args)
 		if err != nil {
 			return agentToolError(err.Error()), nil
 		}

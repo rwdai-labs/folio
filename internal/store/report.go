@@ -85,6 +85,16 @@ func (s *Store) runReportTask(kind taskKind, task taskRecord) (map[string]any, e
 		return result
 	}
 
+	prompt := renderKindPrompt(kind, task)
+	if kind.ID == taskKindFeedbackPlan {
+		managed, err := s.feedbackManagedPlanPrompt(task)
+		if err != nil {
+			return finish("failed", "feedback_plan_unavailable"), nil
+		}
+		if managed != "" {
+			prompt = managed
+		}
+	}
 	binding, bindingErr := s.resolveModelBinding("report", kind.ID)
 	if bindingErr != nil {
 		return finish("failed", "model_services_invalid"), nil
@@ -92,7 +102,7 @@ func (s *Store) runReportTask(kind taskKind, task taskRecord) (map[string]any, e
 	if binding != nil {
 		run["connection"] = binding.Connection
 		run["model_available"] = true
-		result, callErr := s.callTaskModel(binding, renderKindPrompt(kind, task), kind.Timeout(), maxReportTextBytes, runID)
+		result, callErr := s.callTaskModel(binding, prompt, kind.Timeout(), maxReportTextBytes, runID)
 		attachTaskModelUsage(run, result)
 		if callErr != nil {
 			return finish("failed", callErr.Error()), nil
@@ -110,7 +120,6 @@ func (s *Store) runReportTask(kind taskKind, task taskRecord) (map[string]any, e
 		return finish("failed", "model_unavailable"), nil
 	}
 
-	prompt := renderKindPrompt(kind, task)
 	if len(prompt) > maxReportInputBytes {
 		return finish("failed", "prompt_too_large"), nil
 	}

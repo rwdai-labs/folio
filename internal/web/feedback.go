@@ -109,20 +109,30 @@ func (s *Server) feedbackAnswer(w http.ResponseWriter, path string, payload map[
 		s.writeError(w, http.StatusServiceUnavailable, "feedback_unavailable")
 		return
 	}
-	id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/feedback/"), "/answers")
+	verb := "/answers"
+	if strings.HasSuffix(path, "/retry") {
+		verb = "/retry"
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/feedback/"), verb)
 	if !safeFeedbackID.MatchString(id) {
 		s.writeError(w, http.StatusNotFound, "feedback_unknown")
 		return
 	}
-	value, err := backend.FeedbackAnswerRequest(id, payload)
+	var value map[string]any
+	var err error
+	if verb == "/retry" {
+		value, err = backend.RetryFeedbackRequest(id, payload)
+	} else {
+		value, err = backend.FeedbackAnswerRequest(id, payload)
+	}
 	if err != nil {
 		switch err.Error() {
 		case "feedback_unknown":
 			s.writeError(w, http.StatusNotFound, "feedback_unknown")
 		case "feedback_answers_invalid":
 			s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "feedback_invalid", "reason": "answers_invalid"}, nil)
-		case "feedback_not_awaiting_answers":
-			s.writeError(w, http.StatusConflict, "feedback_not_awaiting_answers")
+		case "feedback_not_awaiting_answers", "feedback_not_retryable":
+			s.writeError(w, http.StatusConflict, err.Error())
 		default:
 			s.writeError(w, http.StatusInternalServerError, "feedback_unavailable")
 		}

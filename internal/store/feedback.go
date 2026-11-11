@@ -41,6 +41,7 @@ const (
 	// accepted immediately, then the main agent reads it (including the
 	// screenshot) and either queues a plan or asks decision questions.
 	feedbackStatusIntakePending      = "intake_pending"
+	feedbackStatusIntakeFailed       = "intake_failed"
 	feedbackStatusNeedsClarification = "needs_clarification"
 	feedbackStatusAccepted           = "accepted"
 	feedbackStatusRejected           = "rejected"
@@ -56,8 +57,8 @@ const (
 	maxFeedbackAgentInputRunes    = 8000
 	maxFeedbackPlanAnswersRunes   = 1200
 	feedbackAgentImageRawBytes    = 1500 * 1024
-	feedbackAgentImageMaxSide     = 1600
-	feedbackAgentImageJPEGQuality = 85
+	feedbackAgentImageMaxSide     = 2048
+	feedbackAgentImageJPEGQuality = 90
 
 	maxFeedbackContextBytes          = 24 * 1024
 	maxFeedbackContextElements       = 24
@@ -180,6 +181,7 @@ type feedbackIntake struct {
 	Answers   []FeedbackAnswer   `json:"answers,omitempty"`
 	Vision    bool               `json:"vision,omitempty"`
 	UpdatedAt string             `json:"updated_at,omitempty"`
+	PlanFocus string             `json:"plan_focus,omitempty"`
 }
 
 func (intake feedbackIntake) public() map[string]any {
@@ -332,12 +334,9 @@ func (context FeedbackContext) public() map[string]any {
 
 func (s *Store) feedbackDirFor(id string) string { return filepath.Join(s.feedbackDir, id) }
 
-// CreateFeedback validates deterministic input, stores the optional image, and
-// queues asynchronous intake. The HTTP response never waits on a model: when a
-// main agent is configured the record is accepted as intake_pending and a
-// durable feedback-intake task reviews it (screenshot included); otherwise the
-// deterministic plan task is created immediately, exactly like the legacy
-// behavior. Malformed input is still refused and writes no record.
+// CreateFeedback validates and persists owner input, then queues a durable
+// main-agent turn. It never acquires the agent turn lock or waits on a model.
+// Model unavailability is a retryable processing failure, never plan approval.
 func (s *Store) CreateFeedback(input FeedbackInput, image []byte) (map[string]any, error) {
 	input, err := normalizeFeedbackInput(input)
 	if err != nil {
@@ -360,10 +359,8 @@ func (s *Store) CreateFeedback(input FeedbackInput, image []byte) (map[string]an
 		record.Reason = "too_long"
 		return s.saveFeedbackOutcome(record, image)
 	}
-	if s.feedbackAgentAvailable() {
-		record.Status = feedbackStatusIntakePending
-		record.Intake = &feedbackIntake{State: "pending", Revision: 0, UpdatedAt: nowString()}
-	}
+	record.Status = feedbackStatusIntakePending
+	record.Intake = &feedbackIntake{State: "pending", Revision: 0, UpdatedAt: nowString()}
 	saved, saveErr := s.saveFeedbackRecord(record, image)
 	if saveErr != nil {
 		return nil, saveErr
@@ -372,16 +369,10 @@ func (s *Store) CreateFeedback(input FeedbackInput, image []byte) (map[string]an
 	if id == "" {
 		return nil, errStore("feedback_unavailable")
 	}
-	if record.Status == feedbackStatusIntakePending {
-		if enqueueErr := s.enqueueFeedbackIntake(id, 0); enqueueErr != nil {
-			// The queue is internal. If it cannot take the intake, fall back to
-			// the deterministic plan so the owner's submission is never stuck.
-			if _, fallbackErr := s.finalizeFeedbackPlan(id, ""); fallbackErr != nil {
-				return nil, errStore("feedback_unavailable")
-			}
-		}
-	} else if _, planErr := s.finalizeFeedbackPlan(id, ""); planErr != nil {
-		return nil, planErr
+	if enqueueErr := s.enqueueFeedbackIntake(id, 0); enqueueErr != nil {
+		// The submission is durable even if queue persistence fails. Keep it
+		// retryable; a missing assessment never authorizes a plan.
+		s.failFeedbackIntake(id, 0, "feedback_queue_unavailable")
 	}
 	detail, detailErr := s.FeedbackDetail(id)
 	if detailErr != nil {
@@ -394,15 +385,6 @@ func (s *Store) CreateFeedback(input FeedbackInput, image []byte) (map[string]an
 		}
 	}
 	return value, nil
-}
-
-// feedbackAgentAvailable reports whether asynchronous main-agent intake can run
-// now. It is configuration readiness only, never an inference check.
-func (s *Store) feedbackAgentAvailable() bool {
-	s.agentMu.Lock()
-	defer s.agentMu.Unlock()
-	runtime, _, err := s.boundAgentRuntime()
-	return err == nil && runtime != nil && runtime.Available()
 }
 
 func (s *Store) enqueueFeedbackIntake(id string, revision int) error {
@@ -988,6 +970,7 @@ func (s *Store) FeedbackDetail(id string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.reconcileFeedbackIntakeLocked(&record)
 	return s.feedbackDetailLocked(record)
 }
 
