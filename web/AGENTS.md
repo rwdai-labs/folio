@@ -60,9 +60,18 @@ Inherit `../AGENTS.md`.
   never resurrect hardcoded report/maintenance cards. No action-specific IDs or
   labels belong in the shell.
 - Feedback is a screenshot-first movable floating window available from every
-  authenticated view, opened by the fixed launcher and closed without discarding
-  the draft. Drag only by the header, keep the window inside the viewport on
-  pointer/resize, and keep Escape/Close focus behaviour. The compact panel has a
+  authenticated view, opened by the floating launcher and closed without
+  discarding the draft. The launcher itself is draggable: pointer capture, a
+  small movement threshold so a click still toggles, viewport clamping on
+  pointer/resize, and an in-memory position (never browser storage). Drag only
+  the window by the header, keep it inside the viewport on pointer/resize, and
+  keep Escape/Close focus behaviour. Feedback must remain usable above native
+  `<dialog>` modals: while a dialog is open, re-parent the launcher, feedback
+  window and region selector into the topmost open dialog (only descendants of a
+  modal are interactive); return them to the body when no dialog remains. When
+  feedback is open, Escape in a host dialog closes feedback first. The feedback
+  window keeps z-index above the drawer content and the launcher above the
+  window; do not rely on z-index alone to cross a modal top layer. The compact panel has a
   prominent dropzone with the primary `框选区域截取` action plus paste/drop/choose
   file, a preview/annotation canvas, only two visible textareas (`发生了什么？`
   and `你希望怎样？`), and a collapsed `更多` disclosure for title, priority and

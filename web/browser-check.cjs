@@ -1512,6 +1512,37 @@ async function main() {
       await visible(page, '#task-detail-body .run-head');
       assert.match(await page.locator('#task-detail-body .run-meta').innerText(), /\$0\.0123/);
       if (process.env.FOLIO_SCREENSHOTS) await page.screenshot({ path: `/tmp/folio-task-drawer-${language}.png`, fullPage: true });
+      // Feedback outranks an open task drawer and its launcher stays draggable.
+      assert.equal(await page.evaluate(() => document.getElementById('feedback-launcher').closest('dialog')?.id || ''), 'task-detail', 'launcher moves into the open modal');
+      await page.locator('#feedback-launcher').click();
+      await visible(page, '#feedback-view');
+      assert.equal(await page.evaluate(() => {
+        const panel = document.getElementById('feedback-view');
+        const rect = panel.getBoundingClientRect();
+        return panel.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + 24));
+      }), true, 'feedback stays above the task drawer');
+      await page.locator('#feedback-close').click();
+      const dragStartBox = await page.locator('#feedback-launcher').boundingBox();
+      await page.mouse.move(dragStartBox.x + dragStartBox.width / 2, dragStartBox.y + dragStartBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(dragStartBox.x + dragStartBox.width / 2 - 140, dragStartBox.y + dragStartBox.height / 2 - 90, { steps: 6 });
+      await page.mouse.up();
+      await page.waitForTimeout(150);
+      const dragEndBox = await page.locator('#feedback-launcher').boundingBox();
+      assert.ok(dragEndBox.x < dragStartBox.x - 40 && dragEndBox.y < dragStartBox.y - 30, 'floating feedback launcher is draggable');
+      assert.equal(await page.locator('#feedback-view').isVisible(), false, 'dragging the launcher does not open feedback');
+      await page.evaluate(() => {
+        const launcher = document.getElementById('feedback-launcher');
+        launcher.style.left = '';
+        launcher.style.top = '';
+        launcher.style.right = '';
+        launcher.style.bottom = '';
+      });
+      await page.locator('#feedback-launcher').click();
+      await visible(page, '#feedback-view');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#feedback-view').isVisible(), false, 'Escape closes feedback first');
+      assert.equal(await page.locator('#task-detail').isVisible(), true, 'the host drawer stays open');
       assert.equal(await page.locator('#activity-view').isVisible(), true);
       run = { ...run, status: 'no_changes', stage: 'done' };
       tasks[1].status = 'done'; tasks[1].run_id = run.run_id;
@@ -1521,6 +1552,7 @@ async function main() {
       await page.keyboard.press('Escape');
       assert.equal(await page.locator('#task-detail').isVisible(), false);
       await page.waitForFunction(() => document.activeElement.dataset.taskInspect === 't-000000000002');
+      assert.equal(await page.evaluate(() => document.getElementById('feedback-launcher').closest('dialog')?.id || ''), '', 'launcher returns to the page after the modal closes');
       await page.locator('[data-task-inspect="t-000000000001"]').click();
       await visible(page, '#task-detail');
       await page.locator('#task-detail-close').click();

@@ -3026,6 +3026,7 @@
     status.textContent = taskWaitText(task, state.tasks);
     body.appendChild(status);
     if (!dialog.open) dialog.showModal();
+    adoptFeedbackFloatingUI();
     if (!task.run_id) {
       const note = document.createElement("p");
       note.textContent = t(task.status === "running" ? "board.starting_attempt" : "board.no_attempt");
@@ -3421,6 +3422,7 @@
     state.catalogOpenId = id;
     renderCatalogDialog(action, null);
     if (!dialog.open) dialog.showModal();
+    adoptFeedbackFloatingUI();
     const field = dialog.querySelector("[data-catalog-field]");
     const target = field || dialog.querySelector("button[type=submit]") || $("catalog-dialog-close");
     if (target) target.focus({ preventScroll: true });
@@ -5256,6 +5258,103 @@
     else feedbackWindowOpen(true);
   }
 
+  /* The feedback surface must stay usable above a native <dialog>. Only
+     descendants of the top modal are interactive, so move the floating pieces
+     into that dialog while it is open and return them to the body after it
+     closes. Position stays fixed to the viewport because the app dialogs do not
+     establish a transformed containing block. */
+  const FEEDBACK_FLOATING_IDS = ["feedback-launcher", "feedback-view", "feedback-selector"];
+  let feedbackLauncherDrag = null;
+  let feedbackLauncherSuppressClick = false;
+
+  function feedbackFloatingHost() {
+    const dialogs = Array.from(document.querySelectorAll("dialog[open]")).filter((dialog) => dialog.id !== "feedback-view");
+    return dialogs.length ? dialogs[dialogs.length - 1] : document.body;
+  }
+
+  function adoptFeedbackFloatingUI() {
+    const host = feedbackFloatingHost();
+    FEEDBACK_FLOATING_IDS.forEach((id) => {
+      const node = $(id);
+      if (node && node.parentElement !== host) host.appendChild(node);
+    });
+  }
+
+  function feedbackLauncherClick() {
+    if (feedbackLauncherSuppressClick) {
+      feedbackLauncherSuppressClick = false;
+      return;
+    }
+    feedbackWindowToggle();
+  }
+
+  function feedbackLauncherClamp() {
+    const launcher = $("feedback-launcher");
+    if (!launcher || !launcher.style.left) return;
+    const rect = launcher.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - rect.width - 8));
+    const top = Math.min(Math.max(8, rect.top), Math.max(8, window.innerHeight - rect.height - 8));
+    launcher.style.left = `${left}px`;
+    launcher.style.top = `${top}px`;
+    launcher.style.right = "auto";
+    launcher.style.bottom = "auto";
+  }
+
+  function feedbackLauncherPointerDown(event) {
+    if (event.button !== 0) return;
+    const launcher = $("feedback-launcher");
+    if (!launcher) return;
+    const rect = launcher.getBoundingClientRect();
+    feedbackLauncherDrag = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    };
+    launcher.setPointerCapture(event.pointerId);
+    launcher.classList.add("dragging");
+  }
+
+  function feedbackLauncherPointerMove(event) {
+    const drag = feedbackLauncherDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!drag.moved) {
+      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return;
+      drag.moved = true;
+    }
+    const launcher = $("feedback-launcher");
+    if (!launcher) return;
+    const width = launcher.offsetWidth;
+    const height = launcher.offsetHeight;
+    const left = Math.min(Math.max(8, event.clientX - drag.offsetX), Math.max(8, window.innerWidth - width - 8));
+    const top = Math.min(Math.max(8, event.clientY - drag.offsetY), Math.max(8, window.innerHeight - height - 8));
+    launcher.style.left = `${left}px`;
+    launcher.style.top = `${top}px`;
+    launcher.style.right = "auto";
+    launcher.style.bottom = "auto";
+    event.preventDefault();
+  }
+
+  function feedbackLauncherPointerUp(event) {
+    const drag = feedbackLauncherDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    feedbackLauncherDrag = null;
+    const launcher = $("feedback-launcher");
+    if (launcher) {
+      launcher.classList.remove("dragging");
+      if (launcher.hasPointerCapture(event.pointerId)) launcher.releasePointerCapture(event.pointerId);
+    }
+    if (drag.moved) {
+      feedbackLauncherSuppressClick = true;
+      setTimeout(() => {
+        feedbackLauncherSuppressClick = false;
+      }, 0);
+    }
+  }
+
   function feedbackDragStart(event) {
     // Phones use a docked bottom sheet; dragging the header there would let the
     // owner pull the form away from the safe-area submit bar.
@@ -6845,6 +6944,16 @@
   on("task-search", "input", () => renderTasks(state.tasks));
   on("task-priority-filter", "change", () => renderTasks(state.tasks));
   on("task-detail-close", "click", () => $("task-detail").close());
+  on("task-detail", "cancel", (event) => {
+    if (!state.feedbackOpen) return;
+    event.preventDefault();
+    feedbackWindowClose();
+  });
+  on("catalog-dialog", "cancel", (event) => {
+    if (!state.feedbackOpen) return;
+    event.preventDefault();
+    feedbackWindowClose();
+  });
   on("task-detail", "close", () => {
     if ($("task-detail").open) return;
     inspectGeneration += 1;
@@ -7027,7 +7136,11 @@
     if (target) target.focus({ preventScroll: true });
   });
   on("feedback-created", "click", inspectChatTask);
-  on("feedback-launcher", "click", feedbackWindowToggle);
+  on("feedback-launcher", "click", feedbackLauncherClick);
+  on("feedback-launcher", "pointerdown", feedbackLauncherPointerDown);
+  on("feedback-launcher", "pointermove", feedbackLauncherPointerMove);
+  on("feedback-launcher", "pointerup", feedbackLauncherPointerUp);
+  on("feedback-launcher", "pointercancel", feedbackLauncherPointerUp);
   on("feedback-close", "click", () => feedbackWindowClose());
   on("feedback-view", "keydown", (event) => {
     if (event.key !== "Escape" || !state.feedbackOpen) return;
@@ -7138,6 +7251,7 @@
   window.addEventListener("resize", () => {
     if (state.feedback.selecting) feedbackSelectorCancel();
     feedbackClampWindow();
+    feedbackLauncherClamp();
     syncSettingsDisclosures();
     const limit = runWindowLimit();
     if (limit !== runWindowMode) {
@@ -7197,6 +7311,12 @@
     if (intakeNotice) feedbackIntakeNotice(intakeNotice);
     rerenderBusyLabels();
   });
+
+  const feedbackDialogObserver = new MutationObserver(() => adoptFeedbackFloatingUI());
+  document.querySelectorAll("dialog").forEach((dialog) => {
+    feedbackDialogObserver.observe(dialog, { attributes: true, attributeFilter: ["open"] });
+  });
+  adoptFeedbackFloatingUI();
 
   /* ------------------------------------------------------------------ boot */
 

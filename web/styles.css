@@ -2809,7 +2809,7 @@ textarea {
   position: fixed;
   right: 22px;
   bottom: 20px;
-  z-index: 55;
+  z-index: 65;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -2821,9 +2821,11 @@ textarea {
   color: var(--on-accent);
   box-shadow: 0 12px 30px -14px rgba(20, 82, 66, .72);
   font: 650 .86rem var(--font);
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
 }
 .feedback-launcher:hover { background: var(--accent-strong); }
+.feedback-launcher.dragging { cursor: grabbing; }
 .feedback-launcher-icon { font-size: 1rem; line-height: 1; }
 @media (max-width: 720px) {
   .catalog-launcher { padding: 12px; }
