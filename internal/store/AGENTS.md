@@ -57,24 +57,16 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   is persisted only inside feedback.json, separate from screenshot.png. Detail
   exposes the sanitized schema; list summaries expose `element_count` only, and
   records without context stay readable. Invalid context never reaches a model:
-  both gate and plan prompts append a bounded textual projection of view, route,
-  viewport and at most 8 elements within the existing 4000-rune prompt bound.
-  When a report binding exists, call the trusted
-  tool-free adapter with a strict JSON-only sufficiency prompt (30s, <=512
-  output). That prompt states that "this module"/"this UI" means the summarized
-  Visible elements captured inside the owner's screenshot region, so a pointer
-  into the image is not treated as missing detail. Extract the first balanced
-  object, reject extra/missing/wrong-typed fields, accept any ready=true answer,
-  map unknown reasons to `ambiguous`, record only normalized bounded
-  `gate_usage` counters (also on parse failure), and record `gate_unavailable`
-  on any call/parse failure; never persist raw gate output. No report binding
-  skips the gate without inventing a model. The gate is advisory: owner input is
-  authoritative, so a not-ready verdict is stored as bounded `gate_advisory` and
-  still creates the plan task instead of rejecting the submission. Text fields
-  need only to be non-empty (no minimum length) and within their bounds; only
+  the plan prompt appends a bounded textual projection of view, route, viewport
+  and at most 8 elements within the existing 4000-rune prompt bound. No model
+  grades the owner's feedback: the submission path makes no model call, so the
+  form never waits on a provider and no wording can be vetoed. Text fields need
+  only to be non-empty (no minimum length) and within their bounds; only
   deterministic validation (empty/oversized fields, invalid area, priority,
   image or context, defensive `too_long`) refuses input, writing no record and
-  returning the fixed reason. Acceptance uses the reserved
+  returning the fixed reason. Records written while the retired sufficiency
+  gate existed still carry `gate_usage`/`gate_advisory`; new records leave both
+  empty and neither influences acceptance. Acceptance uses the reserved
   internal `feedback-plan` report kind (never listed or configurable, so a
   configured `report` action cannot intercept it) to build a bounded
   plan-only report task (`Plan: ` title, payload request, no edits/deploy, no

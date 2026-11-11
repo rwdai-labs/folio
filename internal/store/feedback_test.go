@@ -271,86 +271,35 @@ func TestFeedbackImageReencodeBoundsAndSafety(t *testing.T) {
 	}
 }
 
-func TestFeedbackGateIsAdvisory(t *testing.T) {
-	cases := []struct {
-		name     string
-		body     string
-		status   int
-		advisory string
-	}{
-		{"ready fenced", "```json\n{\"ready\":true,\"reason\":\"ok\"}\n```", http.StatusOK, ""},
-		{"ready with unusual reason", "{\"ready\":true,\"reason\":\"clear\"}", http.StatusOK, ""},
-		{"ready with reject reason", "{\"ready\":true,\"reason\":\"too_broad\"}", http.StatusOK, ""},
-		{"reject", "{\"ready\":false,\"reason\":\"too_broad\"}", http.StatusOK, "too_broad"},
-		{"unknown reason", "{\"ready\":false,\"reason\":\"maybe\"}", http.StatusOK, "ambiguous"},
-		{"extra field", "{\"ready\":true,\"reason\":\"ok\",\"extra\":1}", http.StatusOK, "gate_unavailable"},
-		{"wrong type", "{\"ready\":\"yes\",\"reason\":\"ok\"}", http.StatusOK, "gate_unavailable"},
-		{"prose no object", "the request is fine", http.StatusOK, "gate_unavailable"},
-		{"upstream failure", "", http.StatusInternalServerError, "gate_unavailable"},
+func TestFeedbackNeverCallsASufficiencyModel(t *testing.T) {
+	store := newTestStore(t)
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"ready\":false,\"reason\":\"ambiguous\"}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	bindSyntheticService(t, store, server.URL, map[string]any{"report": syntheticBinding("group/report")}, nil)
+	value, err := store.CreateFeedback(validFeedbackInput(), nil)
+	if err != nil {
+		t.Fatalf("create feedback: %v", err)
 	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			store := newTestStore(t)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				var payload map[string]any
-				_ = json.NewDecoder(r.Body).Decode(&payload)
-				if payload["max_tokens"] != float64(512) {
-					t.Errorf("gate request max_tokens=%v", payload["max_tokens"])
-				}
-				if test.status != http.StatusOK {
-					w.WriteHeader(test.status)
-					return
-				}
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + string(jsonText(t, test.body)) + `},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":30}}}`))
-			}))
-			defer server.Close()
-			bindSyntheticService(t, store, server.URL, map[string]any{"report": syntheticBinding("group/gate")}, nil)
-			value, err := store.CreateFeedback(validFeedbackInput(), nil)
-			if err != nil {
-				t.Fatalf("gate call: %v", err)
-			}
-			// The gate never vetoes owner input: a submission is always accepted
-			// and only carries the model's opinion as bounded advisory metadata.
-			if value["accepted"] != true {
-				t.Fatalf("accepted=%v want true value=%v", value["accepted"], value)
-			}
-			record := value["feedback"].(map[string]any)
-			if record["status"] != "accepted" || record["task_id"] == nil {
-				t.Fatalf("accepted record=%v", record)
-			}
-			if record["reason"] != nil {
-				t.Fatalf("advisory verdict was recorded as a rejection reason: %v", record)
-			}
-			advisory, _ := record["gate_advisory"].(string)
-			if advisory != test.advisory {
-				t.Fatalf("gate_advisory=%q want %q value=%v", advisory, test.advisory, record)
-			}
-			persisted, err := os.ReadFile(filepath.Join(store.feedbackDirFor(record["id"].(string)), "feedback.json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var stored map[string]any
-			if err := json.Unmarshal(persisted, &stored); err != nil {
-				t.Fatal(err)
-			}
-			if storedAdvisory, _ := stored["gate_advisory"].(string); storedAdvisory != test.advisory {
-				t.Fatalf("persisted gate_advisory=%q want %q", storedAdvisory, test.advisory)
-			}
-			if test.status == http.StatusOK {
-				usage, ok := record["gate_usage"].(map[string]any)
-				if !ok || usage["input_tokens"] != int64(70) || usage["cached_tokens"] != int64(30) || usage["total_tokens"] != int64(120) {
-					t.Fatalf("gate usage=%v", record["gate_usage"])
-				}
-				if storedUsage, ok := stored["gate_usage"].(map[string]any); !ok || storedUsage["total_tokens"] != float64(120) {
-					t.Fatalf("persisted gate usage=%v", stored["gate_usage"])
-				}
-			} else if record["gate_usage"] != nil || stored["gate_usage"] != nil {
-				t.Fatalf("failed call without a response invented usage: %v", record)
-			}
-			if strings.Contains(string(persisted), "maybe") || strings.Contains(string(persisted), "the request is fine") {
-				t.Fatalf("raw gate output persisted: %s", persisted)
-			}
-		})
+	// The owner is the authority on their own feedback: no model is asked to
+	// grade it, so no model call happens and no verdict is stored.
+	if calls != 0 {
+		t.Fatalf("feedback submission called the model %d times", calls)
+	}
+	if value["accepted"] != true {
+		t.Fatalf("accepted=%v value=%v", value["accepted"], value)
+	}
+	record := value["feedback"].(map[string]any)
+	for _, field := range []string{"gate_advisory", "gate_usage", "reason"} {
+		if record[field] != nil {
+			t.Fatalf("record carries %s=%v", field, record[field])
+		}
+	}
+	if record["status"] != "accepted" || record["task_id"] == nil {
+		t.Fatalf("record=%v", record)
 	}
 }
 
@@ -644,7 +593,7 @@ func TestFeedbackInvalidContextNeverReachesModel(t *testing.T) {
 		t.Fatalf("invalid context err=%v", err)
 	}
 	if calls != 0 {
-		t.Fatalf("invalid context reached the gate model %d times", calls)
+		t.Fatalf("invalid context reached a model %d times", calls)
 	}
 }
 
@@ -665,23 +614,6 @@ func TestCreateFeedbackAcceptsShortOwnerText(t *testing.T) {
 	}
 }
 
-func TestFeedbackGatePromptNamesTheCapturedRegion(t *testing.T) {
-	input := validFeedbackInput()
-	context := syntheticPageContextFixture()
-	context.Elements = []FeedbackElement{{
-		Index: 1, Tag: "section", Name: "快捷操作", Section: "工作",
-		Selector: "#catalog", Text: "创建后台报告",
-		Rect: FeedbackRect{Width: 1361, Height: 324},
-	}}
-	input.Context = &context
-	prompt := feedbackGatePrompt(input)
-	for _, phrase := range []string{"screenshot region", "this module", `name="快捷操作"`} {
-		if !strings.Contains(prompt, phrase) {
-			t.Fatalf("gate prompt missing %q: %s", phrase, prompt)
-		}
-	}
-}
-
 func TestFeedbackContextPromptsBoundedAndNameElements(t *testing.T) {
 	store := newTestStore(t)
 	input := validFeedbackInput()
@@ -694,7 +626,6 @@ func TestFeedbackContextPromptsBoundedAndNameElements(t *testing.T) {
 	}
 	input.Context = &context
 	for name, prompt := range map[string]string{
-		"gate": feedbackGatePrompt(input),
 		"plan": feedbackPlanPrompt(input),
 	} {
 		for _, phrase := range []string{
@@ -739,7 +670,6 @@ func TestFeedbackContextPromptsBoundedAndNameElements(t *testing.T) {
 		t.Fatalf("maximum context value=%v err=%v", value, err)
 	}
 	for name, prompt := range map[string]string{
-		"gate": feedbackGatePrompt(maximum),
 		"plan": feedbackPlanPrompt(maximum),
 	} {
 		if runes := len([]rune(prompt)); runes > feedbackPlanPromptRunes {
@@ -788,45 +718,23 @@ func TestFeedbackLegacyRecordWithoutContextRemainsReadable(t *testing.T) {
 	}
 }
 
-func TestFeedbackGatePromptIncludesContext(t *testing.T) {
+func TestFeedbackPlanPromptIncludesContext(t *testing.T) {
 	store := newTestStore(t)
-	prompt := ""
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload struct {
-			Messages []struct {
-				Content string `json:"content"`
-			} `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Error(err)
-		}
-		for _, message := range payload.Messages {
-			if strings.Contains(message.Content, "Page context") {
-				prompt = message.Content
-			}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"choices": []any{map[string]any{
-				"message":       map[string]any{"content": `{"ready":true,"reason":"ok"}`},
-				"finish_reason": "stop",
-			}},
-		})
-	}))
-	defer server.Close()
-	bindSyntheticService(t, store, server.URL, map[string]any{"report": syntheticBinding("group/gate")}, nil)
 	input := validFeedbackInput()
 	context := syntheticPageContextFixture()
 	input.Context = &context
 	value, err := store.CreateFeedback(input, nil)
 	if err != nil || value["accepted"] != true {
-		t.Fatalf("gate with context value=%v err=%v", value, err)
+		t.Fatalf("feedback with context value=%v err=%v", value, err)
 	}
+	task := value["task"].(map[string]any)
+	prompt, _ := task["payload"].(map[string]any)["request"].(string)
 	for _, phrase := range []string{"Page context (untrusted data)", "view=dashboard", "route=\"/#dashboard\"", "viewport=1440x900", "index=1", "name=\"Retry\"", "selector=\"#retry-task\""} {
 		if !strings.Contains(prompt, phrase) {
-			t.Fatalf("gate prompt missing %q: %s", phrase, prompt)
+			t.Fatalf("plan prompt missing %q: %s", phrase, prompt)
 		}
 	}
 	if len([]rune(prompt)) > feedbackPlanPromptRunes {
-		t.Fatalf("gate prompt=%d runes", len([]rune(prompt)))
+		t.Fatalf("plan prompt=%d runes", len([]rune(prompt)))
 	}
 }

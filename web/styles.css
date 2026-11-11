@@ -2721,7 +2721,7 @@ textarea {
   border-top: 1px solid var(--line);
   background: var(--surface);
 }
-.feedback-submit-bar #feedback-message { flex: 1 1 auto; max-height: 3.6em; margin: 0; overflow: auto; font-size: .75rem; line-height: 1.35; }
+.feedback-submit-bar #feedback-message { flex: 1 1 auto; max-height: 4.5em; margin: 0; overflow: auto; font-size: .75rem; line-height: 1.35; }
 .feedback-submit-bar .btn { flex: 0 0 auto; margin-left: auto; }
 .feedback-window #feedback-created:empty { display: none; }
 .feedback-window #feedback-created .chat-task-card { margin: 0; }

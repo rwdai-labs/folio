@@ -127,10 +127,10 @@ Inherit `../AGENTS.md`.
   acceptance when empty, and default priority to P2. All remain editable under
   `更多`. Show an accepted task card or the rejection reason without clearing
   drafted fields (including derived values); translate known
-  `feedback.reason.<code>` values and show an unknown code as text. A stored
-  `gate_advisory` is rendered as a non-error hint beside the accepted notice and
-  never turns acceptance into rejection. Validate required fields and the 8 MiB
-  image limit client-side; there is no minimum text length. Clear images, canvas,
+  `feedback.reason.<code>` values and show an unknown code as text. Never show a
+  model's opinion of the owner's wording: submission is accepted as written.
+  Validate required fields and the 8 MiB image limit client-side; there is no
+  minimum text length. Clear images, canvas,
   fields and context on logout or session expiry and never persist screenshots
   in browser storage.
 - Structured `task.created` SSE events carry `task_id`, `title`, and `status`;

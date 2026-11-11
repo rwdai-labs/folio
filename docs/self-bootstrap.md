@@ -109,23 +109,18 @@ multipart envelope gets a separate bounded 1 MiB allowance so a maximal image
 plus form fields is still accepted. Required boolean catalog fields must be
 explicitly true, not merely present.
 
-The gate has two layers:
+Submission stays deterministic:
 
-1. Deterministic required-field, area, priority, and image checks. Text fields
-   only have to be non-empty and within their maximum length; there is no
-   minimum length to guess.
-2. When a report model binding exists, a strict model readiness check returning
-   `ready` plus a fixed reason (`too_broad`, `ambiguous`, `not_actionable`,
-   `unsafe_scope`, or `ok`). The prompt tells the model that "this module" or
-   "this UI" means the page elements captured inside the owner's screenshot
-   region, so pointing at the image is not treated as missing detail.
+- Required fields, area, priority, and image checks. Text fields only have to be
+  non-empty and within their maximum length; there is no minimum length.
+- No model grades the owner's wording or the screenshot. The owner is the
+  authority on what they want, and a request that points at the captured region
+  ("remove this module") is a normal request, not an underspecified one.
 
-The model layer is advisory: owner input is authoritative. A not-ready verdict
-(`too_broad`, `ambiguous`, `not_actionable`, `unsafe_scope`, `gate_unavailable`)
-is stored as `gate_advisory` and shown as a non-blocking hint while the plan
-task is still created. Deterministic malformed input (empty or oversized
-fields, an invalid image or context) is refused with a 400 response before a
-feedback record is written. An accepted
+Deterministic malformed input (empty or oversized fields, an invalid image or
+context) is refused with a 400 response before a feedback record is written.
+Any accepted request becomes a durable **planning** report task that names
+assumptions instead of asking the owner to rephrase. An accepted
 request currently creates a durable **planning** report task: it may describe
 likely files, implementation steps, tests, assumptions, and scope risks, but it
 must not edit files, run commands, deploy, or ask the owner a clarifying

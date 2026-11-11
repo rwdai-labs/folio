@@ -5866,14 +5866,6 @@
         return;
       }
       setFeedbackNotice({ key: "feedback.accepted" });
-      const gateAdvisory = result && result.feedback && typeof result.feedback.gate_advisory === "string" ? result.feedback.gate_advisory : "";
-      // The gate is advisory. Show a verdict the owner can act on, never a
-      // transient model outage that would make an accepted task look doubtful.
-      if (gateAdvisory && gateAdvisory !== "gate_unavailable") {
-        const noteKey = `feedback.advisory.${gateAdvisory}`;
-        const note = translateKnown(noteKey, gateAdvisory);
-        setFeedbackNotice({ key: "feedback.accepted_advisory", vars: { note }, error: false });
-      }
       const task = result && (result.task || (result.feedback && result.feedback.task));
       const resultBox = $("feedback-created");
       if (resultBox && task && typeof task === "object") resultBox.replaceChildren(chatTaskCard(task));
