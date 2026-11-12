@@ -1,8 +1,9 @@
 # Integration plugins
 
-Status: current hook contract. [agent-architecture.md](agent-architecture.md)
-proposes a general event router that will generalize this API; until that
-ships, the contract below is authoritative.
+Status: current hook contract. The internal event router is implemented; the
+approved [Main pi / ACP architecture](agent-architecture.md) is not. That future
+execution model does not replace signed-hook authentication or let an event
+payload choose its authority.
 
 Folio has two kinds of plugin, and the difference is the dependency direction.
 
@@ -166,10 +167,19 @@ plugin to a new kind is:
 3. the plugin keeps sending the same signed event — no plugin release, no Folio
    release, no Go change.
 
-A genuinely new capability (something that writes, comments, or opens a PR) is
-still code in Folio, in the same order: implement it, expose it as an action,
-then point a plugin at it. External writes stay proposals until the owner
-approves them in Folio; a plugin never holds an approval gate.
+A new operation still needs an installed and authorized capability, whether
+implemented by Folio, a connected service or a harness tool. Current hooks target
+owner-configured Actions/kinds; they cannot invent a command, runner or grant.
+The approved target adds goal tasks through Main's `subagent` tool, managed by
+Folio and executed by ACP harnesses; an owner goal need not become a new Action.
+That tool is not another unsigned integration entry point.
+
+Approvals and effective grants belong to Folio, not an external plugin. Current
+configured Action steps can execute immediately within their owner configuration;
+there is no generic live approval queue today. The target must persist any
+additional required approval and must not infer owner authority from signed event
+content. Pi SDK extensions/skills, ACP harness adapters and the built-in/external
+plugins in this document are different integration surfaces.
 
 ## Lifecycle
 

@@ -151,6 +151,35 @@ Reported tokens and actual served provider/model, when supplied by the gateway,
 feed the existing estimated-cost view. Requested group IDs are not prices, and
 unknown attribution remains unpriced.
 
+## Planned Main Host and ACP packaging
+
+The approved target in [the agent architecture](../docs/agent-architecture.md)
+is not implemented in this image. Main will be built into Folio through
+`@earendil-works/pi-coding-agent`, hosted in TypeScript on Node.js or Bun. Pi
+will own its loop, sessions, compaction and skills; SDK custom tools will call
+Go over a thin IPC boundary, with no mandatory MCP layer. Main's file and shell
+tools may write files and write/run scripts in a granted workspace and use
+trusted skills. Workspace isolation and explicit grants must keep that access
+separate from production source/deployment and scripts in the private Context
+repository.
+
+Main's `subagent` custom tool will ask Folio to create a durable goal Task. Folio
+will own lifecycle, grants, scheduling, approvals, inputs, cancellation, retries,
+artifacts, evidence and delivery. All Task model/agent execution will go through
+an ACP client to a harness such as Codex, DSH or pi, using a native interface or a
+verified, versioned adapter. Main is not a replaceable Task runner. Harnesses
+will consume model/provider configuration, while gateway account selection and
+fallback remain external; business HTTP action steps remain available.
+
+Packaging the Main Host, its JavaScript dependencies, trusted skills and ACP
+harnesses/adapters is planned work. It requires exact dependency/version pins,
+workspace and credential isolation, license notices and smoke checks for the
+chosen runtime and protocol versions. The current Dockerfile installs Node.js
+and pinned Codex/DSH CLIs; it does not package the pi SDK host or guarantee ACP
+compatibility. No new host or ACP configuration commands are available yet.
+The settings, environment variables and runtime paths below describe the current
+legacy implementation and are not a setup recipe for this target.
+
 ## Legacy main-agent runtime and price estimates
 
 The Assistant view also supports the existing configurable main-agent runtime
@@ -166,8 +195,8 @@ Main agent runtime**, choose one of two modes:
   (for example `deepseek-chat`, or the id shown in your provider console).
 - **Installed command adapter.** Point at an absolute executable. It receives
   one JSON `AgentRequest` on stdin and returns one JSON `AgentResponse` on
-  stdout; this is the boundary for a pi wrapper. The legacy path is
-  `/data/agent/runtime`.
+  stdout; this is Folio's legacy adapter contract, not ACP or the approved pi SDK
+  host. The legacy path is `/data/agent/runtime`.
 
 Saving the form swaps the runtime immediately; no restart is needed. The
 Assistant reports unavailable until the adapter is complete and its key file
@@ -231,16 +260,23 @@ private `.env` and run `docker compose up -d`. `WEIXIN_ENABLED=false` is a hard
 kill switch that refuses browser binding as well. Never send QR output, token
 files, scanner IDs or private messages to chat or shared logs.
 
-Send `/status` to verify the channel, then a short text question after repository
-and Codex setup. Replies reuse Folio's read-only report runner, add one bounded
-context packet when a repository is connected, and cannot execute maintenance
-commands. The reply reports a fixed failure class when the model run fails, and
-the console shows the same class beside the channel. The optional push switch
-sends finished `pushed`/`failed` runs to the confirmed owner through the reply
-context of the owner's last answered message, so the owner must write once first.
-Non-owner senders are denied before any Folio capability. Media, group chats and
-personas are deferred. Calls are ephemeral and are not currently counted in the
-task/run usage dashboard.
+Send `/status` to verify the channel, then a short text question after configuring
+the assistant. Owner messages routed to `agent:main` use the current Go Main tool
+loop when available, with bounded history keyed by the authenticated channel
+identity and owner-granted control tools, including durable task creation. A
+repository is needed for context tools, not ordinary Main chat. The legacy
+fallback uses the read-only Codex report runner and can include one bounded
+private-context packet; only that fallback is ephemeral and omitted from task/run
+usage. An explicit assistant model-service route failure cannot fall back to
+another runner's credentials. `/help` and `/status` still claim the older
+read-only limitation and do not describe Main's grants.
+
+The optional push switch sends `pushed`/`failed` runs to the confirmed owner
+through the reply context of the owner's last answered message, so the owner must
+write once first. Successful `reported`/`completed` runs are currently filtered
+out by `notifyRun`. Non-owner senders are denied before any Folio capability.
+Media, group chats and personas are deferred. See the channel contract below for
+fallback failure classes and acceptance; this path is not the planned pi SDK host.
 
 Credentials, the confirmed/pending owner decision and the durable
 cursor/inbox/outbox stay in `/data/secrets/weixin/` with private permissions.

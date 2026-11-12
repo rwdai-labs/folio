@@ -2,6 +2,12 @@
 
 Inherit `../../AGENTS.md` and `../AGENTS.md`.
 
+- The approved Main pi SDK / ACP task architecture in
+  `../../docs/agent-architecture.md` is not implemented. Future API migration must
+  separate Main model/session configuration from ACP task harness profiles and
+  expose real task receipts, waiting/approval revisions and artifact/delivery
+  evidence. Keep current APIs below accurate; do not invent Host/ACP endpoints.
+  Normal Main file/shell/skill access does not widen feedback/observer grants.
 - `web.go` owns HTTP routing, authentication, sessions, CSRF/host/origin checks,
   request/response limits and background dispatch integration. Depend on the
   `Backend` contract; repository and model operations remain in store/worker.

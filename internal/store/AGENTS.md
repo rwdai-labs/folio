@@ -15,6 +15,15 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 | `report.go`, `report_result.go`, `readiness.go`, `usage.go`, `channels.go`, `models.go`, `quota.go`, `pricing.go` | Reports and bounded result reads, capability readiness, usage and estimated cost, notifications, runner catalogs, the optional quota snapshot and the cached model price catalog |
 | `inbound.go`, `weixin_push.go` | Explicit Weixin owner authorization, bounded read-only answers and the optional outbound push |
 
+- `../../docs/agent-architecture.md` owns the approved, unimplemented target:
+  special Main embeds pi SDK and retains workspace file/shell/script/skill access;
+  a Folio `subagent` custom tool delegates goals to the Go-managed task lifecycle.
+  All task agent work uses ACP harnesses (Codex/DSH/pi via verified profiles),
+  not bare model HTTP calls. Current adapter loops and tool-free reports below
+  remain shipped behavior until explicit migration; do not advertise SDK/ACP
+  support or remove validators on the strength of the design. Pi/harness owns
+  session/compaction; Folio owns identity mapping, tasks, grants, evidence and
+  delivery. New goal tasks must not require a prepublished Action.
 - A task is durable intent; a run is one attempt. Preserve single-writer
   checkout access, priority/off-peak policies, pause/hold/cancel/run-now
   behaviour, deduplication, and recovery of interrupted tasks after restart.
@@ -167,8 +176,9 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
   authorization keeps Folio's canonical names. Feedback-scoped sessions are
   internal: generic console/Weixin turns, generic history and the command/HTTP
   chat path reject `feedback-<id>` sessions. Tool-call ids must
-  pair the assistant message with each tool result; a real pi wrapper remains
-  unverified, so tests use a synthetic endpoint or executable. Successful
+  pair the assistant message with each tool result; tests use a synthetic
+  endpoint or executable. The legacy command protocol is not the planned SDK
+  Main Host and does not establish pi integration. Successful
   `task.create` emits bounded `task.created` task ID/title/status metadata and
   goes through `CreateTask`'s validated owner path, so it cannot bypass a
   configured action's requires or presentation checks;
@@ -196,16 +206,22 @@ Inherit `../../AGENTS.md` and `../AGENTS.md`.
 - `routes.json` is the single source for event targets; an action target must
   resolve through the validated registry and a disabled route fails closed.
 - Inbound Weixin uses an explicitly configured account/owner/direct-peer match
-  before any capability, including cached reply delivery. Text reuses the
-  ephemeral read-only report worker with a fresh per-call directory; never pass
-  channel credentials or use transport session IDs to resume a model session.
+  before any capability, including cached reply delivery. Authorized owner text
+  reaches the current Main tool loop when the route and runtime are available;
+  that path creates agent run audits and may create queue tasks. The fallback
+  reuses an ephemeral read-only report worker with a fresh per-call directory;
+  never pass channel credentials or use transport session IDs to resume a model
+  session.
   A connected repository contributes one `folio build --stdout --no-record`
   packet, clamped and marked as reference data; selection failures degrade to an
   answer without context instead of failing the message. Runner failures cross
   the child boundary as the fixed exit codes in `internal/context`, never as
   stderr, and become a channel failure class.
   External users are denied; future personas require a separate restricted
-  context/capability boundary. Channel calls do not create task/run audits.
+  context/capability boundary. The legacy fallback does not create task/run
+  audits; do not apply that limitation to the Main path. Current `notifyRun`
+  filters out successful `reported`/`completed` runs; do not claim universal
+  success delivery until the planned lifecycle/outbox migration lands.
 - `weixin_push.go` owns the optional outbound WeChat switch and test send. The
   transport is injected at startup; enabling without it is rejected, and a push
   failure is only a delivery-ledger entry.

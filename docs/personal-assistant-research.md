@@ -1,14 +1,25 @@
 # Folio 升级为个人助手：可复用的基础调研
 
-状态：调研笔记，不是决策记录。快照日期 2026-10-22。
+状态：历史调研笔记，不是当前决策记录或部署指南。快照日期 2026-10-22。
 范围：哪些现成东西可以直接当基础、哪些只能借鉴设计、哪些必须自己写。
-内容只含公开信息，不含任何私有上下文。
+内容只含公开信息，不含任何私有上下文；下文的“现在”“已装”“待决定”均指快照时点。
 
-运行时选择已在 [agent-architecture.md](agent-architecture.md) 重新评估：计划中的
-main agent 使用 pi，DSH 保留为维护/报告 runner；本文 §3 的 DSH 结论只保留为历史
-调研。
+运行时、工具和调度方案已由 [agent-architecture.md](agent-architecture.md) 的
+已批准目标取代，目标尚未实现：Folio 内置特殊的 Main，通过 TypeScript Main Host
+在 Node.js 或 Bun 中嵌入 `@earendil-works/pi-coding-agent`，由 pi 管理 loop、session、
+compaction 和 skills；Folio custom tools 以薄 IPC 回调 Go，MCP 不是必需层。
+Main 可在授权工作区读写文件、编写和运行脚本、使用可信 skills；这不自动授权修改生产
+源码/部署或执行私有 Context 仓库脚本。
 
-## 结论先说
+Main 的 `subagent` custom tool 交由 Folio 创建持久目标 Task；Folio 管理生命周期、
+授权、调度、审批、输入、取消、重试、产物、证据和投递。全部 Task 模型/agent 工作通过
+ACP client 接 Codex、DSH、pi 等 harness 的原生接口或经过验证的版本化适配器；Main
+不是可互换的 Task runner。模型/provider 配置由 harness 消费，网关账号选择和 fallback
+留在外部。当前 Go tool loop、HTTP/command Main adapter 和无工具 HTTP report 是
+legacy 路径；安装了 DSH CLI 并不证明目标 ACP 集成已交付。下文的 DSH 主运行时、
+MCP/私有 CLI 工具、DSH schedule 和单进程方案仅保留为研究历史。
+
+## 当时的结论
 
 1. **不要 fork 或内嵌另一个助手产品。** OpenClaw、Hermes Agent、Khoj、LocalAGI
    都是完整应用，自带状态、记忆和渠道模型。采用它们等于换掉 Folio，而不是升级
@@ -65,7 +76,7 @@ Markdown 文件改动、带 diff 的运行历史、间隔调度（最小 1 分�
 
 ## 3. 可复用的基础（按优先级）
 
-### 3.1 Agent 运行时：DSH（首选，已装）
+### 3.1 Agent 运行时：DSH（当时首选，后被取代）
 
 在 pinned 安装里核实（`@deepseek-ai/dsh@0.2.1-rc.2`，MIT）：
 
@@ -157,7 +168,10 @@ Folio 的 UI 刻意零依赖：classic script、无构建、严格 CSP、只用 
 做 trace。做聊天界面都不需要，但信任"主动行为"之前都需要。注意 Folio 已经为
 每次运行存了输入摘要、runner、模型、状态和 diff，那已经是一份可用的 trace。
 
-## 4. 建议的目标架构
+## 4. 当时建议的架构（已被取代）
+
+以下是历史方案，不是当前或已批准的工具/进程边界。尤其不能据此运行私有
+Context 脚本、把 MCP 当成必需层，或将常驻 Main 与 ACP Task harness 合并。
 
 ```text
 渠道（Telegram / Web 聊天）
@@ -176,7 +190,7 @@ personal-context（权威 Markdown + 候选管线）
 要保住的属性：单进程、单个私有卷、单个管理员凭据、除已鉴权 Web 外不开放入站
 端口、模型输出永不进服务日志、每条写入路径都过校验闸门。
 
-## 5. 复用 / 借鉴 / 自研
+## 5. 当时的复用 / 借鉴 / 自研选择
 
 | 层 | 决定 | 理由 |
 | --- | --- | --- |
@@ -192,7 +206,7 @@ personal-context（权威 Markdown + 候选管线）
 | 向量/图记忆 | **推迟** | 与 Git 权威模型冲突，且没有实测需求 |
 | 评测/分析 | **推迟**到二期（`promptfoo`） | 主动自治之前才需要，聊天之前不需要 |
 
-## 6. 分阶段计划
+## 6. 历史分阶段计划（不是当前实施顺序）
 
 **一期——先能对话（2–4 个内聚改动）。**
 会话表（id、渠道、渠道内会话、DSH session id、最后活跃时间）加流式聊天端点；
@@ -221,7 +235,7 @@ Telegram 之后再接第二个渠道。
   私有切分：服务代码公开、上下文私有、凭据两者都不进。
 - **范围纪律：** 对标产品卖的是执行环境（浏览器、云电脑、4000 个连接器）。Folio
   可信的优势是**可审计的个人记忆**，不是连接器数量。在这一点上竞争。
-- **待 owner 决定：** 先做哪个渠道（Telegram 还是只做 Web）；主动轮次是否允许
+- **当时待 owner 决定（已过时）：** 先做哪个渠道（Telegram 还是只做 Web）；主动轮次是否允许
   不经审批就写入；DSH 以 `acp`（服务端持会话）还是 `sdk`（客户端持历史）作为
   唯一集成点。
 

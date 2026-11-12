@@ -14,15 +14,18 @@ Inherit `../AGENTS.md`.
   event contracts. `event-driven-assistant.md` and
   `personal-assistant-research.md` contain design/research context; verify any
   proposal against code before treating it as shipped behaviour.
-- `agent-architecture.md` is the target architecture for runtime actions, the
-  main agent, event routing, token-price estimation and execution lanes. Phases
-  1–4 are implemented at the adapter boundary, including a built-in
-  OpenAI-compatible adapter; the real pi wrapper, lane admission and live
-  push/remote acceptance remain unverified. Keep its status block and decision
-  log accurate, and do not cite unverified behaviour as accepted.
+- `agent-architecture.md` is the approved target for Main built into pi SDK,
+  its file/shell/scripts/skills, the Folio `subagent` tool and ACP task harnesses
+  (Codex/DSH/pi via verified profiles). Folio owns task lifecycle and authority;
+  direct model HTTP is not a target task runner. The SDK Host/ACP/delegation
+  design is not implemented. Keep current Go loop, HTTP/command adapters and
+  report calls explicitly labelled as the migration baseline, not the target.
+  Do not reopen SDK-vs-wrapper, disable Main shell/files by default, or conflate
+  the special Main with interchangeable task runners.
 - `subscription-quota.md` covers subscription allowance/quota management: what
   to borrow from magpie, the implemented read-only panel and generic connection/
-  task bindings, and the unshipped quota-deferral/budget phases. Deployment README
+  task bindings, and the unshipped quota-deferral/budget phases. Its ACP migration
+  note keeps model/gateway configuration distinct from harness selection. Deployment README
   owns model-service setup; Folio does not reproduce gateway account/cost routing.
   Keep its status block accurate as phases land.
 - `context-maintenance.md` is the automatic organization contract: complete

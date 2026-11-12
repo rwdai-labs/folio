@@ -9,6 +9,23 @@
 magpie 迭代很快，本文只对应当日 `main` 分支（核对到 `c3462d5`）与文档；
 后续阶段实现前要重新核对。
 
+## 2026-11-12 架构决策与迁移边界
+
+[Main 与任务执行架构](agent-architecture.md) 已确定新目标：Main 固定内建于
+pi SDK，具有文件、shell、脚本和 skill 能力；`subagent` 是它调用 Folio 的工具。
+Folio 管理持久任务、授权、预算和交付，任务代理执行统一经 ACP 连接 Codex、DSH、
+pi 等 harness。**任务 runner 不能用直接模型 HTTP 调用替代**；模型/provider
+配置由 pi 或任务 harness 消费，网关继续负责组内账号、成本路由和 fallback。
+模型连接与 harness profile 是两个概念，不能把现有 `connection/model` 绑定直接
+改名当成 ACP runner。
+
+该目标尚未实现。下文已实现的 API 报告路径与历史分期保留为现状/迁移输入，
+不代表继续增加直接模型任务 runner。现有配额面板和配置入口仍按当前代码工作，
+不能据此使用尚未提供的 ACP 设置。未来额度/预算按 Folio Task/Run 与 harness
+会话关联；使用量、实际 provider/model 或账号归因只有 harness/网关报告才记录，
+协议未提供就保持未知。恢复可能跨多轮，不能沿用“一次性报告不需要会话粘性”
+作为新架构假设。Go 控制面依赖情况不代表完整部署不需要 pi SDK 的 JS 运行时。
+
 ## 实现状态
 
 - **已实现**：`internal/quota` 读 magpie 的 `GET /v1/magpie/quotas?kept=1`，
@@ -107,7 +124,8 @@ magpie 的 routing group 有多种策略：
 - 429 之后按 reset 时间 resting；没有 reset 就按 vendor 的 `Retry-After`，
   再没有就短退避；恢复读数后可以提前回来。
 - 会话粘性：同一对话尽量留在同一个账号上，保护 vendor 的 prompt cache。
-  Folio 的维护/报告是一次性调用，不需要这条。
+  旧的 Folio 报告调用可按一次性工作处理；新 ACP 多轮/恢复会话需要保留关联，
+  是否保持供应商账号粘性由 harness/网关决定。
 - 安全过滤拒绝不算账号故障，不应 rest 账号。
 
 ### 1.4 限额：一个 key 可以有多扇窗

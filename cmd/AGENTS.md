@@ -26,6 +26,12 @@ Applies to `cmd/`; inherit `../AGENTS.md`.
 - Context CLI `agent --auto` accepts `--maintenance-state` only in automatic
   mode and only within the external runtime. The service owns checkpoint writes;
   CLI workers emit validated structural proposals and optional review findings.
+- `../docs/agent-architecture.md` defines planned supervision of Folio's pi SDK
+  Main Host and ACP task harnesses. Neither is wired today. Main is a special
+  SDK assistant with shell/files/scripts/skills; task harness profiles are a
+  separate ACP choice, not direct model HTTP. A future startup migration must
+  preserve cancellation, private IPC, profile/version checks and service health
+  when a Host/harness is unavailable; document packaging before adding commands.
 - Startup wires the main-agent runtime from validated private configuration and
   starts a background, non-blocking price-catalog refresh. Agent configuration
   failures must not prevent the service from starting; the Assistant fails

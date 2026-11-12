@@ -2,15 +2,18 @@
 
 Folio is a self-hosted personal assistant, task center, and owner-controlled
 digital counterpart. It turns the owner's intent and trusted events into
-bounded tasks, uses private personal context when needed, executes only the
-runtime actions the owner has configured, and returns evidence through the Web
-console or optional channels.
+bounded work, uses private personal context when needed, acts within the owner's
+granted capabilities, and returns evidence through the Web console or optional
+channels. The current build executes configured runtime Actions; the approved
+architecture also supports goals delegated without a predefined Action.
 
 The product is organized around four connected responsibilities:
 
-- **Personal assistant** — the main agent is the owner's conversational control
-  surface. It can inspect Folio's state and, within its granted tools, change
-  runtime configuration such as tasks, routes, policies, channels, and actions.
+- **Personal assistant** — Main understands owner intent, performs work within its
+  grant, delegates sustained work and returns results. The approved Main is built
+  into Folio with the pi SDK, including file/shell tools, workspace scripts,
+  trusted skills and Folio custom tools. The current adapter-based Main only has
+  its existing control/context tools; SDK execution is not shipped.
 - **Task center** — durable tasks, priorities, pauses, off-peak rules, retries,
   continuation work, run history, usage, cost estimates, and owner review make
   work visible and controllable from one place.
@@ -31,17 +34,36 @@ owner intent / trusted event
             ↓
       durable task or assistant turn
             ↓
- bounded action + private context
+ granted execution + private context
             ↓
    result, audit, review, and delivery
 ```
 
 Folio's control plane owns authentication, routing, task scheduling, bounded
-execution, repository transactions, audit evidence, and channel delivery. A
-model runner or main-agent runtime is replaceable infrastructure behind those
-boundaries. Integration payloads, repository code, and model output are
-untrusted data; they never become unrestricted instructions or source/deploy
-access.
+execution, repository transactions, audit evidence, and channel delivery. The
+approved Main is the special pi SDK assistant; task harnesses are interchangeable
+behind ACP, including Codex, DSH and pi with verified native interfaces or
+adapters. A direct model HTTP call is not a target task runner. Integration
+payloads, repository code, and model output are untrusted data; they never become
+unrestricted instructions or source/deploy access.
+
+## Approved execution architecture (not implemented)
+
+Main embeds pi SDK through Folio's TypeScript Main Host; pi owns its loop,
+conversation, streaming and compaction. Main may act directly or invoke the
+Folio `subagent` tool. Folio persists the goal Task and manages its subagent,
+Run attempts, grants, scheduling, approvals, recovery, artifacts and delivery.
+Task agent execution uses ACP to a harness, rather than direct model inference.
+Harnesses own their model calls and tool loops. Existing fixed Actions remain
+reusable workflows alongside goal tasks.
+
+A task is the desired outcome, a subagent is an independent execution context,
+and a run is an attempt. Acceptance, execution, verified fulfillment and result
+delivery are separate facts. Missing information or capability should be a
+visible blocker that can be resolved on the same task. Main's file/shell and
+skill access does not grant unrestricted private-volume or production access.
+The [architecture contract](agent-architecture.md) owns the boundaries, migration
+and acceptance criteria; this definition does not add current runtime capability.
 
 ## Current scope
 

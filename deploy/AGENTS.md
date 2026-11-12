@@ -23,6 +23,19 @@ entrypoint and optional read-only host-config mounts.
   runs interactively as the service user against the same private volume while
   the poller is stopped. The runtime must include the Weixin/QR dependency
   license notice; no Weixin sidecar is needed.
+- Model-service and Main-agent configuration described below belongs to the
+  current legacy Go/HTTP/command execution paths. The approved SDK/ACP target is
+  in `../docs/agent-architecture.md`, and packaging plans are in `README.md`.
+  Main will be a built-in pi SDK host on Node.js or Bun with thin custom-tool IPC
+  to Go; it is not an interchangeable ACP Task runner. Task model/agent execution
+  will use ACP harnesses or verified, versioned adapters; business HTTP steps remain.
+  Do not describe the current Node.js/Codex/DSH image as shipping that host or as
+  proving ACP compatibility. Future packaging must pin host/SDK/harness/adapter
+  versions, preserve license notices, isolate credentials and granted workspaces
+  for file/shell/skill use, and smoke-test the actual runtime/protocol combination.
+  Main workspace grants do not authorize production source/deployment edits or
+  private Context scripts. Do not invent environment variables or install commands
+  before the host/configuration contract exists.
 - Generic model connections/task bindings live at `/data/runtime/model-services.json`
   and keys at `/data/secrets/model-services/<id>` (0600), not Compose or images.
   Settings assigns exact model/group IDs for assistant/report/maintenance and

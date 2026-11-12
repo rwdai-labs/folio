@@ -74,6 +74,30 @@ or a successful model call. Queue pause and off-peak policies still apply to
 background tasks. Deployment and optional notification setup are described in
 [deploy/README.md](deploy/README.md).
 
+## Approved architecture direction
+
+The [agent architecture](docs/agent-architecture.md) defines an approved target
+that is not implemented yet: a special Main built into Folio using
+`@earendil-works/pi-coding-agent` in a TypeScript host on Node.js or Bun. Pi owns
+the agent loop, sessions, compaction and skills. Folio custom tools are thin IPC
+callbacks to the Go control plane; MCP is optional. Main can read and write files,
+write and run scripts in its granted workspace, and use trusted skills. Those
+grants do not automatically permit production source/deployment edits or running
+scripts from the private Context repository.
+
+Main delegates through a `subagent` custom tool. Folio creates a durable goal
+Task and owns its lifecycle, grants, scheduling, approvals, input, cancellation,
+retries, artifacts, evidence and delivery. All Task model/agent work will use
+Folio's ACP client and a harness such as Codex, DSH or pi through a native
+interface or a verified, versioned adapter. Main has its own role and is not an
+interchangeable Task runner. Harnesses consume model/provider configuration;
+gateway account selection and fallback stay external. Business HTTP action steps
+remain supported.
+
+Today's Go tool loop, HTTP/command Main adapters and tool-free HTTP reports are
+legacy implementation paths. The setup instructions below describe those paths;
+the current image does not include the planned Main Host or guarantee ACP support.
+
 ## Image
 
 `ghcr.io/rwdai-labs/folio-service:main` (AMD64 and ARM64).
@@ -168,7 +192,8 @@ and, for `report`, a prompt and an optional runner/model:
 
 The built-in actions are `maintenance` (pull, organize, commit, push) and
 `report` (one read-only model call, a Markdown report in `runtime/reports/`,
-usage in the run ledger, a notification, and no repository write). A new kind is
+usage in the run ledger, and no repository write). Successful reports are
+currently excluded from the `pushed`/`failed` notification path. A new kind is
 a JSON edit and a Web UI reload; only a genuinely new capability needs Go. An
 unknown kind is rejected at hook creation and again at dispatch, never guessed.
 
@@ -180,7 +205,8 @@ allowlist. The Advanced action editor can validate, publish, disable, restore
 versions and
 edit the host allowlist; the Assistant can edit the same registry when an owner
 runtime is configured.
-Source code and deployment remain outside the agent's write surface.
+In the current implementation, source code and deployment remain outside the
+agent's write surface.
 
 Token usage is recorded per run from what the runner itself reported: Codex via
 its `turn.completed` JSON event, DSH via its per-request `usage` chunks, and the
@@ -224,10 +250,13 @@ QR login, show the scanner's identity for confirmation, and start or stop
 polling without a restart; a terminal login and pinned environment variables
 remain available for unattended deployments. Credentials and the cursor stay in
 the private volume. Only the owner confirmed in the console, or pinned by the
-deployment, can reach Folio's read-only text handler; other users are denied.
-A connected repository contributes a bounded, read-only context packet to each
-answer, a failing model run reports a fixed failure class instead of a generic
-apology, and the owner may opt in to receiving finished-run pushes in WeChat.
+deployment, can reach Folio. Owner messages route to the configured Main runtime,
+which keeps bounded session history and can use owner-granted Folio control tools.
+The legacy read-only report fallback can include a bounded private-context packet;
+a selected assistant model-service route failure does not bypass that route through
+the fallback. `/help` and `/status` still describe the older read-only handler.
+The owner may opt in to WeChat pushes for `pushed`/`failed` runs; successful
+`reported`/`completed` runs are currently filtered out.
 See [docs/weixin-channel.md](docs/weixin-channel.md) for protocol research,
 setup, recovery guarantees and deferred media support.
 
@@ -322,17 +351,19 @@ checks.
 The console also has an Assistant chat and a server-driven quick-action
 catalog. Daily actions open a small form dialog from compact launchers; the raw
 registry lives under Settings → Advanced and is not part of normal navigation.
-Chat goes to the main-agent runtime configured under Settings → Advanced. The
-built-in adapter speaks the OpenAI-compatible chat-completions API (base URL,
+Chat currently goes to the legacy Go main-agent tool loop, using the assistant
+model-service assignment or the runtime configured under Settings → Advanced.
+The built-in adapter speaks the OpenAI-compatible chat-completions API (base URL,
 model, provider, key), so DeepSeek, OpenAI, OpenRouter and compatible gateways
-work without an extra sidecar; an installed command adapter at
-`/data/agent/runtime` remains available for a pi wrapper. The key is stored in
-the private volume and never returned to the browser. Until a runtime is
-configured the view reports unavailable and Weixin keeps its bounded read-only
-answer. The agent's tool surface is queue/action/route/policy/channel/context/
-audit control, not source or deploy. Actions can be validated, published,
-disabled, and restored from retained versions; the same operations are exposed as
-agent tools.
+work without an extra sidecar. An installed command adapter at
+`/data/agent/runtime` accepts Folio's request/response format; it is not an ACP
+client or a shipped pi SDK integration. The key is stored in the private volume
+and never returned to the browser. Until a runtime is configured the view reports
+unavailable and Weixin keeps its bounded read-only fallback. The current agent's
+tool surface is queue/action/route/policy/channel/context/audit control. Actions
+can be validated, published, disabled, and restored from retained versions; the
+same operations are exposed as agent tools. The approved Main Host and its file,
+shell and skill grants are described in the [architecture](docs/agent-architecture.md).
 
 Owner review lives in **Activity → Review** and shows the findings from the most
 recent retained successful

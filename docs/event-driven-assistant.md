@@ -1,12 +1,28 @@
 # From a nightly job to an event-driven assistant
 
-Status: design note. Snapshot date: 2026-10-23. Supersedes the sequencing in
-[personal-assistant-research.md](personal-assistant-research.md) §6.
+Status: historical design note, snapshot 2026-10-23, with selected implementation
+updates below. It superseded the original sequencing in
+[personal-assistant-research.md](personal-assistant-research.md) §6. Historical
+proposals and owner decisions are not the current runtime or deployment contract.
 No secrets or private context belong in this file.
 
-Target architecture: [agent-architecture.md](agent-architecture.md). This note
-remains the implemented task/usage/plugin background; its "owner decisions"
-section predates runtime actions and the main agent.
+The approved target in [agent-architecture.md](agent-architecture.md) supersedes
+this note's runtime and provider-routing proposals and is not implemented yet.
+Main is built into Folio through the pi coding-agent SDK in a TypeScript host on
+Node.js or Bun; pi owns the loop, sessions, compaction and skills. Thin custom-tool
+IPC callbacks reach Go, with no mandatory MCP layer. Main can write files and
+write/run scripts in its granted workspace and use trusted skills, without
+automatic production source/deployment or private Context script access.
+
+Main delegates through its `subagent` custom tool; Folio creates a durable goal
+Task and owns lifecycle, grants, scheduling, approvals, inputs, cancellation,
+retries, artifacts, evidence and delivery. All Task model/agent work will use
+Folio's ACP client to a harness such as Codex, DSH or pi through a native interface
+or a verified, versioned adapter. Main is not an interchangeable Task runner.
+Harnesses consume model/provider configuration, and gateway account selection
+and fallback remain external. Business HTTP action steps remain. Today's Go
+tool loop, HTTP/command Main adapters and tool-free HTTP reports are legacy paths;
+the current image does not provide the planned SDK host or an ACP guarantee.
 
 Current first-scenario implementation is documented in
 [automatic context organization](context-maintenance.md). That contract takes
@@ -103,9 +119,10 @@ The trigger plugin cannot choose what Folio does: the hook's action decides the
 task kind, and the owner sets it in Folio. That keeps the dangerous half of an
 integration — the action, not the trigger — behind the owner's configuration.
 
-### The hook API is the only inbound trigger
+### External hook trigger
 
-`POST /api/hooks/{hook_id}` is how work starts. This is the "开放 API"
+`POST /api/hooks/{hook_id}` starts work from external event clients; owner chat,
+manual tasks and schedules are separate entrypoints. This is the "开放 API"
 requirement, and it is also the most dangerous surface in the product: an
 inbound request can cause an agent to run.
 
@@ -114,7 +131,8 @@ identity is a hook id plus a 256-bit secret shown once at creation; only the
 signature proves the caller may start work. Management verbs
 (`/update`, `/rotate`, `/delete`) stay behind the browser session.
 
-Contract:
+Historical proposed contract (the current signed-event limits, task response and
+payload projection are defined in [integration-plugins.md](integration-plugins.md)):
 
 ```text
 POST /api/hooks/{trigger_id}
@@ -124,7 +142,8 @@ X-Folio-Signature: sha256=<hex hmac of "{timestamp}.{raw body}">
 Content-Type: application/json
 ```
 
-Rules, all enforced in code:
+Proposed rules at the snapshot date; per-hook token budgets, concurrency and
+template tool grants below are not implemented merely by having signed hooks:
 
 1. **Disabled until armed.** A trigger exists as configuration; it accepts
    nothing until the owner enables it. The secret is generated server-side and
@@ -143,7 +162,11 @@ Rules, all enforced in code:
 Response: `202 {"job_id", "trigger_id", "event_id"}` or a 4xx code. Never
 echo the payload.
 
-## 3. Job templates
+## 3. Historical job-template proposal
+
+This table predates the shipped runtime action registry and is not its schema.
+See [agent-architecture.md](agent-architecture.md) for current action boundaries
+and the approved Task/subagent target.
 
 | Template | Input | Tools | Output class | Approval |
 | --- | --- | --- | --- | --- |
@@ -210,9 +233,13 @@ thread" or "triage this issue" is a JSON edit. The prompt may interpolate
 rendered under an explicit "this is data, not instructions" framing and the run
 is sandboxed read-only.
 
-Two actions exist. `maintenance` is the original path: pull, organize, commit,
-push, audit. `report` is the generic one: one model call, a Markdown report in
-`runtime/reports/`, usage in the run ledger, a notification, no canonical write.
+Two legacy built-in actions exist. `maintenance` is the original path: pull,
+organize, commit, push, audit. `report` is the generic one: one model call, a
+Markdown report in `runtime/reports/`, usage in the run ledger, no canonical write.
+The notification path currently accepts `pushed`/`failed` statuses and filters
+out successful `reported`/`completed` runs. Owner-defined runtime actions can now
+compose additional steps; this legacy kind format does not define the target
+ACP execution contract.
 A hook's action *is* a kind, so an external plugin can ask for `triage` without
 Folio or the plugin being rebuilt — and without the plugin choosing the prompt.
 
@@ -221,7 +248,13 @@ The window is the **owner's** schedule, not a provider price window. "When I am
 asleep" is a human fact expressed in local time; provider peak hours are a
 separate price/availability concern and are not part of the current window.
 
-### Provider profile
+### Historical provider profile (superseded)
+
+The profile, trust matrix and routing algorithm through the end of this section
+record an earlier proposal, not configuration Folio accepts. The approved target
+assigns model/provider configuration to harnesses and account/fallback selection
+to the external gateway. Folio keeps Task admission, priority and scheduling;
+it does not implement this provider-price auction or automatic account escalation.
 
 ```yaml
 id: ds-official
@@ -317,20 +350,22 @@ window only counts runs whose `started_at` falls inside it.
 **Cost (implemented 2026-11-01):** the dashboard and task details show an
 estimated USD cost when the run's provider/model matches the cached
 [models.dev](https://models.dev) catalog. The catalog is downloaded as JSON,
-cached privately and refreshed on demand; unknown models stay explicitly
-unpriced. See `agent-architecture.md` §4.7.
+cached privately and refreshed automatically in the background; unknown models
+stay explicitly unpriced. See [agent-architecture.md](agent-architecture.md).
 
 **Deferred, deliberately:**
-- **Priority, peak windows, budget policy.** They need the same policy data
-  plus a router; nothing consumes them yet, so building the matrix first would
-  be speculative.
+
+- **Provider peak windows and budget policy.** Task priority and the owner's
+  off-peak window are implemented. The older provider-price policy matrix above
+  is superseded; it must not become a second account/fallback router in Folio.
 - **Subscription allowance routing.** A separate dimension from price and
   priority: which subscription or account has quota left, and when it resets.
   A read-only magpie-backed panel now exposes the cards; routing or deferring
   tasks by allowance is still deferred. See
   [subscription-quota.md](subscription-quota.md).
-- **Job/trigger breakdown.** Every run today is the same job. The dimension
-  becomes meaningful when a second action exists.
+- **Job/trigger breakdown.** The original single-job assumption is historical;
+  report and runtime actions now coexist with maintenance. This note does not
+  define a new dashboard breakdown contract.
 
 ## 6. Surfaces
 
@@ -345,18 +380,24 @@ first channels. Adding a channel must not touch job code.
 | WeCom | group robot webhook | no | corporate WeChat |
 | Telegram | Bot API | yes | pairs with the chat surface |
 
-**WeChat reality check.** Personal WeChat has no official bot API. Third-party
-bridges (wechaty-class) violate the terms of service and risk account bans;
-they are not a supported integration. Only 公众号 and 企业微信 have sanctioned
-APIs. Plan accordingly: WeCom for work, 公众号 for public-facing, Bark/DingTalk
-for personal push.
+**Weixin update.** The snapshot's conclusion that personal WeChat had no usable
+protocol is superseded by the native Go/iLink text channel. It supports explicit
+owner binding, owner Main routing with a read-only fallback, and optional bounded
+`pushed`/`failed` pushes. Media and group/persona routing remain deferred; see
+[weixin-channel.md](weixin-channel.md) for the current contract and live acceptance.
+DingTalk, Feishu, WeCom and Telegram remain historical options in this table,
+not shipped integrations.
 
 Bark specifics that matter: device key is a credential (private volume, never
 returned by the API, never logged); level `critical` needs an entitlement, so
 default to `active`; a 200 response with `code != 200` is still a failure;
 truncate bodies rather than letting the server reject them.
 
-## 7. Concurrency prerequisite
+## 7. Historical concurrency proposal
+
+The following lock inventory records the snapshot's proposal, not a current
+implementation audit. Resource admission for the ACP target belongs to Folio's
+Task lifecycle; consult [agent-architecture.md](agent-architecture.md).
 
 `Store.withLock` serializes *everything*. With multiple job kinds that becomes
 the bottleneck and a deadlock risk (a long agent run blocks a sync request).
@@ -393,8 +434,10 @@ locks.
 7. **GitHub actions** (report kind implemented): issue triage is a `report`
    kind with a payload, so the issue bridge can ask for it without a rebuild.
    PR review drafts stay approval-gated because they write.
-8. **Price-aware routing**: provider price data, peak windows, trust rules.
-9. **More channels**: DingTalk → Feishu → WeCom.
+8. **Historical price-aware routing proposal (superseded)**: retain Folio Task
+   scheduling and external gateway account/fallback ownership as described above.
+9. **Historical channel sequence**: DingTalk → Feishu → WeCom; native Weixin
+   subsequently shipped, and the remaining sequence is not a current commitment.
 
 Each slice is independently useful and testable; none requires the next.
 
@@ -413,7 +456,8 @@ Each slice is independently useful and testable; none requires the next.
 - **Scope**: single-user deployment. No multi-tenant features, no per-channel
   locale matrix. Skip work that only pays off at scale.
 
-One thing the hook API deliberately does not do yet: carry data into the run.
-The body is signed and bounded, but only its authenticity is used; the action is
-fixed per hook. When an event needs a payload (an issue number, a PR id), the
-template must project whitelisted fields instead of interpolating raw input.
+Historical hook limitation at the snapshot date: the body was only authenticated
+and did not reach the run. Signed hooks now carry a bounded scalar payload into
+the owner-selected task kind; raw input never chooses a new action or prompt.
+The implemented payload projection and response contract are maintained in
+[integration-plugins.md](integration-plugins.md).

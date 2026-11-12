@@ -1,9 +1,10 @@
 # Native Weixin text channel
 
-Folio implements Tencent's public iLink HTTPS protocol in Go. No OpenClaw
-Gateway, Agent Runtime or Node.js sidecar is used for Weixin. The existing
-model runner remains Folio's own configured Codex CLI; Weixin does not add
-another model runtime.
+Folio implements Tencent's public iLink HTTPS protocol in Go. The Weixin
+transport needs no OpenClaw Gateway or Node.js sidecar. Owner messages can reach
+Folio's current Main agent; the legacy read-only Codex answer remains a fallback.
+Neither path is the approved pi SDK Main Host or Task ACP integration, which is
+planned in [agent-architecture.md](agent-architecture.md).
 
 ## Research and integration boundary
 
@@ -30,14 +31,12 @@ The entrypoint wires:
 
 ```text
 Weixin → native iLink poller → channel.Message → Folio authorization/handler
-       ← native text sender ← saved reply    ← read-only Folio result
+       ← native text sender ← saved reply    ← Main or legacy read-only result
        ← proactive push     ← stored reply context ← finished run notification
 ```
 
-The handler answer is either a plain read-only text reply or, when a repository
-is connected, one selected context packet used as reference data. Proactive
-pushes reuse the reply context of the owner's last answered message, because the
-protocol delivers a server-initiated message only inside that context.
+Proactive pushes reuse the reply context of the owner's last answered message,
+because the protocol delivers a server-initiated message only inside that context.
 
 `internal/channel` contains only a message envelope and the application handler
 contract. Identity includes channel, bot account, sender, direct conversation,
@@ -45,16 +44,31 @@ message ID and optional transport session ID. A future attachment field reserves
 media kinds without accepting paths or downloading anything. The transport
 keeps `context_token` private; it never sends it to the model handler.
 
-There was no general conversational Folio endpoint to reuse. The MVP's
-`internal/store/inbound.go` therefore supports `/help`, `/status` and ordinary
-text via the existing read-only `agent --report-prompt` runner. Each question
-uses a fresh ephemeral model call, with no shared chat history or model session
-resumption. It supplies no private Context automatically, enables no tools or
-maintenance writes, and does not create queue tasks, run-ledger records or
-notifications. Channel model usage is not currently included in the dashboard.
-The existing report runner has a 180-second timeout here. A connected repository
-and configured Codex runner are needed for ordinary text; `/help` and `/status`
-can establish communication before model setup.
+`internal/store/inbound.go` authorizes the explicit account/owner/direct-peer
+match before handling `/help`, `/status` or ordinary text. For ordinary text,
+the default owner-message route targets `agent:main`. When that route is active
+and Main is available, `AgentTurn` uses bounded persisted history keyed by the
+authenticated channel account/conversation, never the transport's session ID.
+It receives owner control tools, including context inspection and task creation,
+and records a run with reported usage. A repository is needed for context tools,
+not ordinary Main chat. This is the current Go tool loop with an HTTP or command
+adapter; it does not yet use the planned pi SDK host.
+
+When Main is unavailable, not selected, or yields no usable answer, the handler
+can use the legacy read-only `agent --report-prompt` Codex runner. An explicit
+assistant model-service binding is protected: when its `agent:main` route fails,
+the handler returns `runner_failed` rather than using another runner's credentials.
+Malformed model-binding configuration fails with `runner_unavailable`.
+
+Only the fallback uses a fresh ephemeral model call with no chat history or
+session resumption, no tools or maintenance writes, no queue tasks, and no
+run/usage records. If a repository is connected, it includes one bounded context
+packet as reference data; selection failure degrades to an answer without context.
+The report runner has a 180-second timeout and needs working Codex configuration;
+a repository is optional for plain text. `/help` and `/status` work before model
+setup, but their current text still claims no private Context or tools and
+read-only answers. Those strings are stale and do not describe the owner Main
+route's actual grants.
 
 ## Operator setup
 
@@ -165,16 +179,20 @@ platforms and fails closed on other platforms.
    (`contacts.json`, newest eight peers). Duplicate entries in a batch and
    replays inside this window do not invoke Folio again.
 
-The answer path reports one fixed failure class — `runner_unavailable`,
+The legacy fallback reports one fixed failure class — `runner_unavailable`,
 `runner_auth`, `runner_network`, `runner_timeout`, `runner_failed`,
-`result_invalid` or `result_rejected` — instead of a generic apology. The class
-crosses the `folio agent` process boundary as an exit code, never as stderr, and
-is both sent to the owner as targeted text and stored in `diagnostics.json`. The
-console shows the last success time and the last failure class beside the
-channel, so a broken model credential is visible without reading logs.
+`result_invalid` or `result_rejected` — instead of a generic apology. Runner
+failure classes cross the `folio agent` process boundary as exit codes, never as
+stderr. The transport sends targeted failure text and stores the class in
+`diagnostics.json`; the console shows it beside the last success time. These
+classes describe the fallback worker and binding failures, not full Main tool or
+provider diagnostics; Main records its own run evidence.
 
 Proactive push is off by default. When the owner enables it in the console, a
 finished `pushed` or `failed` run is also sent to the confirmed WeChat owner.
+`internal/store/channels.go`'s `notifyRun` currently filters out other statuses,
+including successful `reported`/`completed` runs. General successful Task-result
+delivery is therefore still incomplete.
 The push is best effort: a peer without a stored context, an expired token, a
 disabled deployment or a missing transport is recorded in the delivery ledger as
 `weixin` with a fixed detail code, and never fails the run that produced it.
@@ -200,8 +218,11 @@ health check does not establish channel health. Service logs contain only fixed
 failure classes, never QR content, tokens, cursors, peer IDs or message text.
 
 The first successful poll stages pending work durably, but a crash between a
-model result and its saved reply can repeat the read-only model call. A crash
-after Weixin accepts a reply but before local acknowledgment can resend it.
+handler result and its saved reply can invoke the handler again. The fallback
+may repeat its read-only model call; Main may repeat a turn or a granted tool
+side effect, so transport deduplication does not guarantee exactly-once task
+creation or other control actions. A crash after Weixin accepts a reply but
+before local acknowledgment can resend it.
 The same `client_id` is reused, but backend deduplication is not guaranteed by
 the public document. This is bounded replay protection and durable retries,
 **not exactly-once delivery**. Very old replays beyond the deduplication window
@@ -210,12 +231,13 @@ server token never expires or that the backend retains every offline message.
 
 ## Deferred capabilities and acceptance
 
-Typing hints, a targeted failure class, read-only context-packet answers and
-proactive pushes to the confirmed owner are implemented. Push delivery is bounded
-by the stored reply context: an owner who has not written recently, or whose
-token the server has expired, cannot be reached. No picture/file/voice/video
-download or upload, group routing, external-user persona, interactive Web QR
-setup or full channel framework is implemented.
+Console QR binding, typing hints, the owner Main route, legacy context-packet
+answers, targeted fallback failure classes and `pushed`/`failed` pushes to the
+confirmed owner are implemented. Push delivery is bounded by the stored reply
+context: an owner who has not written recently, or whose token the server has
+expired, cannot be reached. Successful `reported`/`completed` pushes remain
+filtered out. No picture/file/voice/video download or upload, group routing,
+external-user persona or full channel framework is implemented.
 Media can later reuse the documented CDN upload URL, AES-128-ECB/PKCS#7 and
 encrypted reference flows behind separate bounds and URL validation. No media
 requirement found in the reference requires an OpenClaw runtime. Any future

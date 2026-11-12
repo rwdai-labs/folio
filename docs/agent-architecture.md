@@ -1,613 +1,443 @@
-# Runtime actions and the main agent
+# Main agent, delegated tasks, and harness execution
 
-Status: target architecture. Snapshot date: 2026-11-01. Phases 1–4 are
-implemented at the adapter boundary: runtime actions, event routes, the main
-agent loop with an in-process tool gateway, console chat, Weixin owner turns,
-and the action editor/version restore. The real pi wrapper, lane admission and
-live push/remote acceptance remain unverified; see §10. No private context,
-credentials, or host details belong here.
+Status: approved target architecture, updated 2026-11-12. The pi SDK Main Host,
+`subagent` tool, ACP task runners, generic waiting/resume state, and reliable
+result delivery described below are **not implemented**. This document replaces
+the earlier target of a replaceable single-turn Main adapter with no shell or
+filesystem tools. It does not change the behavior of the current binary.
 
-Scope decision: the main agent may change runtime configuration; editing Go
-source, running a shell, and deploying a binary are out of scope.
+The [product definition](product-definition.md) supplies the shared vocabulary;
+[README](../README.md) and [deployment instructions](../deploy/README.md) describe
+what operators can use today. Historical research is not an implementation
+contract.
 
-## 1. Summary
+## 1. Decisions
 
-Folio's product shape is a personal assistant and task center built around an
-owner-controlled digital counterpart; see [the product definition](product-definition.md).
-The runtime architecture keeps the Go control plane: durable tasks, audit, Git transactions,
-channels, and the console. Two things change:
+1. **Main is special and built on the pi SDK.** Folio embeds
+   `@earendil-works/pi-coding-agent` in its own TypeScript Main Host. Pi owns the
+   Main agent loop, conversation, streaming and compaction. Main is not selected
+   from the interchangeable task-runner list.
+2. **Main can work directly.** It has file and shell tools, can write and execute
+   scripts in its granted workspace, and can use trusted skills. It is not
+   restricted to queue/configuration tools. This does not grant production source,
+   deployment or unrestricted private-volume access.
+3. **`subagent` is a Folio custom tool registered with Main pi.** Calling it
+   records a durable goal and delegates execution to Folio. Folio manages the
+   subagent lifecycle; pi does not have to provide a native background-job system.
+4. **Task agent execution uses ACP to a harness.** Folio is the ACP client;
+   Codex, DSH, pi and other compatible harnesses are ACP agents, using their
+   native interface or a separately verified, pinned adapter. A direct model
+   HTTP call is not a task runner. Model calls belong inside the harness.
+5. **Folio owns the work and authority.** Authentication, routing, task scheduling,
+   grants, approvals, cancellation, retries, run evidence, repository transactions,
+   artifacts and delivery remain Folio responsibilities. Pi/harness session state
+   and Folio task state have distinct owners.
+6. **Goals do not require a predefined Action.** Reusable Actions remain useful
+   fixed workflows. An open-ended owner delegation can create an agent-executed
+   Task without publishing a new Action or adding a task kind for that request.
 
-1. **Actions become runtime data.** An action is an ordered list of bounded
-   steps over a fixed primitive set. Adding a task is a JSON edit; adding a new
-   primitive is still a code change. Scripts are allowed as an owner-authored
-   primitive, never as event-supplied code.
-2. **A main agent becomes the control-plane interface.** It runs behind a
-   narrow runtime adapter (a pi wrapper is the intended deployment), receives
-   owner messages from Weixin and the console chat, and calls Folio tools to
-   create tasks, edit actions and routes, push messages, and inspect runs.
-   "Modifying Folio" means runtime configuration only; source code and deploy
-   stay owner/CI work. Integration events never reach write tools.
+These decisions are general across research, document work, resource retrieval,
+calculations and operations through connected systems. New requests should reuse
+capabilities rather than introduce a separate hardcoded product flow each time.
 
-Non-goals: multi-tenant access, executing code from the context repository or
-an integration payload, a general-purpose workflow language, and editing or
-deploying Folio's source code from an agent turn.
+## 2. Current implementation and the failure it explains
 
-## 2. Historical starting point
+The following is shipped code, not the target:
 
-The following list describes the baseline before phases 1–4, not the current
-service. Runtime actions, event routing, console sessions and owner tools now
-exist. The daily-use interface adds independent capability readiness, durable
-report creation, task associations in assistant events/history, and bounded
-run-owned report retrieval through the console and `report.get`. These remain
-subject to the runtime acceptance limits in the status block; configuration
-readiness does not verify model credentials or inference support.
+| Area | Current behavior / source |
+| --- | --- |
+| Main | `internal/store/agent.go` owns a bounded Go tool loop and session history; HTTP and command adapters propose one response at a time. No embedded pi SDK host exists. |
+| Runtime selection | An assistant model-service binding constructs the built-in OpenAI-compatible adapter. Otherwise private agent configuration selects HTTP or command mode; the default command path is `/data/agent/runtime`. This is not proof of a pi installation. |
+| Main tools | `agent_tools.go` grants owner queue/action/route/policy/channel/context/audit tools. There is no generic `subagent`, shell, file or skill execution surface. |
+| Task creation | `tasks.go` resolves a configured Action or legacy kind before creating work. Unknown actions fail closed. Tasks are currently action-bound. |
+| Task execution | `actions.go` dispatches maintenance, report or a fixed pipeline. An `agent` pipeline step is a report call, not a delegated tool-capable agent. |
+| Model paths | `model_execution.go` makes single tool-free HTTP report calls; CLI report/maintenance paths invoke configured workers. Codex worker flags explicitly disable shell, browser and multi-agent features. These are migration inputs, not ACP runners. |
+| Task state | `queued`, `running`, `done`, `failed`, `canceled`; restart changes running work to `failed/interrupted`. Generic input/approval waiting and checkpoint resume do not exist. |
+| Recovery | Queue deduplication compares active kind/source/title/payload. There is no durable inbound-message-to-delegation key. Pipeline retry starts from the beginning; step outputs are not recovery checkpoints. |
+| Results | Run-owned Markdown reports exist. Generic file artifacts and evidence-based goal completion do not. Successful run status currently suffices to mark a task done. |
+| Delivery | `notifyRun` accepts only `pushed` and `failed`; successful `reported` and `completed` runs are filtered out. Explicit pipeline push steps can send text. Weixin media and a reliable proactive delivery outbox are not shipped. |
 
-- `data/task-kinds.json` maps one kind to one of two hardcoded actions.
-- `DispatchDue` has two branches: `report`, and everything else (maintenance).
-- Weixin inbound is a one-shot read-only answer; it creates no task and has no
-  tools.
-- There is no console chat or agent session.
-- One `modelMu` serializes every model call; a long maintenance run blocks an
-  interactive reply.
-- A hook binds one action at creation; there is no general event router.
-- DSH vendors pi's model layer (`@earendil-works/pi-ai`) but owns its agent
-  loop. Moving the main agent to pi is a runtime choice, not a model-provider
-  change.
+An owner request can therefore reach Main, yet Main cannot find an execution
+path. Its tool surface encourages choosing an existing Action or a read-only
+report. Its ordinary turn can end with explanatory text without a task. Missing
+an Action is easily confused with missing every way to achieve the goal.
 
-## 3. Target architecture
+`action.list` compounds that problem: it lists the runtime registry only;
+`actions: []` does not mean built-in report/maintenance or every capability is
+absent. `GET /api/catalog` merges runtime Actions and legacy kinds, but is an
+owner launch catalog, not a complete agent capability directory. Private-context
+search is evidence about the owner, not a replacement for external discovery.
+A background report does not acquire tools merely because its model is capable.
+
+The design fixes those execution and handoff contracts, rather than only asking
+the model to sound more proactive. Acceptance is not a promise of success, and
+capability gaps must remain visible.
+
+## 3. Composition and ownership
 
 ```text
-events: console / weixin / integration / system
-              │
-              ▼
-        ┌───────────┐
-        │  router   │  by authenticated source, never by body
-        └──┬─────┬──┘
-   owner   │     │   integration / system
-           ▼     ▼
-   ┌───────────┐  ┌────────────────┐
-   │ main agent│  │   task queue   │
-   │ (pi)      │  │ priority·lane  │
-   └─────┬─────┘  └───────┬────────┘
-         │ tools          │
-         ▼                ▼
-   ┌───────────┐  ┌────────────────┐
-   │tool gateway│ │ action runner  │
-   │per-run grant│ │    steps       │
-   └─────┬─────┘  └───────┬────────┘
-         │                │
-         ▼                ▼
-  actions.json /     context / channels
-  task queue / push  / reports / audit
+Web / Weixin / trusted task lifecycle events
+                  |
+                  v
+Folio Go service: identity, routing, tasks, grants, audit, delivery
+                  |
+          private bidirectional IPC
+                  |
+                  v
+Folio Main Host (TypeScript, pi SDK embedded)
+  pi sessions / loop / streaming / compaction / trusted skills
+  file + shell + workspace scripts
+  Folio SDK custom tools, including subagent
+                  |
+          custom-tool callback to Go
+                  |
+                  v
+Folio task and subagent manager -> ACP client
+                                  |
+                   +--------------+-------------+
+                   v              v             v
+              Codex harness   DSH harness    pi harness
+             native ACP or verified versioned ACP adapter
 ```
 
-Three planes:
+The Main Host is a maintained component of Folio, supervised with the service,
+not an optional user-installed CLI wrapper. The SDK executes inside Node.js or
+Bun, not inside the Go binary. Packaging must pin one supported JS runtime, the
+SDK and dependencies, with their own build and smoke checks. A concrete runtime
+version, package layout and IPC wire schema are implementation work; this design
+does not introduce deployable flags or installation commands.
 
-- **Control plane** — owner intent, action definitions, agent tools. Fast,
-  authenticated, directly effective.
-- **Data plane** — durable tasks, priority/lane admission, step execution,
-  audit. Single-writer where the checkout is involved.
-- **Channel** — Weixin is both an owner-event source and a push sink. It is not
-  a second control plane.
-
-## 4. Core objects
-
-| Object | Meaning |
+| Responsibility | Owner |
 | --- | --- |
-| event | One authenticated occurrence, with a trust class. |
-| route | `(source, type) → target`, configured by the owner. |
-| action | Runtime definition: id, priority, lane, ordered steps. |
-| task | Durable instance of an action with a payload. |
-| run | One attempt at a task, with per-step results and audit. |
-| lane | Admission class: `repo`, `interactive`, `batch`. |
-| agent turn | One main-agent run. Audited, but not a durable task. |
-| tool | Host capability granted to an agent turn or invoked by a step. |
+| Owner identity, trust class, event routing | Folio Go |
+| Main model interaction, loop, session transcript and compaction | Main pi SDK |
+| Main file/shell tools, scripts, skills | Main Host in a Folio-granted execution environment |
+| Folio custom-tool registration | Main Host; typed SDK tools or built-in extension |
+| Custom-tool business validation and persistent effects | Folio Go service |
+| Delegated agent model interaction, planning and tool loop | Selected ACP harness |
+| Task/subagent identity, parentage, queue, budgets, approval and recovery | Folio |
+| Artifacts, execution evidence, completion decision and delivery | Folio, with Main interpreting results where needed |
+| Private-context validation, commit/push and rollback | Existing Go-owned repository transaction boundary |
 
-### 4.1 Events and routes
+Pi can also appear as a task harness behind ACP. That is a separate session,
+workspace and grant from Main; it does not turn Main into a replaceable task
+runner or give a task Main's authority.
 
-```json
-{
-  "version": 1,
-  "id": "evt-01...",
-  "source": "weixin",
-  "type": "owner.message",
-  "subject": "owner",
-  "occurred_at": "2026-11-01T09:00:00+08:00",
-  "trust": "owner",
-  "payload": { "text": "..." }
-}
-```
+## 4. Main Host and custom tools
 
-| Trust class | Ingress | May reach | Capability |
-| --- | --- | --- | --- |
-| `owner` | Weixin owner, console session | main agent | config + control tools |
-| `integration` | signed hook, GitHub bridge, watcher | task queue, or agent in observer mode | no write tools |
-| `system` | task/run lifecycle, scheduler | notify/push or observer | notify; observer read-only |
+### 4.1 Session contract
 
-Concrete event catalog (target names; current hook payloads map to them at
-ingress):
+Use the pi SDK's session lifecycle instead of building another Main loop. The
+Go/Host boundary must support opening/restoring a session, prompting, subscribing
+to bounded events, steering/follow-up input and cancellation. A single JSON
+`AgentRuntime.Turn` response is insufficient because pi executes the loop and
+calls tools during a prompt.
 
-| source | type | trust | Real example | Default target |
-| --- | --- | --- | --- | --- |
-| `console` | `owner.message` | owner | Chat: "把早报改成每天 8 点" | `agent:main` |
-| `weixin` | `owner.message` | owner | "上周的笔记帮我整理一下" | `agent:main` |
-| `hook` | `repo.changed` | integration | Watcher sees HEAD move `abc123 → def456` | `action:maintenance` |
-| `github` | `issue.opened` | integration | Issue #42 "Crash on save" opened | `action:triage` |
-| `github` | `issue.updated` | integration | Label `bug` added to #42 | `action:triage` |
-| `scheduler` | `tick` | system | 00:30 daily maintenance | `action:maintenance` |
-| `task` | `completed` | system | Maintenance pushed 3 files | `notify:owner` |
-| `task` | `failed` | system | Runner timeout | `notify:owner` |
-| `action` | `published` | system | `morning-brief` v3 published | audit only |
-| `action` | `disabled` | system | Owner disables `nightly-backup` | audit only |
-| `channel` | `delivery.failed` | system | Weixin push returned 500 | `notify:owner` |
+The SDK owns its canonical transcript, queued input and compaction. Folio stores
+the authenticated identity-to-session mapping, run correlation, input/event IDs,
+task links and bounded public projections. Do not keep a second Go transcript
+that competes with pi's session manager. SDK state remains private; audit stores
+bounded execution evidence, not hidden reasoning or provider credentials.
 
-These names are new; the hook wire format does not carry a `type` today. At
-ingress, the hook configuration supplies `source` and `type`. The GitHub
-bridge's `event: opened|updated` becomes `github.issue.opened|updated`; the
-watcher becomes `hook.repo.changed`; the scheduler currently runs maintenance
-directly and will instead emit `scheduler.tick`; Weixin inbound is currently a
-one-shot answer and becomes `weixin.owner.message` in Phase 3.
+New messages during work are serialized into the appropriate session using
+explicit steer/follow-up semantics. A queued message is not already processed.
+Background results enter as correlated lifecycle events, not forged owner text.
+The Host event bridge must distinguish intermediate SDK turn ends from the
+session actually settling. Browser disconnect, explicit cancel and delegated
+Task cancellation need separate policies; disconnect must not silently discard
+a durable Task.
 
-Run-level detail stays in the run ledger. Task completion currently uses the
-existing notification path; routing `task.completed` and `task.failed` through
-`routes.json` is planned.
+### 4.2 Folio tools inside pi
 
-Console chat example:
+Register Folio-specific tools through the SDK custom-tool mechanism or a built-in
+Folio extension. Their handlers are thin typed callbacks over private IPC to the
+Go service, which validates identity, active grants, arguments, revisions and
+persistent operations. MCP is optional for external integrations, not required
+for these built-in tools.
 
-```json
-{
-  "source": "console",
-  "type": "owner.message",
-  "trust": "owner",
-  "subject": "chat:main",
-  "payload": {
-    "session": "chat:main",
-    "text": "把早报改成每天 8 点"
-  }
-}
-```
+The target tool surface includes `subagent`, task inspection/control, context
+search, Action management and artifact access. Existing action/route/policy
+operations retain host validation and versioning. New tool names or schemas
+besides the agreed `subagent` entry point are not frozen wire APIs yet.
 
-Task failure example:
+A request cannot supply its own owner identity, trust class, parent-task authority
+or approval. The Host authenticates its callback channel; Go binds the call to
+the actual Main session/run and enforces limits independently of model behavior.
+Observers or feedback-scoped operations must not inherit Main's full tool set.
+Pi's process is not itself the authorization boundary.
 
-```json
-{
-  "source": "task",
-  "type": "failed",
-  "trust": "system",
-  "subject": "task:t-01...",
-  "payload": {
-    "task_id": "t-01...",
-    "action": "maintenance",
-    "reason": "runner_timeout"
-  }
-}
-```
+### 4.3 Direct work, scripts and skills
 
-Routes are data:
+Main may read/write files, run a shell, write and execute scripts, use installed
+skills, prepare inputs and perform short interactive work within its grant.
+Disabling those tools globally defeats the approved design. Long-running work,
+independent contexts or work needing a different harness can be delegated.
+Delegation is a choice about execution, not a requirement to launch a subagent
+for every message.
 
-```json
-{
-  "version": 1,
-  "routes": [
-    { "source": "console", "type": "owner.message", "target": "agent:main" },
-    { "source": "weixin", "type": "owner.message", "target": "agent:main" },
-    { "source": "hook", "type": "repo.changed", "target": "action:maintenance" },
-    { "source": "github", "type": "issue.opened", "target": "action:triage" },
-    { "source": "task", "type": "failed", "target": "notify:owner" },
-    { "source": "action", "type": "published", "target": "audit:only" }
-  ]
-}
-```
+Grant a private Main workspace and explicitly selected resources. Isolate it
+from the service's full data volume and unrelated secrets using OS/container
+controls. A working-directory setting, extension hook or prompt is not a sandbox.
+Keep time/output/process/network limits at the environment boundary, including
+for tools that bypass Folio custom-tool callbacks.
 
-Rules:
+Distinguish three kinds of code:
 
-- The ingress assigns `trust`; the body cannot choose it.
-- A route matches `source` and `type` only. Payload cannot select a target,
-  tool, or trust class.
-- An integration event routed to `agent:main` runs in **observer** mode: read
-  tools only, never `action.put`, `task.create`, or `push.send`.
-- An unknown event is recorded and ignored. It is never guessed into an action.
+- Trusted packaged extensions and approved skill resources are executable
+  dependencies; install from controlled roots and pin/review changes.
+- Main-authored workspace scripts can be executed within the existing grant.
+  Generating a script does not make it a trusted Host extension or a global Action.
+- Retrieved documents, downloaded files and the private Context repository are
+  untrusted inputs. Do not auto-load their extensions, execute their scripts or
+  let them change grants. Context facts and the private compatibility CLI remain
+  outside this public repository.
 
-### 4.2 Action definition
+Main's shell capability does not authorize modifying Folio's production source,
+CI, credentials or binary. Source work requires the separate isolated
+[workshop](self-bootstrap.md) and its publish policy. Preserve repository
+validation/rollback rather than providing shell access to the canonical checkout.
 
-```json
-{
-  "version": 2,
-  "actions": [
-    {
-      "id": "morning-brief",
-      "label": "Morning brief",
-      "priority": "P1",
-      "lane": "batch",
-      "steps": [
-        { "id": "ctx", "type": "context", "query": "{{payload.focus}}", "max_bytes": 65536 },
-        { "id": "brief", "type": "agent", "runner": "codex", "timeout_seconds": 900,
-          "prompt": "Write a brief for me.\n\n<context>{{steps.ctx.output}}</context>" },
-        { "id": "send", "type": "push", "channel": "weixin", "title": "Morning brief",
-          "body": "{{steps.brief.output}}" }
-      ]
-    },
-    {
-      "id": "nightly-backup",
-      "label": "Nightly backup",
-      "priority": "P2",
-      "lane": "batch",
-      "steps": [
-        { "id": "backup", "type": "script",
-          "command": ["/data/scripts/backup.sh", "--json"],
-          "cwd": "/data", "stdin": "{{payload}}", "timeout_seconds": 600,
-          "max_output_bytes": 65536 },
-        { "id": "notify", "type": "push", "channel": "weixin",
-          "title": "Backup", "body": "{{steps.backup.output}}" }
-      ]
-    }
-  ]
-}
-```
+### 4.4 Owner-facing behavior
 
-Step types (v1):
+Answer ordinary questions directly. Start clear delegated work without asking
+the owner to repeat the instruction. For work that needs durable tracking,
+record the goal through `subagent` or launch a suitable existing Action. Only
+claim acceptance after Folio returns a persisted receipt with a real Task ID.
 
-| Type | Does | Notes |
-| --- | --- | --- |
-| `context` | read-only context packet | bounded; no repo write |
-| `agent` | one model call | fixed prompt; runner/model/timeout |
-| `script` | owner-authored executable | argv only; no shell string |
-| `push` | one channel message | Weixin/Bark; rate-limited |
-| `http` | one HTTP request | host allowlist, no redirects |
-| `task` | enqueue another action | bounded fan-out |
+Discover capabilities and attempt useful in-scope progress before asking for
+missing information. Ask a concrete question only when the missing decision
+changes execution. Do not substitute a report for an operational goal without
+making the scope change explicit. A missing tool is a recorded blocker, not
+proof that every route is impossible or permission to expand grants.
 
-Rules:
+## 5. The subagent tool and Folio manager
 
-- Steps run in order. There are no loops, branches, or conditional
-  expressions; anything more is a new primitive, not a new JSON feature.
-- Templates are variable substitution only:
-  `{{event.*}}`, `{{payload.*}}`, `{{steps.<id>.output}}`, `{{secrets.<name>}}`.
-  A missing key fails the step. Unknown functions fail validation.
-  `{{secrets.<name>}}` is valid only in `script.env` and `http` headers or
-  body; a template that would put a secret into a prompt, report, or push body
-  fails validation.
-- Each step has a timeout and an output bound; the action has a total budget.
-- A failed step stops the action by default (`on_error: continue` is opt-in).
-  A retry reruns the action, not a half-finished plan. Side-effecting steps get
-  `FOLIO_RUN_ID` and `FOLIO_STEP_ID` for idempotency.
-- The built-in `report` action becomes an `agent` step plus an action-level
-  `report_from` field that names the step whose output is persisted as the
-  report and summary. The `report` kind remains a compatibility alias during
-  migration; it is not a second execution path.
+`subagent` delegates work; it is not a synchronous wait for another model answer.
+Its implementation is a Folio tool, not a dependency on pi-native subagents.
 
-### 4.3 Scripts
-
-A `script` step is the owner's code, not a sandbox:
-
-- `command` is an argv array; the first element is an absolute path under the
-  configured scripts root (`/data/scripts` by default). No shell string and no
-  word splitting.
-- Payload data arrives on `stdin` (objects render as JSON) or in environment
-  variables, not interpolated into a shell command. `argv` elements may be
-  templates, but each element is one literal value.
-- `cwd` must stay under the private data directory.
-- stdout and stderr are bounded. Raw stderr is not persisted; the run stores a
-  fixed failure class unless the owner opts into a private bounded log.
-- The process runs as the service user and can read the private volume. That is
-  equivalent to owner shell access. The owner binding and the private volume
-  are the security boundary; the step itself is not a sandbox.
-
-The main agent may wire an existing script into an action, because that is
-configuration, but it cannot create or edit the script file; scripts are
-owner/CI artifacts.
-
-### 4.4 Main agent
-
-Runtime: an injected adapter; a pi wrapper is the intended deployment. Folio
-keeps a narrow Go interface so the runtime can be replaced:
-
-```go
-type AgentRuntime interface {
-    Available() bool
-    Turn(context.Context, AgentRequest) (AgentResponse, error)
-}
-```
-
-DSH remains a worker runner. Its SDK/ACP is not the control-plane contract: its
-agent loop is downstream of pi and may change independently. The
-`AgentRuntime` boundary keeps that swap cheap.
-
-`AgentRequest` carries the session, input, bounded history, the granted tool
-specs, and the event trust class. Folio executes the tools; the runtime never
-receives ambient authority.
-
-The owner session has one write surface: runtime configuration and queue
-control. An observer session has read tools only.
-
-| Class | Tools | Effect |
-| --- | --- | --- |
-| control | `task.*`, `action.*`, `route.*`, `policy.get` / `policy.put`, `push.send`, `context.search`, `run.*`, `status` | queue, definitions, routes, policy, channel, context, audit |
-| observer | `context.search`, `run.get`, `status` | read-only |
-
-"Modify Folio" means:
-
-- create, update, disable, and version actions (`action.put`, `action.disable`);
-- change event routes (`route.put`) and the queue policy (`policy.put`).
-
-Writes are read from the private files on every resolution, so no reload tool is
-required.
-
-It does not mean editing Go source, running a shell, or replacing the binary.
-Those remain owner/CI work and need a separate design.
-
-Rules:
-
-- Owner sessions get control tools. Observer sessions get read tools only.
-  Integration events never receive write tools.
-- All writes go through the tool gateway, which validates, authorizes, and
-  audits them. The agent never writes `actions.json`, `routes.json`, or the
-  policy file directly.
-- `action.put` takes effect immediately after schema validation. It is
-  versioned, attributed, and audited; `action.disable` is the kill switch.
-  There is no confirmation step.
-- `route.put` and `policy.put` follow the same pattern; invalid routes or
-  policy values are rejected before they are saved.
-- A turn is a run (`trigger: agent`), not a durable task. Work that outlives the
-  turn becomes `task.create`.
-- Session keys are `(channel, account, conversation)`. Transcripts are bounded
-  and live under the private runtime directory; the audit keeps the tool calls,
-  not the model's hidden reasoning.
-- The channel reply is the turn result. Proactive messages use `push.send` and
-  the delivery ledger.
-
-The primary Settings → Model connections form manages reusable connections
-and independent assistant/report/maintenance assignments, with per-report/action
-overrides. An assistant assignment constructs the bounded HTTP adapter for that
-turn; an unassigned assistant uses the legacy configuration below. Assignments
-select exact model/group IDs; account/fallback/cost-preference scheduling stays
-in the gateway. Reports use a separate tool-free HTTP call, while assigned
-maintenance retains the Codex worker and transaction boundary. Runtime actions,
-queue priorities and tool authorization are unchanged. See the
-[deployment contract](../deploy/README.md#model-services-and-task-assignments).
-
-Two adapters implement the main-agent boundary:
-
-- **OpenAI-compatible HTTP (built in).** Settings → Main agent runtime stores
-  `/data/agent/config.json` and a write-only key at
-  `/data/secrets/agent-api-key`. The adapter sends bounded chat-completions
-  requests with the same tool schemas and `tool_choice: auto`, parses text,
-  `tool_calls` and `usage`, and never exposes the key or base URL to a tool.
-  HTTPS only; redirects are rejected. A saved file wins over the environment
-  fallback (`FOLIO_AGENT_KIND`, `FOLIO_AGENT_PROVIDER`,
-  `FOLIO_AGENT_BASE_URL`, `FOLIO_AGENT_MODEL`,
-  `FOLIO_AGENT_API_KEY_FILE`, `FOLIO_AGENT_TIMEOUT_SECONDS`).
-- **Command adapter.** An absolute executable (legacy path
-  `/data/agent/runtime`) receives one JSON `AgentRequest` on stdin and returns
-  one JSON `AgentResponse` on stdout: `text`, optional `tool_calls` (`name`,
-  `arguments`) and optional `usage`. A pi-backed wrapper belongs here; the real
-  pi package is still not installed or verified in this environment.
-
-Folio validates names, arguments, output bounds and grants, executes the tools,
-appends tool results, and calls the runtime again. Assistant messages carry the
-tool-call ids so an OpenAI-compatible second request can pair each result.
-
-### 4.5 Lanes (target; admission not enforced yet)
-
-| Lane | Work | Concurrency | Window |
-| --- | --- | --- | --- |
-| `repo` | maintenance | 1 | owner policy |
-| `interactive` | owner chat | 1 reserved model slot | immediate |
-| `batch` | reports, scheduled actions | remaining model slots | owner policy |
-
-Lanes are the target admission model, not OS threads. The current build still
-uses the existing single dispatcher and one model mutex; lane admission is not
-enforced yet. Until it is, an interactive turn can wait behind a maintenance
-run, and the queue remains single-writer.
-
-### 4.6 Console chat (implemented)
-
-The console has an `Assistant` view. It is an owner event source, not a second
-agent:
-
-- `#chat` view in the existing hash navigation; owner-only like the rest of the
-  console. No plugin mount is needed.
-- `POST /api/agent/turns` with `{session, text}` and the existing CSRF header;
-  the response is `text/event-stream`, which the same-origin CSP permits.
-- Stream events: `turn.started`, `text.delta`, `tool.call`, `tool.result`,
-  `turn.finished`, `error`. Tool rows show name, a short argument summary,
-  status, and a link to the run/task; no secrets or raw model reasoning.
-- `GET /api/agent/sessions/main` returns the bounded transcript for reload.
-- A disconnect cancels the turn; a partial run is audited as canceled.
-- The chat and Weixin use the same main agent; only the session key differs.
-
-## 5. Security model
-
-- **The owner is the trust root.** Single-owner binding is the authorization
-  boundary. A compromised owner channel can change actions and routes and
-  invoke installed scripts; treat it as owner-level access, not as a sandbox.
-- **Direct effect is accepted.** Validation, versioning, audit, rate limits,
-  and a disable switch are the mitigations, not an approval dialog.
-- **Integration events never get write tools.** They can trigger actions; they
-  cannot define actions, create tasks, push, or edit routes.
-- **No source or deploy tools.** The agent cannot edit Go source, run a shell,
-  or replace the binary. Runtime configuration is the whole write surface;
-  source and deploy remain owner/CI work.
-- **No body-selected authority.** Routes, trust classes, tools, and scripts are
-  configuration; payload is data.
-- **No shell interpolation.** Scripts receive argv and stdin; HTTP gets a
-  bounded body; prompts frame payload as untrusted data.
-- **Secrets stay by reference.** `{{secrets.name}}` resolves at execution and is
-  never written to a run, report, log, or notification.
-- **Public/private split.** The public repository and image contain no private
-  actions, scripts, context, credentials, or host details.
-
-## 6. Storage and APIs
-
-Planned private layout:
-
-```text
-/data/actions.json              action definitions (0600)
-/data/routes.json               event routes (0600)
-/data/agent/config.json         owner-selected agent runtime (0600)
-/data/secrets/agent-api-key     write-only provider key (0600)
-/data/agent/runtime             optional command adapter (unverified pi wrapper)
-/data/agent/sessions/           bounded session state
-/data/runtime/model-prices.json cached models.dev price projection (0600)
-/data/scripts/                  owner scripts (0700)
-/data/policies.json             queue priority/window policy
-/data/runtime/action-versions/  published versions and diffs
-/data/runtime/runs/             existing run ledger
-/data/runtime/reports/          existing reports
-```
-
-Session-protected endpoints:
-
-| Endpoint | Purpose |
+| Handoff input | Meaning |
 | --- | --- |
-| `GET /api/actions`, `POST /api/actions/validate` | inspect and dry-run |
-| `POST /api/actions` | publish (CSRF, audited, direct) |
-| `POST /api/actions/{id}/disable` | kill switch |
-| `GET /api/actions/versions`, `POST /api/actions/restore` | registry history and rollback |
-| `POST /api/actions/hosts` | HTTP host allowlist |
-| `GET /api/agent/config`, `POST /api/agent/config` | safe runtime status and validated write-only configuration |
-| `POST /api/agent/turns` | owner chat turn, SSE |
-| `GET /api/agent/sessions/{id}` | bounded transcript |
-| `GET /api/pricing`, `POST /api/pricing/refresh` | cached model price catalog and bounded refresh |
+| Goal | Desired outcome, preserving the owner's request |
+| Inputs/context references | Relevant selected facts, documents and artifact IDs; no automatic full transcript or secret copy |
+| Completion criteria | Observable outcomes and evidence expected |
+| Constraints | Resource scope, allowed operations, time/cost/step limits |
+| Runner preference | Optional registered harness/profile preference, checked by Folio |
 
-Routes and policy are edited through the main-agent tools; a dedicated Web
-route editor is not implemented. A chat turn is canceled by closing the SSE
-connection.
+The manager assigns Task, subagent and Run identity; authenticated origin,
+parentage and effective grants are host data. It validates and persists the
+handoff before returning `{task_id, status}`-equivalent receipt metadata to Main.
+The actual wire schema will be versioned during implementation. Capability gaps
+can produce durable blocked intent without launching an unsupported executor;
+this does not relax the current Action lookup until a new goal-task path exists.
 
-Existing task, run, usage, channel, and repository APIs keep their contracts.
+Execution sequence:
 
-### 4.7 Token prices
+1. Main invokes the tool; Folio records the goal and message/delegation key.
+2. The tool returns promptly after durable acceptance. Main remains responsive.
+3. Folio admits the Task under queue/resource policy and selects an ACP profile.
+4. Folio starts/restores the harness session with selected context and grants.
+5. The harness performs its own loop; Folio collects updates, approvals, blockers
+   and evidence, enforcing lifetime and resource limits.
+6. A correlated result event returns to Main for delivery, clarification or
+   further work on the same goal.
 
-`internal/store/pricing.go` downloads the public
-[`models.dev`](https://models.dev) catalog from `https://models.dev/api.json`,
-projects provider/model/cost entries into a compact bounded cache, and computes
-US-dollar list-price estimates per run. The catalog is refreshed in the
-background at startup when missing or older than 24 hours, then checks again on
-a bounded timer. `FOLIO_PRICING_URL` can point
-at an internal mirror with the same shape.
+Task = durable work goal. Subagent = managed independent agent context. Run =
+one execution attempt. A Task may have multiple Runs, and a Subagent session may
+resume only when that harness/profile supports it. One subagent is sufficient
+for ordinary delegated work. Further fan-out requires Folio-managed child tasks,
+dependency tracking, bounded depth/concurrency and inherited budgets/grants;
+never untracked recursive spawning or privilege inheritance.
 
-The estimate uses uncached input, cached input and output rates per million
-tokens. Cache writes, context-tier overrides, subscriptions and taxes are not
-modeled. A model/provider pair absent from the catalog keeps its token counts
-and returns `estimated: false` with `price_unavailable`; it is never guessed.
-Agent, maintenance, report and pipeline runs carry the model/provider needed for
-the lookup. A pipeline that calls several models records `model_usage` and
-aggregates a partial total.
+Delegated agents do not receive Main's route/policy/Action configuration powers
+by default. Do not publish a reusable global Action for each one-off request.
 
-## 7. Migration
+## 6. ACP runner contract
 
-Phase 0 — runtime spike. Verify pi's SDK/RPC custom-tool API, the ability to
-disable built-in shell/filesystem tools, session persistence, and a Node
-sidecar lifecycle. Pin the pi package and Node version. Acceptance: one pi turn
-calls a fake `push` tool through the gateway and returns; only the granted
-tools are available.
+### 6.1 Harness profiles, not model HTTP runners
 
-Phase 1 — event envelope, router, action registry (implemented 2026-11-01).
-Represent `maintenance` and `report` as internal built-in actions (not yet
-exposed as `actions.json` v2); keep behaviour identical. Acceptance: existing
-hook and task tests pass; a route can target the same actions.
+A runner profile identifies a harness, trusted executable/argv, supported adapter
+version, environment and credential references, workspace policy, configured
+skills/tools, model preferences where supported, and resource limits. Folio
+validates profiles before use; payload/model output cannot select an arbitrary
+command, credential path or host mount.
 
-Phase 2 — action v2 (implemented 2026-11-01). Add `script`, `http`, `push`,
-`task` steps; validation, versioning, and the console dry-run. Acceptance: a
-script action runs from `/data/scripts` with argv/stdin and bounded output; a
-failed step is audited. The registry API is implemented; the visual editor is
-deferred to Phase 4.
+Target profiles include Codex, DSH and pi. Native ACP versus adapter support,
+authentication, tools, permissions, cancellation and recovery must be verified
+for the pinned versions. Listing a harness name is not compatibility acceptance.
+A pi ACP task uses its own harness session, not the embedded Main session.
 
-Phase 3 — main agent and chat (implemented at the adapter boundary,
-2026-11-01). Add the runtime boundary, in-process tool gateway, sessions,
-console chat, Weixin owner turns, and `routes.json`. Acceptance: owner asks for
-a task in Weixin or chat, the agent creates it, and the run is audited; the chat
-streams tool calls; an integration event cannot reach write tools. The real pi
-wrapper is not installed or verified; tests use a fake and the command adapter.
-Lane admission remains planned.
+Task model/agent work goes through ACP. The current direct report HTTP path is a
+legacy path to migrate and retire, not a fourth runner type or silent fallback.
+The same applies to model-bearing Action steps and feedback planning work.
+Deterministic Go transactions and business `http`/script/push steps remain
+possible: fetching a business API is not a model inference runner.
 
-Phase 4 — editor and operations (core implemented 2026-11-01). Action editor,
-rollback, and version restore are implemented. Metrics, a second channel, and a
-retention policy remain planned.
+Model/provider settings are consumed by pi or the selected task harness, using
+negotiated ACP configuration only where supported. Gateway account selection,
+cost routing and provider fallback stay at the harness/gateway boundary. Folio
+selects execution policy and a harness profile; it does not replace the harness
+with a bare model request when that profile fails.
 
-## 8. Open questions
+### 6.2 Lifecycle and negotiated capabilities
 
-- The real pi adapter: SDK versus RPC, and whether a persistent Node sidecar or
-  a per-turn child is simpler to operate. This is the unverified Phase 0 work.
-- Lane admission and the reserved interactive model slot; the current build
-  still uses one dispatcher and one model mutex.
-- Can a real pi wrapper speak the stdin/stdout adapter protocol and avoid
-  built-in shell/filesystem tools? If not, use a minimal pi SDK session rather
-  than the coding-agent profile.
-- Scripts root: only `/data/scripts`, or an owner-configured allowlist?
-- Session compaction and retention: who owns the canonical transcript, pi or
-  Folio?
-- Action-version retention and whether rollback re-runs or only re-arms.
-- Whether maintenance stays a built-in action or becomes a normal action with a
-  privileged repo primitive.
+Folio implements an ACP client over the selected supported transport, initially
+supervised subprocess stdio with bounded JSON-RPC framing. It must handle:
 
-## 9. Decisions
+- `initialize`: protocol version and client/agent capability negotiation, then
+  the supported authentication flow.
+- `session/new` and `session/prompt`: create a task-scoped session and submit work.
+- Agent `session/update` notifications: normalize text, plan and tool status
+  into bounded progress/evidence without treating descriptions as verified acts.
+- Agent `session/request_permission`: decide from the effective grant or record
+  a durable owner approval request with precise scope and revision.
+- `session/cancel`: cancel and reconcile the actual process/tool outcome; a sent
+  notification alone is not proof that every side effect stopped.
+- `session/load` only if negotiated; otherwise show an explicit restart/new
+  attempt, not invented checkpoint recovery.
+- Optional client filesystem/terminal methods only when advertised and actually
+  bounded by Folio. Unsupported capabilities fail clearly.
 
-2026-11-01:
+The ACP prompt stop reason is execution information, not automatic fulfillment
+of the owner's goal. Protocol/session IDs are correlated with Folio IDs and do
+not confer authority. Tool permissions and client capabilities are not an OS
+sandbox: harness-native I/O may bypass client callbacks, so isolate the actual
+process, mounts, network and secret scope too.
 
-- Runtime actions are step chains, and **scripts are allowed** as an
-  owner-authored primitive.
-- `action.put` takes effect **immediately**; no confirmation step.
-- The main agent runs behind an **OpenAI-compatible or command adapter**; a pi
-  wrapper remains supported through the command protocol. DSH remains a
-  maintenance/report runner, not the main-agent contract.
-- The console gets a first-class **chat window** to the main agent; Weixin is
-  the remote surface.
-- The owner session may **modify Folio's runtime configuration only**: actions,
-  routes, prompts, and policy. Source code and deploy are out of scope, and
-  integration events never get write tools.
-- The deployment remains **single-owner**; the owner binding is the trust root.
-- The queue gets **lanes** so interactive replies are not blocked by
-  maintenance.
+## 7. Task lifecycle, results and delivery
 
-## 10. Implementation status
+Goal tasks preserve the original request, constraints, input revisions,
+completion criteria, origin/reply channel, parent links, runner/session
+correlation and execution policy. Do not require the final step plan at creation.
+Action-backed and agent-backed tasks share the task board and audit model.
 
-2026-11-01 — Phases 1–4 landed at the adapter boundary:
+Target states extend queued/running/terminal states with durable waiting:
+`waiting_input`, `waiting_approval` and `blocked` with fixed reasons such as
+`capability_missing`. Keep wait reasons and current questions inspectable. The
+exact persisted schema and migration are implementation work; these states are
+not valid current API inputs.
 
-- `internal/store/actions.go` defines the internal `actionPlan`/`actionStep`
-  shape and routes both legacy kinds and runtime actions through `runAction`.
-  Legacy kinds remain one-step and keep their previous behavior.
-- `internal/store/events.go` and `routes.go` define the event envelope, trust
-  classes, defaults and `/data/routes.json`. `SchedulerTick` enters through
-  `scheduler.tick`; console and Weixin owner messages resolve through the same
-  route table.
-- `internal/store/action_config.go` loads and validates `/data/actions.json`
-  (version 2), snapshots versions before writes, and exposes list/validate/
-  put/disable/restore operations. Unknown fields and unsafe definitions fail
-  closed.
-- `internal/store/action_pipeline.go` executes ordered `context`, `agent`,
-  `script`, `push`, `http` and `task` steps with bounded output, templates,
-  per-step audit records, usage aggregation and optional report persistence.
-- `internal/store/agent.go` and `agent_tools.go` implement the runtime adapter,
-  bounded sessions, the tool loop, owner/observer grants and an agent run audit.
-  The built-in OpenAI-compatible adapter and the command adapter at
-  `/data/agent/runtime` are both tested with synthetic endpoints/executables;
-  a real pi installation remains unverified.
-- `internal/store/pricing.go` caches the models.dev catalog, estimates run cost
-  from reported usage, and leaves unknown prices explicitly unavailable.
-- `internal/store/inbound.go` sends authorized Weixin owner text through the
-  agent when the route and runtime are available, and keeps the bounded
-  read-only answer as a fallback.
-- `internal/web` exposes the action registry API, agent configuration, the SSE
-  chat endpoint, session history and the price catalog API. The console has
-  `#chat` and `#actions` views; Settings includes the agent runtime card; task
-  details and usage show estimated cost.
-- Hooks, task creation and dispatch accept runtime action IDs; the legacy
-  `task-kinds.json` path still works.
-- Not verified / not implemented: a real pi package wrapper, lane admission and
-  the reserved interactive model slot, task lifecycle events routed through
-  `routes.json`, live Weixin/push delivery, metrics, a second channel, and the
-  git remote push. `lane` is validated but not enforced.
-- Tests cover action validation/versioning, pipeline steps, runtime dispatch,
-  routes, the agent turn/tool loop, Weixin routing, the chat SSE API, the action
-  registry API, the editor contracts and the unchanged legacy paths.
+Answers update the existing Task's revision and resume eligible work, rather
+than opening an unrelated Task. Waiting releases execution resources; process
+suspension or session reload depends on negotiated capabilities. Define stale
+answer/approval rejection, cancellation of waiting/running work, budget exhaustion,
+parent/child reconciliation and crash recovery explicitly.
+
+Persist checkpoints, operation receipts and artifacts separately from bounded
+public audit summaries. Use durable origin/delegation keys for acceptance and
+operation keys for retryable side effects. Do not promise exactly-once network
+effects: reconcile ambiguous outcomes before retrying. New Run IDs must not
+invalidate a logical operation's deduplication key.
+
+A result includes accomplished/unaccomplished criteria, verified receipts,
+artifact/source references, blockers and resumable state where supported.
+Check machine-verifiable criteria in code; use Main to interpret remaining
+claims, not an obligatory additional model judge per task. A model stopping,
+a successful process exit or an accepted tool call alone is insufficient.
+
+Artifacts belong to exact Tasks/Runs, remain immutable per attempt, and use
+ID-based authorized access. Preserve path/symlink/content/size checks and private
+storage. Support reports and other file types without assuming that every
+channel supports attachments. Retention and cleanup must respect task evidence
+and active delivery references.
+
+Lifecycle events feed a durable, deduplicated Main inbox and delivery outbox.
+Execution outcome and delivery outcome are distinct. Notify success, failure and
+needed owner decisions according to channel policy; retry transient delivery
+failures without rerunning the task. For Weixin, expired/missing reply context
+remains a visible delivery blocker; text plus an authenticated Folio result
+entry can precede optional media support. Never expose private files publicly to
+make a result link work.
+
+## 8. Existing Actions, events, APIs and evidence
+
+Runtime `actions.json` v2 remains the shipped fixed-workflow format. Ordered
+`context`, `agent`, `script`, `push`, `http` and `task` steps have bounded
+outputs/timeouts; scripts use trusted argv, HTTP uses HTTPS allowlists and no
+redirects, templates are substitution only, and secrets resolve by reference only
+at their owning execution boundary. Validation/versioning/disable/restore and
+owner launch-field validation remain in Go. An `agent` step's future ACP execution
+requires an explicit schema/config migration, not reinterpretation of old files.
+
+Keep `GET /api/catalog` as the safe owner launch catalog; provide a separate
+complete capability view for Main to distinguish installed, configured,
+authorized and live-verified operations. Readiness is not credential validation.
+Legacy report kinds and maintenance remain compatible during migration; the
+built-in maintenance path must retain structural validation, single-writer Git
+transactions, rollback and incremental checkpoints under any harness change.
+
+Authenticated console/Weixin events may reach Main. Hook/integration events can
+trigger owner-configured work with constrained grants, but cannot choose trust,
+runner commands, scripts or Main configuration permissions through payload.
+System result events are authenticated/correlated notifications, not owner
+instructions. Preserve signed-hook replay/rate limits and input bounds.
+
+Current APIs remain current contracts until code changes:
+
+- Action registry list/validate/publish/disable/version/restore/host operations.
+- Owner chat `POST /api/agent/turns` (SSE), session history and runtime config.
+- Model-service connections/bindings and read-only catalog tests.
+- Tasks, run audits, report results, feedback and channel settings.
+- Usage, quotas and cached models.dev list-price estimates.
+
+Do not present proposed runner profiles, SDK Host setup, approvals or artifact
+APIs as available endpoints. Schema changes require coordinated store, HTTP,
+UI, CLI and deployment instructions with compatibility decisions. Preserve
+reported usage; unavailable harness metadata stays unknown. Price estimates are
+not bills and exclude unsupported cache/context/subscription adjustments.
+
+## 9. Migration and acceptance
+
+All steps below remain planned. Existing operator settings continue to work
+until explicit migration lands; no documentation-only change switches runtimes.
+
+1. **Embed Main pi.** Package/supervise the SDK Host, private IPC, authenticated
+   session mapping, streamed events and SDK transcript ownership. Register Folio
+   tools; enable workspace file/shell/scripts and trusted skills. Preserve scoped
+   feedback and observer restrictions. Replace the Go Main loop rather than
+   nesting two competing loops.
+2. **Build ACP execution.** Implement client framing, profile validation,
+   lifecycle, capability negotiation and process isolation. Verify pinned Codex,
+   DSH and pi interfaces/adapters independently. Move report/maintenance and
+   model-bearing pipeline execution with their existing output validators;
+   retire direct task model HTTP execution after compatibility migration.
+3. **Add managed delegation.** Register `subagent`; persist goal tasks, grants,
+   parentage, bounded scheduling and result events. Separate interactive Main
+   resources from background tasks; keep repository writers serialized. Do not
+   reuse a global turn lock that makes Main wait for a whole background run.
+4. **Complete reliable operation.** Implement input/approval waiting, cancellation,
+   recovery, evidence/artifacts, idempotency/reconciliation and durable delivery.
+   Migrate UI/configuration and document actual capabilities per profile.
+
+Acceptance must span different kinds of owner work, not one special request:
+
+- A short direct task can use Main files/shell and trusted skills in its grant;
+  the same process cannot reach unrelated credentials or canonical Context code.
+- A new goal with available capabilities can be delegated without a matching
+  predefined Action, and the receipt refers to persisted work.
+- Main remains responsive while a Codex, DSH or pi ACP task runs; all use the
+  same Folio lifecycle without a bare model HTTP fallback.
+- Tool requests cannot forge identity, expand grants or inherit Main privilege.
+  Unsupported ACP capabilities and missing tools produce concrete blockers.
+- Owner answers resume the same Task revision; stale approvals are refused.
+- Cancel/restart and kill-at-checkpoint tests preserve evidence, avoid duplicate
+  acceptance, and reconcile ambiguous external effects before retries.
+- Successful results satisfy observable criteria; notification failure is
+  retried separately and never re-executes successful work.
+- Current maintenance validation/rollback, feedback plan-only scope, hook trust
+  rules and old run-owned report reads survive migration.
+
+Use synthetic fixtures and fake ACP agents for protocol/failure tests. Live
+harness/provider/channel acceptance is a separate, explicitly reported check;
+reading SDK/protocol docs does not prove runtime compatibility.
 
 ## References
 
-- pi coding agent SDK:
-  <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md>
-- pi coding agent RPC:
-  <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc.md>
-- DSH repository: <https://github.com/deepseek-ai/deepseek-harness>
-- Current task model: [event-driven-assistant.md](event-driven-assistant.md) §4
-- Hook contract: [integration-plugins.md](integration-plugins.md)
-- Weixin boundary: [weixin-channel.md](weixin-channel.md)
+- [Pi SDK](https://pi.dev/docs/latest/sdk)
+- [Pi extensions and custom tools](https://pi.dev/docs/latest/extensions)
+- [Pi source](https://github.com/earendil-works/pi)
+- [ACP protocol overview](https://agentclientprotocol.com/protocol/overview)
+- [Context maintenance contract](context-maintenance.md)
+- [Integration/hook contract](integration-plugins.md)
+- [Weixin transport and delivery limits](weixin-channel.md)
+- [Feedback and isolated workshop](self-bootstrap.md)
+- [Quota research and current model configuration](subscription-quota.md)

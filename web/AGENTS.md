@@ -2,6 +2,13 @@
 
 Inherit `../AGENTS.md`.
 
+- `../docs/agent-architecture.md` defines the unimplemented target: built-in pi
+  SDK Main and separately selectable ACP task harnesses. Future settings must
+  distinguish Main's model configuration from task harness/profile selection;
+  a bare HTTP model connection is not a target task runner. Render waiting,
+  approvals, artifacts and delivery only from implemented backend contracts.
+  Current runtime forms and task/result contracts below remain authoritative
+  until that migration; do not imply SDK/ACP readiness from saved model settings.
 - The UI is dependency-free static HTML/CSS and classic JavaScript, served by
   the Go binary. `index.html` is structure, `styles.css` presentation, `app.js`
   transport/state/rendering and hash navigation, and `i18n.js` the English/Chinese

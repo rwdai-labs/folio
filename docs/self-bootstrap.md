@@ -1,13 +1,16 @@
 # Feedback and self-bootstrap
 
 Status: Phase 1–2 implemented; Phase 3 is a design and is not shipped. Snapshot
-date: 2026-11-09. This document describes Folio's own improvement loop without
-placing source code editing or deployment in the main agent.
+date: 2026-11-12. This document describes Folio's own improvement loop. The
+approved [Main/ACP architecture](agent-architecture.md) adds pi SDK Main with
+workspace files, shell, scripts and skills; it does not grant production-source
+or deployment access. That architecture is not implemented.
 
 ## Purpose
 
-Folio should be able to receive an owner's improvement request, reject it when
-it is not actionable, and turn an accepted request into durable, auditable work.
+Folio accepts a valid owner improvement request into durable, auditable work.
+Malformed input is rejected deterministically; missing scope decisions are
+clarified asynchronously, without judging the owner's wording.
 The long-term loop is:
 
 ```text
@@ -25,9 +28,11 @@ annotated screenshot + structured feedback
 ```
 
 The base platform owns capture, storage, authentication, task durability,
-action execution, audit, and delivery. A specific task such as a report or a
-Folio improvement is an action definition, not page code. Chat remains a core
-assistant surface rather than an action card.
+action execution, audit, and delivery. The current catalog launches configured
+Actions; the approved target also accepts goal tasks through Main's `subagent`
+tool without a per-request Action. Chat remains a core assistant surface rather
+than an action card. Feedback's current reserved intake/plan kinds remain
+compatible until explicit migration.
 
 ## Phase 1: action catalog
 
@@ -153,10 +158,27 @@ the plan worker later resolves the immutable owner evidence by feedback id, so
 clarification answers are not lost to the queue's request-length projection.
 The isolated workshop remains planned.
 
+## Planned migration to Main pi and ACP
+
+The current intake reuses the Go Main loop with a feedback-specific two-tool
+grant. Embedding Main pi must preserve this scoped assessment: intake does not
+inherit general shell/file/configuration tools merely because normal Main has
+them. Pi owns conversation/compaction; Folio owns feedback evidence, revisions,
+questions and the authority to queue a plan. A failed assessment still cannot
+create a plan.
+
+The planning worker and eventual source workshop will execute agent work through
+Folio's ACP runner layer, selecting a verified harness profile. There is no
+separate direct model HTTP task runner in the target. Migration must retain
+immutable feedback evidence, the screenshot privacy bounds, reserved-kind
+validation and plan-only output until workshop execution is explicitly enabled.
+
 ## Phase 3: isolated source workshop
 
-The main agent must not gain source-edit or deployment tools. A workshop is a
-separate trust boundary with:
+Main may write and execute scripts in its granted workspace, but must not gain
+ambient access to Folio's production source or deployment. A workshop task is
+managed by Folio and executed through an ACP harness in a separate trust boundary
+with:
 
 - its own checkout of the Folio source repository and its own fine-grained
   credential;
@@ -164,7 +186,7 @@ separate trust boundary with:
   keys from the main runtime;
 - a bounded input document (feedback JSON plus a copied screenshot) passed as
   data, never as shell arguments;
-- a model runner restricted to that checkout;
+- an ACP harness profile restricted to that isolated source checkout;
 - mandatory formatting, tests, vet/build, and diff limits;
 - a branch and pull request by default; direct main push only as an explicit
   owner setting;

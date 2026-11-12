@@ -2,6 +2,13 @@
 
 Inherit `../../AGENTS.md` and `../AGENTS.md`.
 
+- The approved target in `../../docs/agent-architecture.md` routes task agent
+  work through ACP harnesses; existing Codex/DSH CLI report/maintenance code is
+  the migration baseline. Preserve proposal schemas, structural validators,
+  credential boundaries and Go-owned transactions when replacing execution.
+  Main is separately built on pi SDK with workspace shell/files/scripts/skills;
+  these worker restrictions are not a blanket ban on Main's tools. ACP support
+  is not implemented by the current CLI flags.
 - `router.go` selects bounded context from an explicitly resolved checkout;
   `commands.go` implements the context CLI; `worker.go` runs model maintenance;
   `report.go` supports read-only report calls. Keep these roles distinct from

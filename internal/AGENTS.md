@@ -14,6 +14,12 @@ Applies to `internal/`; inherit `../AGENTS.md` and read local children as needed
 | `notify/` | Bounded outbound push messages and credential-free receipts |
 | `channel/` | Inbound identity/text boundary and native Weixin transport; `channel/AGENTS.md` |
 
+- The approved, unimplemented target in `../docs/agent-architecture.md` embeds
+  special Main in a pi SDK Host with file/shell/scripts/skills and Folio tools.
+  `subagent` delegates to Folio-managed tasks; task agent work uses ACP harnesses,
+  not direct model HTTP. Current Go loops/workers remain the migration baseline.
+  Preserve the distinction between SDK/harness session state and Folio-owned task
+  state, grants, repository transactions and delivery.
 - Keep HTTP dependent on its `Backend` interface. Store owns local checkout
   validation, commits, rollback, and auditing; a storage plugin owns the remote
   and its authentication. Process calls go through the host executor contract.
